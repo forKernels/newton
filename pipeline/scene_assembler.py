@@ -202,21 +202,49 @@ class SceneAssembler:
 
     @staticmethod
     def _add_cloth_element(scene: ModelBuilder, elem) -> None:
-        """Load a USD garment mesh and add it as cloth."""
-        from pxr import Usd
+        """Load a USD garment mesh and add it as cloth.
+
+        Supports both single-mesh prims (e.g. Newton's built-in shirt) and
+        multi-prim Marvelous Designer exports where each pattern panel is a
+        separate UsdGeom.Mesh under a parent Xform.
+        """
+        from pxr import Usd, UsdGeom
 
         usd_stage = Usd.Stage.Open(elem.asset_path)
         usd_prim = usd_stage.GetPrimAtPath(elem.prim_path)
         if not usd_prim.IsValid():
             raise ValueError(f"USD prim not found: {elem.prim_path} in {elem.asset_path}")
 
-        mesh = newton.usd.get_mesh(usd_prim)
-        vertices = [wp.vec3(v) for v in mesh.vertices]
+        if usd_prim.IsA(UsdGeom.Mesh):
+            # Single mesh prim — original path
+            mesh = newton.usd.get_mesh(usd_prim)
+            vertices = mesh.vertices
+            indices = mesh.indices
+        else:
+            # Multi-prim (e.g. MD export): traverse descendants for all Mesh prims
+            mesh_prims = [p for p in Usd.PrimRange(usd_prim) if p.IsA(UsdGeom.Mesh)]
+            if not mesh_prims:
+                raise ValueError(
+                    f"No UsdGeom.Mesh prims found under {elem.prim_path} in {elem.asset_path}"
+                )
+            all_vertices = []
+            all_indices = []
+            index_offset = 0
+            for mesh_prim in mesh_prims:
+                mesh = newton.usd.get_mesh(mesh_prim)
+                all_vertices.append(mesh.vertices)
+                all_indices.append(mesh.indices + index_offset)
+                index_offset += len(mesh.vertices)
+            vertices = np.concatenate(all_vertices, axis=0)
+            indices = np.concatenate(all_indices)
+            print(f"  Merged {len(mesh_prims)} mesh panels from {elem.prim_path}")
+
+        vert_list = [wp.vec3(v) for v in vertices]
 
         cp = elem.cloth_params
         scene.add_cloth_mesh(
-            vertices=vertices,
-            indices=mesh.indices,
+            vertices=vert_list,
+            indices=indices,
             rot=wp.quat_from_axis_angle(wp.vec3(*elem.rotation_axis), elem.rotation_angle),
             pos=wp.vec3(*elem.position),
             vel=wp.vec3(0.0, 0.0, 0.0),
