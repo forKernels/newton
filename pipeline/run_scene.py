@@ -22,6 +22,7 @@ from newton.viewer import ViewerUSD
 
 from .scene_assembler import SceneAssembler, simulate_frame
 from .scene_config import ElementConfig, ElementType, SceneConfig
+from .usd_materials import bind_materials
 
 
 def build_config(args: argparse.Namespace) -> SceneConfig:
@@ -159,6 +160,10 @@ def main(argv: list[str] | None = None) -> None:
 
     # Save USD file
     viewer.close()
+
+    # Bind PBR materials
+    print("Binding materials...")
+    bind_materials(config.output_path)
     print("Done.")
 
 
