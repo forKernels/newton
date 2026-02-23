@@ -266,6 +266,11 @@ class ViewerUSD(ViewerBase):
             # Store the prototype path
             self._meshes[name] = mesh_prim
 
+            # For hidden prototypes (geometry referenced by instances), set visibility
+            # as a default value (not time-sampled) so Blender respects it.
+            if hidden:
+                mesh_prim.GetVisibilityAttr().Set("invisible")
+
             # Bind material for deformable meshes (distinct color per group)
             if "/model/deformable/" in name:
                 try:
@@ -286,7 +291,7 @@ class ViewerUSD(ViewerBase):
             mesh_prim.GetNormalsAttr().Set(normals_np, self._frame_index)
             mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
 
-        # how to hide the prototype mesh but not the instances in USD?
+        # Time-sampled visibility for animated meshes (deformable, toggling visibility per frame)
         mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
 
     # log a set of instances as individual mesh prims, slower but makes it easier
