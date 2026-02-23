@@ -57,6 +57,9 @@ class ViewerBase:
         # maps from geometry hash -> mesh path
         self._geometry_cache: dict[str, str] = {}
 
+        # track which mesh prototypes have had material info logged
+        self._geometry_materials_stored: set[str] = set()
+
         # line vertices for contact visualization
         self._contact_points0 = None
         self._contact_points1 = None
@@ -108,6 +111,11 @@ class ViewerBase:
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         self._sdf_isomesh_populated: bool = False  # lazy flag for SDF isomesh population
 
+        # Deformable mesh groups and loose particles (built by _build_deformable_mesh_groups)
+        self._deformable_groups: list[dict] = []
+        self._loose_particle_indices: np.ndarray = np.array([], dtype=np.int32)
+        self._has_loose_particles: bool = False
+
     def is_running(self) -> bool:
         return True
 
@@ -143,6 +151,7 @@ class ViewerBase:
         if model is not None:
             self.device = model.device
             self._populate_shapes()
+            self._build_deformable_mesh_groups()
 
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
@@ -762,6 +771,10 @@ class ViewerBase:
     def apply_forces(self, state):
         pass
 
+    def log_material_info(self, mesh_name, color, roughness, metallic, texture):
+        """Store material info for a mesh prototype. No-op by default; overridden by ViewerUSD."""
+        pass
+
     @abstractmethod
     def end_frame(self):
         pass
@@ -976,6 +989,19 @@ class ViewerBase:
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
+
+            # Store material info for this mesh prototype (used by ViewerUSD for material export)
+            if mesh_name not in self._geometry_materials_stored:
+                self._geometry_materials_stored.add(mesh_name)
+                if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) and geo_src is not None:
+                    mat_color = geo_src.color[0:3] if geo_src.color is not None else (0.5, 0.5, 0.5)
+                    mat_roughness = getattr(geo_src, "roughness", None) or 0.5
+                    mat_metallic = getattr(geo_src, "metallic", None) or 0.0
+                    mat_texture = getattr(geo_src, "texture", None)
+                    self.log_material_info(mesh_name, mat_color, mat_roughness, mat_metallic, mat_texture)
+                else:
+                    # Primitive shapes: use default color (will be overridden per-instance)
+                    self.log_material_info(mesh_name, (0.5, 0.5, 0.5), 0.5, 0.0, None)
 
             # shape options
             flags = shape_flags[s]
@@ -1354,19 +1380,117 @@ class ViewerBase:
 
         self.log_points("/model/com", self._com_positions, self._com_radii, self._com_colors, hidden=not self.show_com)
 
+    def _build_deformable_mesh_groups(self):
+        """Group triangles into connected components for separate USD mesh export."""
+        if self.model is None or not self.model.tri_count:
+            self._deformable_groups = []
+            self._loose_particle_indices = np.array([], dtype=np.int32)
+            self._has_loose_particles = False
+            return
+
+        tri_indices = self.model.tri_indices.numpy().reshape(-1, 3)
+
+        # Union-find on particle indices
+        parent = {}
+
+        def find(x):
+            while parent.get(x, x) != x:
+                parent[x] = parent.get(parent[x], parent[x])
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            a, b = find(a), find(b)
+            if a != b:
+                parent[a] = b
+
+        for tri in tri_indices:
+            union(tri[0], tri[1])
+            union(tri[0], tri[2])
+
+        # Group triangles by component
+        from collections import defaultdict  # noqa: PLC0415
+
+        groups = defaultdict(list)
+        for ti, tri in enumerate(tri_indices):
+            groups[find(tri[0])].append(ti)
+
+        # For each component, build local index mapping and store
+        self._deformable_groups = []
+        all_surface_verts = set()
+        for group_id, (_root, tri_list) in enumerate(sorted(groups.items())):
+            group_tris = tri_indices[tri_list]
+            global_verts = np.unique(group_tris)
+            all_surface_verts.update(global_verts.tolist())
+            global_to_local = {int(g): l for l, g in enumerate(global_verts)}
+            local_tris = np.vectorize(global_to_local.get)(group_tris).flatten().astype(np.int32)
+
+            self._deformable_groups.append(
+                {
+                    "name": f"/model/deformable/mesh_{group_id}",
+                    "global_vertex_indices": global_verts,
+                    "local_tri_indices": local_tris,
+                }
+            )
+
+        # Determine loose particles (not part of any surface mesh)
+        all_particle_indices = set(range(self.model.particle_count))
+        loose = sorted(all_particle_indices - all_surface_verts)
+        self._loose_particle_indices = np.array(loose, dtype=np.int32)
+        self._has_loose_particles = len(loose) > 0
+
     def _log_triangles(self, state):
-        if self.model.tri_count:
+        if not self._deformable_groups:
+            # Fall back to legacy single-mesh path if no groups were built
+            if self.model.tri_count:
+                self.log_mesh(
+                    "/model/triangles",
+                    state.particle_q,
+                    self.model.tri_indices.flatten(),
+                    hidden=not self.show_triangles,
+                    backface_culling=False,
+                )
+            return
+
+        for group in self._deformable_groups:
+            positions = state.particle_q.numpy()[group["global_vertex_indices"]]
+            points = wp.array(positions, dtype=wp.vec3, device=self.device)
+            indices = wp.array(group["local_tri_indices"], dtype=wp.int32, device=self.device)
             self.log_mesh(
-                "/model/triangles",
-                state.particle_q,
-                self.model.tri_indices.flatten(),
+                group["name"],
+                points,
+                indices,
                 hidden=not self.show_triangles,
                 backface_culling=False,
             )
 
     def _log_particles(self, state):
-        if self.model.particle_count:
-            # just set colors on first frame
+        if not self.model.particle_count:
+            return
+
+        if self._has_loose_particles:
+            # Render loose particles (MPM sand, granular, etc.) as spheres via viewer-specific method
+            loose_positions = state.particle_q.numpy()[self._loose_particle_indices]
+            loose_radii = self.model.particle_radius.numpy()[self._loose_particle_indices]
+            points = wp.array(loose_positions, dtype=wp.vec3, device=self.device)
+            radii = wp.array(loose_radii, dtype=float, device=self.device)
+
+            if self.model_changed:
+                colors = wp.full(
+                    shape=len(self._loose_particle_indices), value=wp.vec3(0.7, 0.6, 0.4), device=self.device
+                )
+            else:
+                colors = None
+
+            self.log_particle_spheres(
+                name="/model/particles",
+                points=points,
+                radii=radii,
+                colors=colors,
+                hidden=not self.show_particles,
+            )
+        elif not self._deformable_groups:
+            # No deformable groups and no loose particles: use legacy path for all particles
             if self.model_changed:
                 colors = wp.full(shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
             else:
@@ -1379,6 +1503,13 @@ class ViewerBase:
                 colors=colors,
                 hidden=not self.show_particles,
             )
+
+    def log_particle_spheres(self, name, points, radii, colors, hidden=False):
+        """Render particles as spheres. Default implementation falls back to log_points().
+
+        ViewerUSD overrides this to use UsdGeom.PointInstancer for Blender-compatible output.
+        """
+        self.log_points(name, points, radii, colors, hidden=hidden)
 
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:

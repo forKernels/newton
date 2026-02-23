@@ -23,9 +23,9 @@ import warp as wp
 from ..core.types import override
 
 try:
-    from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 except ImportError:
-    Gf = Sdf = Usd = UsdGeom = Vt = None
+    Gf = Sdf = Usd = UsdGeom = UsdShade = Vt = None
 
 from .viewer import ViewerBase
 
@@ -135,6 +135,11 @@ class ViewerUSD(ViewerBase):
         self._instancers = {}  # instancer_name -> UsdGeomPointInstancer
         self._points = {}  # point_name -> UsdGeomPoints
 
+        # Material tracking
+        self._materials = {}  # material_key -> USD material path
+        self._texture_dir = None  # textures/ directory path (created lazily)
+        self._mesh_materials = {}  # mesh prototype name -> (color, roughness, metallic, texture)
+
         # Track current frame
         self._frame_index = 0
         self._frame_count = 0
@@ -240,8 +245,30 @@ class ViewerUSD(ViewerBase):
             mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
             mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
 
+            # Set UVs once with topology (not time-sampled)
+            if uvs is not None:
+                uvs_np = uvs.numpy().astype(np.float32)
+                primvars_api = UsdGeom.PrimvarsAPI(mesh_prim)
+                uv_primvar = primvars_api.CreatePrimvar(
+                    "st",
+                    Sdf.ValueTypeNames.TexCoord2fArray,
+                    UsdGeom.Tokens.vertex if len(uvs_np) == len(points_np) else UsdGeom.Tokens.faceVarying,
+                )
+                uv_primvar.Set(uvs_np)
+
             # Store the prototype path
             self._meshes[name] = mesh_prim
+
+            # Bind material for deformable meshes (distinct color per group)
+            if "/model/deformable/" in name:
+                try:
+                    group_idx = int(name.rsplit("_", 1)[-1])
+                except (ValueError, IndexError):
+                    group_idx = 0
+                color = ViewerBase._shape_color_map(group_idx)
+                mat_path = self._create_material(color, roughness=0.8, metallic=0.0)
+                binding_api = UsdShade.MaterialBindingAPI.Apply(mesh_prim.GetPrim())
+                binding_api.Bind(UsdShade.Material(self.stage.GetPrimAtPath(mat_path)))
 
         mesh_prim = self._meshes[name]
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
@@ -251,11 +278,6 @@ class ViewerUSD(ViewerBase):
             normals_np = normals.numpy().astype(np.float32)
             mesh_prim.GetNormalsAttr().Set(normals_np, self._frame_index)
             mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-
-        # Set UVs if provided (simplified for now)
-        if uvs is not None:
-            # TODO: Implement UV support for USD meshes
-            pass
 
         # how to hide the prototype mesh but not the instances in USD?
         mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
@@ -304,6 +326,15 @@ class ViewerUSD(ViewerBase):
 
                 UsdGeom.Imageable(instance).GetVisibilityAttr().Set("inherited" if not hidden else "invisible")
                 _usd_add_xform(instance)
+
+                # Bind material to instance
+                if mesh in self._mesh_materials:
+                    mat_color, mat_roughness, mat_metallic, mat_texture = self._mesh_materials[mesh]
+                    # Use per-instance color if available, otherwise material color
+                    inst_color = tuple(float(c) for c in colors[i]) if colors is not None else mat_color
+                    mat_path = self._create_material(inst_color, mat_roughness, mat_metallic, mat_texture)
+                    binding_api = UsdShade.MaterialBindingAPI.Apply(instance)
+                    binding_api.Bind(UsdShade.Material(self.stage.GetPrimAtPath(mat_path)))
 
             # update transform
             if xforms is not None:
@@ -528,6 +559,70 @@ class ViewerUSD(ViewerBase):
         return instancer.GetPath()
 
     @override
+    def log_particle_spheres(self, name, points, radii, colors, hidden=False):
+        """Render particles as instanced spheres using UsdGeom.PointInstancer.
+
+        Args:
+            name: Identifier for the particle instancer.
+            points: Particle positions (wp.array of vec3).
+            radii: Particle radii (wp.array of float).
+            colors: Particle colors (wp.array of vec3 or None).
+            hidden: Whether the particles should be hidden.
+        """
+        path = self._get_path(name)
+
+        if name not in self._instancers:
+            self._ensure_scopes_for_path(self.stage, path)
+
+            instancer = UsdGeom.PointInstancer.Define(self.stage, path)
+
+            # Create sphere prototype
+            sphere_path = path + "/proto_sphere"
+            sphere = UsdGeom.Sphere.Define(self.stage, sphere_path)
+            sphere.GetRadiusAttr().Set(1.0)
+
+            instancer.CreatePrototypesRel().SetTargets([sphere.GetPath()])
+            UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
+                "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex, 1
+            )
+
+            self._instancers[name] = instancer
+
+        instancer = self._instancers[name]
+
+        if points is not None:
+            points_np = points.numpy().astype(np.float32)
+            num_particles = len(points_np)
+
+            instancer.GetPositionsAttr().Set(points_np, self._frame_index)
+            instancer.GetProtoIndicesAttr().Set([0] * num_particles, self._frame_index)
+            instancer.CreateIdsAttr().Set(list(range(num_particles)))
+
+            # Set scales from radii
+            if isinstance(radii, wp.array):
+                radii_np = radii.numpy().astype(np.float32)
+            elif np.isscalar(radii):
+                radii_np = np.full(num_particles, float(radii), dtype=np.float32)
+            else:
+                radii_np = np.array(radii, dtype=np.float32)
+
+            scales = np.column_stack([radii_np, radii_np, radii_np])
+            instancer.GetScalesAttr().Set(scales, self._frame_index)
+
+            # Identity orientations
+            orientations = [Gf.Quath(1.0, 0.0, 0.0, 0.0)] * num_particles
+            instancer.GetOrientationsAttr().Set(orientations, self._frame_index)
+
+            if colors is not None:
+                colors_np = self._promote_colors_to_array(colors, num_particles)
+                displayColor = UsdGeom.PrimvarsAPI(instancer).GetPrimvar("displayColor")
+                displayColor.Set(colors_np, self._frame_index)
+                indices = Vt.IntArray(range(num_particles))
+                displayColor.SetIndices(indices, self._frame_index)
+
+        instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
+
+    @override
     def log_array(self, name, array):
         """
         Log array data (not implemented for USD backend).
@@ -544,6 +639,133 @@ class ViewerUSD(ViewerBase):
         This method is a placeholder and does not log scalar values in the USD backend.
         """
         pass
+
+    def _create_material(self, color, roughness=0.5, metallic=0.0, texture=None):
+        """Create or reuse a UsdPreviewSurface material.
+
+        Args:
+            color: RGB color tuple/list (0-1 range).
+            roughness: Surface roughness (0-1).
+            metallic: Metallic value (0-1).
+            texture: Texture file path string, numpy image array, or None.
+
+        Returns:
+            str: USD path of the created/cached material.
+        """
+        color_tuple = (float(color[0]), float(color[1]), float(color[2]))
+        texture_key = None
+        if texture is not None:
+            if isinstance(texture, str):
+                texture_key = texture
+            elif isinstance(texture, np.ndarray):
+                texture_key = hash(texture.tobytes())
+            else:
+                texture_key = id(texture)
+
+        mat_key = (color_tuple, float(roughness), float(metallic), texture_key)
+        if mat_key in self._materials:
+            return self._materials[mat_key]
+
+        mat_idx = len(self._materials)
+        mat_path = f"/root/materials/material_{mat_idx}"
+        self._ensure_scopes_for_path(self.stage, mat_path)
+
+        material = UsdShade.Material.Define(self.stage, mat_path)
+        shader = UsdShade.Shader.Define(self.stage, mat_path + "/preview_surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(float(roughness))
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(float(metallic))
+
+        diffuse_input = shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+
+        if texture is not None:
+            # Export texture file and create texture shader
+            tex_rel_path = self._export_texture(texture)
+            if tex_rel_path is not None:
+                tex_shader = UsdShade.Shader.Define(self.stage, mat_path + "/texture")
+                tex_shader.CreateIdAttr("UsdUVTexture")
+                tex_shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(tex_rel_path)
+                tex_shader.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+                tex_shader.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+                tex_output = tex_shader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+
+                # Primvar reader for UVs
+                pv_reader = UsdShade.Shader.Define(self.stage, mat_path + "/primvar_reader")
+                pv_reader.CreateIdAttr("UsdPrimvarReader_float2")
+                pv_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+                pv_output = pv_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+                tex_shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(pv_output)
+                diffuse_input.ConnectToSource(tex_output)
+            else:
+                diffuse_input.Set(Gf.Vec3f(*color_tuple))
+        else:
+            diffuse_input.Set(Gf.Vec3f(*color_tuple))
+
+        surface_output = shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        material.CreateSurfaceOutput().ConnectToSource(surface_output)
+
+        self._materials[mat_key] = mat_path
+        return mat_path
+
+    def _export_texture(self, texture):
+        """Export a texture to the textures/ subdirectory next to the USD output file.
+
+        Args:
+            texture: File path string or numpy image array.
+
+        Returns:
+            str: Relative asset path for USD reference (e.g., "./textures/texture_0.png"),
+                 or None if export failed.
+        """
+        import shutil  # noqa: PLC0415
+
+        if self._texture_dir is None:
+            output_dir = os.path.dirname(os.path.abspath(self.output_path))
+            self._texture_dir = os.path.join(output_dir, "textures")
+            os.makedirs(self._texture_dir, exist_ok=True)
+
+        tex_idx = len(os.listdir(self._texture_dir))
+
+        if isinstance(texture, str):
+            # Copy existing file
+            if os.path.isfile(texture):
+                ext = os.path.splitext(texture)[1] or ".png"
+                dest_name = f"texture_{tex_idx}{ext}"
+                dest_path = os.path.join(self._texture_dir, dest_name)
+                shutil.copy2(texture, dest_path)
+                return f"./textures/{dest_name}"
+            return None
+        elif isinstance(texture, np.ndarray):
+            # Write numpy array as raw PPM (avoids PIL dependency)
+            dest_name = f"texture_{tex_idx}.ppm"
+            dest_path = os.path.join(self._texture_dir, dest_name)
+            img = texture
+            if img.dtype != np.uint8:
+                img = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+            if img.ndim == 2:
+                img = np.stack([img, img, img], axis=-1)
+            elif img.shape[-1] == 4:
+                img = img[..., :3]
+            h, w = img.shape[:2]
+            with open(dest_path, "wb") as f:
+                f.write(f"P6\n{w} {h}\n255\n".encode())
+                f.write(img.tobytes())
+            return f"./textures/{dest_name}"
+        return None
+
+    @override
+    def log_material_info(self, mesh_name, color, roughness, metallic, texture):
+        """Store material info for a mesh prototype to be applied during instancing.
+
+        Args:
+            mesh_name: The mesh prototype name.
+            color: RGB color (vec3 or tuple).
+            roughness: Surface roughness.
+            metallic: Metallic value.
+            texture: Texture data or None.
+        """
+        self._mesh_materials[mesh_name] = (color, roughness, metallic, texture)
 
     def _promote_colors_to_array(self, colors, num_items):
         """
