@@ -138,7 +138,8 @@ class ViewerUSD(ViewerBase):
         self.stage.SetDefaultPrim(self.root.GetPrim())
 
         # Track meshes and instancers
-        self._meshes = {}  # mesh_name -> prototype_path
+        self._meshes = {}  # mesh_name -> UsdGeom.Mesh (for animated/deformable meshes)
+        self._mesh_data = {}  # mesh_name -> dict of topology data (for hidden prototypes, not written to USD)
         self._instancers = {}  # instancer_name -> UsdGeomPointInstancer
         self._points = {}  # point_name -> UsdGeomPoints
 
@@ -151,7 +152,66 @@ class ViewerUSD(ViewerBase):
         self._frame_index = 0
         self._frame_count = 0
 
+        # Set of shape batch names to skip (redundant sub-parts for Blender)
+        self._skip_shape_batches: set[str] = set()
+
         self.set_model(None)
+
+    @override
+    def set_model(self, model, max_worlds=None):
+        super().set_model(model, max_worlds)
+        if model is not None:
+            self._build_redundant_visual_filter()
+
+    def _build_redundant_visual_filter(self):
+        """Identify redundant visual sub-parts to skip in USD export.
+
+        URDF models often define multiple <visual> elements per link: a detailed
+        mesh alongside small sub-parts (brackets, buttons, bolts). In the GL viewer
+        these sub-parts are hidden behind the main mesh, but in Blender they protrude
+        due to different depth ordering. For each body with multiple VIS-only MESH shapes,
+        mark the smaller sub-parts for skipping when the body has a significantly
+        larger primary visual mesh.
+        """
+        from collections import defaultdict  # noqa: PLC0415
+
+        import newton  # noqa: PLC0415
+
+        shape_body = self.model.shape_body.numpy()
+        shape_flags = self.model.shape_flags.numpy()
+        shape_type = self.model.shape_type.numpy()
+        shape_src = self.model.shape_source
+        VIS = int(newton.ShapeFlags.VISIBLE)
+        COL = int(newton.ShapeFlags.COLLIDE_SHAPES)
+        MESH = int(newton.GeoType.MESH)
+
+        # Group VIS-only MESH shapes by body, recording vertex count per shape
+        body_vis_shapes = defaultdict(list)
+        for s in range(self.model.shape_count):
+            if shape_type[s] != MESH:
+                continue
+            if not (shape_flags[s] & VIS) or (shape_flags[s] & COL):
+                continue
+            src = shape_src[s]
+            nv = len(src.vertices) if src and hasattr(src, "vertices") and src.vertices is not None else 0
+            body_vis_shapes[shape_body[s]].append((s, nv))
+
+        # For bodies with multiple VIS meshes, skip sub-parts that are much smaller
+        # than the primary visual mesh (less than 25% of max vertex count)
+        skip_shapes = set()
+        for _body, shapes in body_vis_shapes.items():
+            if len(shapes) <= 1:
+                continue
+            max_verts = max(nv for _, nv in shapes)
+            threshold = max_verts * 0.25
+            for s, nv in shapes:
+                if nv < threshold:
+                    skip_shapes.add(s)
+
+        # Map shape indices to batch names for filtering in log_instances()
+        for batch in self._shape_instances.values():
+            if any(s in skip_shapes for s in batch.model_shapes):
+                self._skip_shape_batches.add(batch.name)
 
     @override
     def begin_frame(self, time):
@@ -242,6 +302,23 @@ class ViewerUSD(ViewerBase):
         points_np = points.numpy().astype(np.float32)
         indices_np = indices.numpy().astype(np.uint32)
 
+        # For hidden prototypes (geometry referenced by instances), store mesh data
+        # in memory only — do NOT create a USD prim. Blender's USD importer renders
+        # prototype prims even when marked invisible, so we avoid creating them.
+        if hidden:
+            if name not in self._mesh_data:
+                normals_np = normals.numpy().astype(np.float32) if normals is not None else None
+                uvs_np = uvs.numpy().astype(np.float32) if uvs is not None else None
+                self._mesh_data[name] = {
+                    "points": points_np,
+                    "indices": indices_np,
+                    "face_vertex_counts": [3] * (len(indices_np) // 3),
+                    "normals": normals_np,
+                    "uvs": uvs_np,
+                    "num_verts": len(points_np),
+                }
+            return
+
         if name not in self._meshes:
             self._ensure_scopes_for_path(self.stage, self._get_path(name))
 
@@ -251,6 +328,7 @@ class ViewerUSD(ViewerBase):
             face_vertex_counts = [3] * (len(indices_np) // 3)
             mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
             mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
+            mesh_prim.GetSubdivisionSchemeAttr().Set("none")
 
             # Set UVs once with topology (not time-sampled)
             if uvs is not None:
@@ -263,21 +341,12 @@ class ViewerUSD(ViewerBase):
                 )
                 uv_primvar.Set(uvs_np)
 
-            # Store the prototype path
+            # Store the mesh prim
             self._meshes[name] = mesh_prim
 
-            # For hidden prototypes (geometry referenced by instances), set visibility
-            # as a default value (not time-sampled) so Blender respects it.
-            if hidden:
-                mesh_prim.GetVisibilityAttr().Set("invisible")
-
-            # Bind material for deformable meshes (distinct color per group)
+            # Bind material for deformable meshes (warm cloth color matching GL viewer)
             if "/model/deformable/" in name:
-                try:
-                    group_idx = int(name.rsplit("_", 1)[-1])
-                except (ValueError, IndexError):
-                    group_idx = 0
-                color = ViewerBase._shape_color_map(group_idx)
+                color = (0.7, 0.6, 0.4)
                 mat_path = self._create_material(color, roughness=0.8, metallic=0.0)
                 binding_api = UsdShade.MaterialBindingAPI.Apply(mesh_prim.GetPrim())
                 binding_api.Bind(UsdShade.Material(self.stage.GetPrimAtPath(mat_path)))
@@ -310,10 +379,19 @@ class ViewerUSD(ViewerBase):
             materials: Array of materials.
             hidden: Whether the instances are hidden.
         """
-        # Get prototype path
-        if mesh not in self._meshes:
-            msg = f"Mesh prototype '{mesh}' not found for log_instances(). Call log_mesh() first."
+        # Get mesh topology data (stored in memory, not as a USD prim)
+        if mesh not in self._mesh_data:
+            msg = f"Mesh data '{mesh}' not found for log_instances(). Call log_mesh() first."
             raise RuntimeError(msg)
+
+        # Skip hidden instances entirely — Blender's USD importer does not reliably
+        # respect visibility="invisible" on instance prims with internal references.
+        if hidden:
+            return
+
+        # Skip redundant visual sub-parts (small URDF sub-meshes that protrude in Blender)
+        if name in self._skip_shape_batches:
+            return
 
         self._ensure_scopes_for_path(self.stage, self._get_path(name) + "/scope")
 
@@ -328,21 +406,40 @@ class ViewerUSD(ViewerBase):
         if colors:
             colors = colors.numpy()
 
+        mesh_info = self._mesh_data[mesh]
+
         for i in range(len(xforms)):
             instance_path = self._get_path(name) + f"/instance_{i}"
             instance = self.stage.GetPrimAtPath(instance_path)
 
             if not instance:
-                instance = self.stage.DefinePrim(instance_path)
-                instance.GetReferences().AddInternalReference(self._get_path(mesh))
+                # Define mesh data directly on each instance (no prototype references)
+                mesh_prim = UsdGeom.Mesh.Define(self.stage, instance_path)
+                mesh_prim.GetFaceVertexCountsAttr().Set(mesh_info["face_vertex_counts"])
+                mesh_prim.GetFaceVertexIndicesAttr().Set(mesh_info["indices"])
+                mesh_prim.GetPointsAttr().Set(mesh_info["points"])
 
-                UsdGeom.Imageable(instance).GetVisibilityAttr().Set("inherited" if not hidden else "invisible")
+                # Disable subdivision — Blender applies Catmull-Clark by default
+                # which distorts meshes (especially low-poly collision proxies).
+                mesh_prim.GetSubdivisionSchemeAttr().Set("none")
+
+                if mesh_info["uvs"] is not None:
+                    primvars_api = UsdGeom.PrimvarsAPI(mesh_prim)
+                    uv_primvar = primvars_api.CreatePrimvar(
+                        "st",
+                        Sdf.ValueTypeNames.TexCoord2fArray,
+                        UsdGeom.Tokens.vertex
+                        if len(mesh_info["uvs"]) == mesh_info["num_verts"]
+                        else UsdGeom.Tokens.faceVarying,
+                    )
+                    uv_primvar.Set(mesh_info["uvs"])
+
+                instance = mesh_prim.GetPrim()
                 _usd_add_xform(instance)
 
                 # Bind material to instance
                 if mesh in self._mesh_materials:
                     mat_color, mat_roughness, mat_metallic, mat_texture = self._mesh_materials[mesh]
-                    # Use per-instance color if available, otherwise material color
                     inst_color = tuple(float(c) for c in colors[i]) if colors is not None else mat_color
                     mat_path = self._create_material(inst_color, mat_roughness, mat_metallic, mat_texture)
                     binding_api = UsdShade.MaterialBindingAPI.Apply(instance)
@@ -377,7 +474,7 @@ class ViewerUSD(ViewerBase):
             RuntimeError: If the mesh prototype is not found.
         """
         # Get prototype path
-        if mesh not in self._meshes:
+        if mesh not in self._meshes and mesh not in self._mesh_data:
             msg = f"Mesh prototype '{mesh}' not found for log_instances(). Call log_mesh() first."
             raise RuntimeError(msg)
 
@@ -460,6 +557,10 @@ class ViewerUSD(ViewerBase):
             hidden: Whether the lines are hidden (bool)
         """
 
+        # Skip hidden or empty debug visualizations — Blender ignores USD visibility flags
+        if hidden or starts is None or ends is None:
+            return
+
         if name not in self._instancers:
             self._ensure_scopes_for_path(self.stage, self._get_path(name))
 
@@ -524,6 +625,10 @@ class ViewerUSD(ViewerBase):
 
     @override
     def log_points(self, name, points, radii, colors, hidden=False):
+        # Skip hidden debug visualizations — Blender ignores USD visibility flags
+        if hidden:
+            return
+
         num_points = len(points)
 
         if np.isscalar(radii):
