@@ -2,7 +2,6 @@
 
 import os
 import subprocess
-import sys
 
 # Forward simulation examples only (excludes diffsim, IK, selection, sensor, recording/replay)
 EXAMPLES = [
@@ -33,7 +32,7 @@ EXAMPLES = [
     "nut_bolt_hydro",
     "nut_bolt_sdf",
     # MPM
-    "mpm_anymal",
+    "mpm_anymal",  # requires torch
     "mpm_grain_rendering",
     "mpm_granular",
     "mpm_multi_material",
@@ -45,7 +44,7 @@ EXAMPLES = [
     "softbody_hanging",
     # Robot
     "robot_allegro_hand",
-    "robot_anymal_c_walk",
+    "robot_anymal_c_walk",  # requires torch
     "robot_anymal_d",
     "robot_cartpole",
     "robot_g1",
@@ -55,22 +54,28 @@ EXAMPLES = [
     "robot_ur10",
 ]
 
+# Examples that require PyTorch (torch)
+TORCH_REQUIRED = {
+    "mpm_anymal",
+    "robot_anymal_c_walk",
+}
+
 
 def main():
     print("\n=== Newton USD Export ===\n")
     print("Available forward-simulation examples:\n")
 
     # Print numbered list in columns
-    col_width = 35
+    col_width = 40
     per_row = 2
     for i, name in enumerate(EXAMPLES):
-        entry = f"  [{i + 1:2d}] {name}"
+        tag = " [torch]" if name in TORCH_REQUIRED else ""
+        entry = f"  [{i + 1:2d}] {name}{tag}"
         if (i + 1) % per_row == 0 or i == len(EXAMPLES) - 1:
             print(entry)
         else:
             print(entry.ljust(col_width), end="")
 
-    # Select example
     print()
     while True:
         choice = input("Select example number (or 'q' to quit): ").strip()
@@ -101,24 +106,28 @@ def main():
     if output_path_input:
         output_path = output_path_input
 
-    # Build command
-    cmd = [
-        sys.executable,
-        "-m",
-        "newton.examples",
-        example_name,
-        "--viewer",
-        "usd",
-        "--output-path",
-        output_path,
-        "--num-frames",
-        str(num_frames),
-        "--device",
-        device,
-    ]
+    # Build command — use uv run so dependencies are resolved properly
+    cmd = ["uv", "run", "--extra", "examples"]
+    if example_name in TORCH_REQUIRED:
+        cmd.extend(["--extra", "torch-cu12"])
+    cmd.extend(
+        [
+            "-m",
+            "newton.examples",
+            example_name,
+            "--viewer",
+            "usd",
+            "--output-path",
+            output_path,
+            "--num-frames",
+            str(num_frames),
+            "--device",
+            device,
+        ]
+    )
 
     print(f"\nRunning: {' '.join(cmd)}\n")
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, check=False)
 
     if result.returncode == 0:
         abs_path = os.path.abspath(output_path)
