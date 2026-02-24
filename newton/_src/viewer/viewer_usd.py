@@ -270,6 +270,7 @@ class ViewerUSD(ViewerBase):
             mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
             mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
             mesh_prim.GetSubdivisionSchemeAttr().Set("none")
+            mesh_prim.GetDoubleSidedAttr().Set(True)
 
             # Set UVs once with topology (not time-sampled)
             if uvs is not None:
@@ -359,6 +360,9 @@ class ViewerUSD(ViewerBase):
                 # Disable subdivision — Blender applies Catmull-Clark by default
                 # which distorts meshes (especially low-poly collision proxies).
                 mesh_prim.GetSubdivisionSchemeAttr().Set("none")
+                # Render both sides — URDF .dae meshes often have inconsistent face
+                # winding, and Blender's backface culling creates holes without this.
+                mesh_prim.GetDoubleSidedAttr().Set(True)
 
                 if mesh_info["uvs"] is not None:
                     primvars_api = UsdGeom.PrimvarsAPI(mesh_prim)
