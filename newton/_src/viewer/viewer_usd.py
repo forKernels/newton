@@ -712,7 +712,9 @@ class ViewerUSD(ViewerBase):
 
         mat_idx = len(self._materials)
         mat_path = f"/root/materials/material_{mat_idx}"
-        self._ensure_scopes_for_path(self.stage, mat_path)
+        # Do NOT use _ensure_scopes_for_path here — it creates a "Scope" prim
+        # at /root/materials which Blender imports as an Empty object, preventing
+        # material discovery. UsdShade.Material.Define() handles parent creation.
 
         material = UsdShade.Material.Define(self.stage, mat_path)
         shader = UsdShade.Shader.Define(self.stage, mat_path + "/preview_surface")
@@ -800,7 +802,10 @@ class ViewerUSD(ViewerBase):
 
     @override
     def log_material_info(self, mesh_name, color, roughness, metallic, texture):
-        """Store material info for a mesh prototype to be applied during instancing.
+        """Store material info and eagerly create the USD material.
+
+        Materials must be defined in the USD before the meshes that reference them,
+        because Blender's USD importer does not resolve forward references to materials.
 
         Args:
             mesh_name: The mesh prototype name.
@@ -810,6 +815,9 @@ class ViewerUSD(ViewerBase):
             texture: Texture data or None.
         """
         self._mesh_materials[mesh_name] = (color, roughness, metallic, texture)
+        # Pre-create the material so it appears early in the USD file
+        color_tuple = tuple(float(c) for c in color[:3])
+        self._create_material(color_tuple, roughness, metallic, texture)
 
     def _promote_colors_to_array(self, colors, num_items):
         """
