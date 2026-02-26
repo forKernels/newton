@@ -183,7 +183,9 @@ def _load_cloth_mesh_from_path(cloth_path: str, cloth_usd_prim_path: str | None 
         try:
             import trimesh  # noqa: PLC0415
         except ImportError as e:
-            raise ImportError("Loading OBJ cloth meshes requires trimesh. Install with `uv sync --extra examples`.") from e
+            raise ImportError(
+                "Loading OBJ cloth meshes requires trimesh. Install with `uv sync --extra examples`."
+            ) from e
 
         mesh = trimesh.load(cloth_path, force="mesh")
         if isinstance(mesh, trimesh.Scene):
@@ -328,7 +330,9 @@ def _estimate_world_bbox_for_placed_cloth(
     c = float(np.cos(yaw))
     s = float(np.sin(yaw))
     rot = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-    verts_world = (verts * float(scale)) @ rot.T + np.array([float(pos[0]), float(pos[1]), float(pos[2])], dtype=np.float32)
+    verts_world = (verts * float(scale)) @ rot.T + np.array(
+        [float(pos[0]), float(pos[1]), float(pos[2])], dtype=np.float32
+    )
     return np.min(verts_world, axis=0), np.max(verts_world, axis=0)
 
 
@@ -341,77 +345,83 @@ def _build_bbox_robot_key_poses(
     clamp_open_activation_val: float,
     clamp_close_activation_val: float,
 ) -> np.ndarray:
-    """Build a simple bbox-driven pickup/fold trajectory [N, 9]."""
+    """Build a bbox-driven pickup/fold trajectory [N, 9].
+
+    Generates multiple pick-drag-release cycles that fold the garment
+    from its edges toward the center, similar to the hardcoded default
+    trajectory but adapted to each garment's world-space bounding box.
+
+    All targets are clamped to the Franka's reachable workspace:
+        X: [-0.30, 0.31],  Y: [-0.60, -0.21],  Z: [support_z, support_z+0.20]
+    """
     bbox_min = np.asarray(bbox_min, dtype=np.float32)
     bbox_max = np.asarray(bbox_max, dtype=np.float32)
-    anchor_pos = np.asarray(anchor_pos, dtype=np.float32)
     center = 0.5 * (bbox_min + bbox_max)
-    extent = np.maximum(bbox_max - bbox_min, np.array([1e-3, 1e-3, 1e-3], dtype=np.float32))
 
-    # Pick a grasp point using the *placed cloth anchor* as the primary reference.
-    # External garment meshes are often hanging/vertical, so bbox top is not a useful
-    # grasp height for tabletop manipulation.
-    center[:2] = anchor_pos[:2]
+    # Franka reachable workspace (from the working default key poses)
+    X_LO, X_HI = -0.30, 0.31
+    Y_LO, Y_HI = -0.60, -0.21
 
-    # Pick a grasp point on one edge of the garment based on the longer planar axis.
-    planar_extent = extent[:2]
-    long_axis = int(np.argmax(planar_extent))
-    axis_sign = -1.0 if center[1] > -0.35 else 1.0
-    grasp = center.copy()
-    grasp[long_axis] += axis_sign * 0.28 * planar_extent[long_axis]
-    grasp[2] = float(support_z + 0.025)
+    # Clamp the garment bbox to the reachable zone for pick targets
+    reach_x_lo = float(np.clip(bbox_min[0], X_LO, X_HI))
+    reach_x_hi = float(np.clip(bbox_max[0], X_LO, X_HI))
+    reach_y_lo = float(np.clip(bbox_min[1], Y_LO, Y_HI))
+    reach_y_hi = float(np.clip(bbox_max[1], Y_LO, Y_HI))
+    reach_cx = 0.5 * (reach_x_lo + reach_x_hi)
+    reach_cy = 0.5 * (reach_y_lo + reach_y_hi)
 
-    # Keep the target in a stable reachable workspace for the Franka in this scene.
-    # We clamp to a conservative region that matches the original example motions.
-    grasp[0] = np.clip(grasp[0], -0.30, 0.30)
-    grasp[1] = np.clip(grasp[1], -0.62, -0.20)
+    # Z heights relative to table surface
+    table_z = float(support_z)
+    hover_z = float(np.clip(table_z + 0.15, 0.22, 0.40))
+    down_z = float(np.clip(table_z + 0.01, 0.15, 0.30))
+    grab_z = float(np.clip(table_z + 0.005, 0.15, 0.30))
+    lift_z = float(np.clip(table_z + 0.12, 0.22, 0.38))
+    place_z = float(np.clip(table_z + 0.03, 0.16, 0.34))
 
-    hover_z = float(np.clip(support_z + 0.18, 0.22, 0.42))
-    pregrasp_z = float(np.clip(support_z + 0.045, 0.18, 0.34))
-    # Aim close to the support surface so the fingers actually engage the cloth.
-    grasp_z = float(np.clip(support_z + 0.008, 0.15, 0.32))
-    press_z = float(np.clip(support_z + 0.004, 0.15, 0.31))
-    lift_z = float(np.clip(support_z + 0.16, 0.24, 0.44))
-
-    # Identity rotation quaternion [w, x, y, z] as used by the base example.
+    grip_open = clamp_open_activation_val
+    grip_close = clamp_close_activation_val
     quat = [1.0, 0.0, 0.0, 0.0]
 
-    def kp(duration: float, x: float, y: float, z: float, grip: float) -> list[float]:
-        return [duration, x, y, z, *quat, grip]
+    def kp(dur: float, x: float, y: float, z: float, grip: float) -> list[float]:
+        return [dur, float(np.clip(x, X_LO, X_HI)), float(np.clip(y, Y_LO, Y_HI)), z, *quat, grip]
 
-    key_poses: list[list[float]] = [
-        kp(2.0, float(grasp[0]), float(grasp[1]), hover_z, clamp_open_activation_val),
-        kp(1.6, float(grasp[0]), float(grasp[1]), pregrasp_z, clamp_open_activation_val),
-        kp(1.1, float(grasp[0]), float(grasp[1]), grasp_z, clamp_open_activation_val),
-        kp(0.9, float(grasp[0]), float(grasp[1]), press_z, clamp_open_activation_val),
-        kp(0.9, float(grasp[0]), float(grasp[1]), press_z, clamp_close_activation_val),
-        kp(0.9, float(grasp[0]), float(grasp[1]), grasp_z, clamp_close_activation_val),
-        kp(1.6, float(grasp[0]), float(grasp[1]), lift_z, clamp_close_activation_val),
-    ]
+    def fold_cycle(pick_x: float, pick_y: float, place_x: float, place_y: float) -> list[list[float]]:
+        """One pick-drag-release cycle: hover → down → grab → lift → move → place → release → hover."""
+        return [
+            kp(2.0, pick_x, pick_y, hover_z, grip_open),
+            kp(1.5, pick_x, pick_y, down_z, grip_open),
+            kp(1.0, pick_x, pick_y, grab_z, grip_close),
+            kp(1.5, pick_x, pick_y, lift_z, grip_close),
+            kp(2.0, place_x, place_y, lift_z, grip_close),
+            kp(1.5, place_x, place_y, place_z, grip_close),
+            kp(0.8, place_x, place_y, place_z, grip_open),
+            kp(1.0, place_x, place_y, hover_z, grip_open),
+        ]
+
+    key_poses: list[list[float]] = []
 
     if mode == "bbox-fold":
-        fold_axis = 1 - long_axis
-        fold_dir = np.zeros(2, dtype=np.float32)
-        fold_dir[fold_axis] = -1.0 if center[fold_axis] > -0.35 else 1.0
-        fold_translate = float(np.clip(max(0.12, 0.45 * planar_extent[fold_axis]), 0.12, 0.22))
-        fold_xy = grasp[:2].copy()
-        fold_xy += fold_dir * fold_translate
-        fold_xy[0] = float(np.clip(fold_xy[0], -0.30, 0.30))
-        fold_xy[1] = float(np.clip(fold_xy[1], -0.62, -0.20))
-        place_z = float(np.clip(support_z + 0.03, 0.16, 0.34))
-        key_poses.extend(
-            [
-                kp(1.6, float(fold_xy[0]), float(fold_xy[1]), lift_z, clamp_close_activation_val),
-                kp(1.5, float(fold_xy[0]), float(fold_xy[1]), place_z, clamp_close_activation_val),
-                kp(0.7, float(fold_xy[0]), float(fold_xy[1]), place_z, clamp_open_activation_val),
-                kp(1.0, float(fold_xy[0]), float(fold_xy[1]), hover_z, clamp_open_activation_val),
-            ]
-        )
+        # Generate 4 fold cycles from the edges toward the center,
+        # matching the default trajectory's pattern of: top-right, bottom-right,
+        # top-left, bottom corners.
+        # Fold 1: +X edge → center (right side toward middle)
+        key_poses.extend(fold_cycle(reach_x_hi, reach_cy, reach_cx, reach_cy))
+        # Fold 2: -X edge → center (left side toward middle)
+        key_poses.extend(fold_cycle(reach_x_lo, reach_cy, reach_cx, reach_cy))
+        # Fold 3: far Y edge → center (top toward middle)
+        key_poses.extend(fold_cycle(reach_cx, reach_y_lo, reach_cx, reach_cy))
+        # Fold 4: near Y edge → center (bottom toward middle)
+        key_poses.extend(fold_cycle(reach_cx, reach_y_hi, reach_cx, reach_cy))
     else:
+        # bbox-grasp: single pick-lift-release
         key_poses.extend(
             [
-                kp(0.7, float(grasp[0]), float(grasp[1]), lift_z, clamp_open_activation_val),
-                kp(0.8, float(grasp[0]), float(grasp[1]), hover_z, clamp_open_activation_val),
+                kp(2.0, reach_cx, reach_cy, hover_z, grip_open),
+                kp(1.5, reach_cx, reach_cy, down_z, grip_open),
+                kp(1.0, reach_cx, reach_cy, grab_z, grip_close),
+                kp(1.5, reach_cx, reach_cy, lift_z, grip_close),
+                kp(0.8, reach_cx, reach_cy, lift_z, grip_open),
+                kp(1.0, reach_cx, reach_cy, hover_z, grip_open),
             ]
         )
 
@@ -469,9 +479,7 @@ class Example:
         self.scene_usd_path = getattr(args, "scene_usd_path", None) if args is not None else None
         self.scene_root_path = getattr(args, "scene_root_path", "/") if args is not None else "/"
         self.scene_apply_up_axis = getattr(args, "scene_apply_up_axis", False) if args is not None else False
-        self.scene_use_default_table = (
-            getattr(args, "scene_use_default_table", True) if args is not None else True
-        )
+        self.scene_use_default_table = getattr(args, "scene_use_default_table", True) if args is not None else True
         self.platform_enable = getattr(args, "platform_enable", True) if args is not None else True
         # Match cloth_franka table: center=(0, -0.5, 0.1), half=(0.4, 0.4, 0.1), top_z=0.2
         platform_pos = getattr(args, "platform_pos", (0.0, -0.5, 0.1)) if args is not None else (0.0, -0.5, 0.1)
@@ -642,7 +650,11 @@ class Example:
 
             self.scene.color()
 
-        if self.add_robot and self.trajectory_json_path is None and self.robot_target_mode in {"bbox-grasp", "bbox-fold"}:
+        if (
+            self.add_robot
+            and self.trajectory_json_path is None
+            and self.robot_target_mode in {"bbox-grasp", "bbox-fold"}
+        ):
             self._configure_bbox_robot_targets()
 
         self.scene.add_ground_plane()
@@ -1118,7 +1130,7 @@ class Example:
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    import argparse  # noqa: PLC0415
+    import argparse
 
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=3850)
