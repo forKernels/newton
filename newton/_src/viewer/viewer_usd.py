@@ -16,16 +16,28 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import numpy as np
 import warp as wp
 
 from ..core.types import override
 
+if sys.platform.startswith("win") and hasattr(os, "add_dll_directory"):
+    _usd_root = os.environ.get("OPENUSD_ROOT") or os.environ.get("USD_ROOT")
+    if _usd_root and os.path.isdir(_usd_root):
+        for _subdir in ("bin", "lib"):
+            _dll_dir = os.path.join(_usd_root, _subdir)
+            if os.path.isdir(_dll_dir):
+                os.add_dll_directory(_dll_dir)
+
 try:
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
-except ImportError:
+except ImportError as e:
     Gf = Sdf = Usd = UsdGeom = UsdShade = Vt = None
+    _PXR_IMPORT_ERROR = e
+else:
+    _PXR_IMPORT_ERROR = None
 
 from .viewer import ViewerBase
 
@@ -97,7 +109,10 @@ class ViewerUSD(ViewerBase):
             ImportError: If the usd-core package is not installed.
         """
         if Usd is None:
-            raise ImportError("usd-core package is required for ViewerUSD. Install with: pip install usd-core")
+            raise ImportError(
+                "usd-core/pxr is unavailable for ViewerUSD. On Windows with a local OpenUSD install, set "
+                "OPENUSD_ROOT (or USD_ROOT) so <root>\\bin can be added to the DLL search path."
+            ) from _PXR_IMPORT_ERROR
 
         super().__init__()
 
