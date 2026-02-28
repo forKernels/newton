@@ -1,0 +1,375 @@
+<!--
+  Pool Table — MuJoCo XML for Newton Physics Engine
+  
+  9-Foot Table (Standard American Pool)
+  Playing surface: 1.27m × 2.54m (50" × 100")
+  Ball diameter: 0.05715m (2.25")
+  Ball mass: 0.170 kg (6 oz)
+  
+  Coordinate system: Y-up
+    X = table width (short axis)
+    Y = up
+    Z = table length (long axis)
+  
+  Table center is at origin. Playing surface at Y = 0.78m (standard table height).
+  
+  Usage:
+    builder = newton.ModelBuilder()
+    builder.add_mjcf("pool_table.xml")
+    model = builder.finalize()
+    solver = newton.SolverMuJoCo()
+    
+  To break:
+    Set cue ball velocity: state.body_qd[0] = [0, 0, 3.5, 0, 0, 0]
+    (3.5 m/s is a medium-hard break)
+    
+  To replace visual meshes:
+    Add <mesh> entries pointing to your Blender-exported OBJ files
+    Reference them in <geom mesh="..."/> tags
+    Keep the primitive collision geometry for stability
+    
+  Ball arrangement (standard 8-ball rack):
+    Cue ball at foot spot: Z = -0.635 (1/4 table length from foot rail)
+    Rack apex at head spot: Z = +0.635 (1/4 table length from head rail)
+    
+  Ball indexing:
+    body 0  = cue ball (white)
+    body 1  = 1-ball (yellow solid)
+    body 2  = 2-ball (blue solid)
+    ...
+    body 8  = 8-ball (black)
+    body 9  = 9-ball (yellow stripe)
+    ...
+    body 15 = 15-ball (maroon stripe)
+-->
+<mujoco model="pool_table">
+
+  <!-- ================================================================ -->
+  <!-- SIMULATION OPTIONS                                               -->
+  <!-- ================================================================ -->
+  <option timestep="0.001" gravity="0 -9.81 0" integrator="implicit"
+          cone="elliptic" noslip_iterations="10">
+    <!-- 
+      Small timestep (1ms) for accurate ball-ball collisions
+      Elliptic friction cone for realistic rolling
+      noslip_iterations prevents balls from sliding when they should roll
+    -->
+  </option>
+
+  <size nconmax="500" njmax="1000"/>
+
+  <!-- ================================================================ -->
+  <!-- DEFAULTS                                                         -->
+  <!-- ================================================================ -->
+  <default>
+    <default class="ball">
+      <geom type="sphere" size="0.028575" 
+            mass="0.170"
+            friction="0.2 0.005 0.001"
+            solref="0.001 1.0"
+            solimp="0.95 0.99 0.001"
+            condim="6"
+            priority="1"
+            contype="1" conaffinity="1"/>
+      <!-- 
+        friction: sliding=0.2, torsional=0.005, rolling=0.001
+        condim=6: full 6D contact (sliding + torsional + rolling)
+        This is critical for spin/English to work correctly
+      -->
+      <joint type="free" damping="0.001" armature="0.00001"/>
+    </default>
+    
+    <default class="cushion">
+      <geom type="box" 
+            friction="0.4 0.01 0.002"
+            solref="0.0005 0.9"
+            solimp="0.9 0.95 0.001"
+            condim="3"
+            contype="1" conaffinity="1"
+            rgba="0.15 0.55 0.15 1"/>
+      <!-- 
+        Cushion rubber: higher friction, some energy loss
+        solref tuned for ~0.85 coefficient of restitution
+      -->
+    </default>
+
+    <default class="rail">
+      <geom type="box" 
+            contype="1" conaffinity="1"
+            friction="0.5 0.01 0.002"
+            rgba="0.35 0.18 0.08 1"/>
+    </default>
+
+    <default class="slate">
+      <geom type="box"
+            contype="1" conaffinity="1"
+            friction="0.2 0.005 0.001"
+            condim="6"
+            rgba="0.12 0.45 0.12 1"/>
+      <!-- Felt-covered slate: same friction model as ball default -->
+    </default>
+  </default>
+
+  <!-- ================================================================ -->
+  <!-- ASSETS (replace with your Blender meshes for visual rendering)   -->
+  <!-- ================================================================ -->
+  <!--
+  <asset>
+    <mesh name="table_visual" file="pool_table_visual.obj" scale="1 1 1"/>
+    <mesh name="ball_visual" file="ball.obj" scale="0.028575 0.028575 0.028575"/>
+  </asset>
+  -->
+
+  <!-- ================================================================ -->
+  <!-- WORLD                                                            -->
+  <!-- ================================================================ -->
+  <worldbody>
+
+    <!-- Floor (below table) -->
+    <geom name="floor" type="plane" size="3 3 0.1" pos="0 0 0"
+          rgba="0.25 0.2 0.18 1" contype="2" conaffinity="2"/>
+
+    <!-- ============================================================ -->
+    <!-- TABLE BED (slate + felt)                                      -->
+    <!-- Playing surface at Y = 0.78m                                  -->
+    <!-- ============================================================ -->
+    <geom name="slate" class="slate"
+          pos="0 0.77 0" size="0.645 0.01 1.28"/>
+    <!-- 
+      size = half-extents: 0.645 = 1.29m/2 (slightly wider than playing area)
+      Slate is 2cm thick, top surface at Y = 0.78
+    -->
+
+    <!-- ============================================================ -->
+    <!-- CUSHIONS — The rubber bumpers balls bounce off                -->
+    <!-- Positioned at ball-center height, angled slightly inward      -->
+    <!-- Cushion nose height = 63.5% of ball diameter = 0.0363m       -->
+    <!-- Ball center height above slate = 0.028575m (one radius)      -->
+    <!-- ============================================================ -->
+    
+    <!-- Long cushions (along Z axis, left and right) -->
+    <!-- Each split into 2 segments with gaps for side pockets -->
+    
+    <!-- Left cushion, foot half (toward -Z) -->
+    <geom name="cushion_L_foot" class="cushion"
+          pos="-0.635 0.8085 -0.57" size="0.015 0.018 0.53"/>
+    
+    <!-- Left cushion, head half (toward +Z) -->
+    <geom name="cushion_L_head" class="cushion"
+          pos="-0.635 0.8085 0.57" size="0.015 0.018 0.53"/>
+    
+    <!-- Right cushion, foot half -->
+    <geom name="cushion_R_foot" class="cushion"
+          pos="0.635 0.8085 -0.57" size="0.015 0.018 0.53"/>
+    
+    <!-- Right cushion, head half -->
+    <geom name="cushion_R_head" class="cushion"
+          pos="0.635 0.8085 0.57" size="0.015 0.018 0.53"/>
+    
+    <!-- Short cushions (along X axis, foot and head) -->
+    <!-- Each split into 2 segments with gaps for corner pockets -->
+    
+    <!-- Foot rail cushion (-Z end), left half -->
+    <geom name="cushion_foot_L" class="cushion"
+          pos="-0.27 0.8085 -1.27" size="0.28 0.018 0.015"/>
+    
+    <!-- Foot rail cushion, right half -->
+    <geom name="cushion_foot_R" class="cushion"
+          pos="0.27 0.8085 -1.27" size="0.28 0.018 0.015"/>
+    
+    <!-- Head rail cushion (+Z end), left half -->
+    <geom name="cushion_head_L" class="cushion"
+          pos="-0.27 0.8085 1.27" size="0.28 0.018 0.015"/>
+    
+    <!-- Head rail cushion, right half -->
+    <geom name="cushion_head_R" class="cushion"
+          pos="0.27 0.8085 1.27" size="0.28 0.018 0.015"/>
+
+    <!-- ============================================================ -->
+    <!-- RAILS — The wooden frame around the table                     -->
+    <!-- These are purely structural, balls shouldn't reach them       -->
+    <!-- ============================================================ -->
+    
+    <!-- Left rail -->
+    <geom name="rail_L" class="rail"
+          pos="-0.685 0.82 0" size="0.04 0.04 1.32"/>
+    
+    <!-- Right rail -->
+    <geom name="rail_R" class="rail"
+          pos="0.685 0.82 0" size="0.04 0.04 1.32"/>
+    
+    <!-- Foot rail -->
+    <geom name="rail_foot" class="rail"
+          pos="0 0.82 -1.32" size="0.725 0.04 0.04"/>
+    
+    <!-- Head rail -->
+    <geom name="rail_head" class="rail"
+          pos="0 0.82 1.32" size="0.725 0.04 0.04"/>
+
+    <!-- ============================================================ -->
+    <!-- POCKET CATCHERS — Angled ramps below pocket openings          -->
+    <!-- Balls that enter pocket gaps fall off the table bed           -->
+    <!-- and are caught by these                                       -->
+    <!-- ============================================================ -->
+    
+    <!-- Corner pocket catchers (4) — angled boxes below table surface -->
+    <geom name="catch_foot_L" type="box" pos="-0.60 0.65 -1.22" size="0.08 0.06 0.08"
+          rgba="0.1 0.1 0.1 1" contype="2" conaffinity="1"/>
+    <geom name="catch_foot_R" type="box" pos="0.60 0.65 -1.22" size="0.08 0.06 0.08"
+          rgba="0.1 0.1 0.1 1" contype="2" conaffinity="1"/>
+    <geom name="catch_head_L" type="box" pos="-0.60 0.65 1.22" size="0.08 0.06 0.08"
+          rgba="0.1 0.1 0.1 1" contype="2" conaffinity="1"/>
+    <geom name="catch_head_R" type="box" pos="0.60 0.65 1.22" size="0.08 0.06 0.08"
+          rgba="0.1 0.1 0.1 1" contype="2" conaffinity="1"/>
+    
+    <!-- Side pocket catchers (2) -->
+    <geom name="catch_side_L" type="box" pos="-0.60 0.65 0" size="0.08 0.06 0.06"
+          rgba="0.1 0.1 0.1 1" contype="2" conaffinity="1"/>
+    <geom name="catch_side_R" type="box" pos="0.60 0.65 0" size="0.08 0.06 0.06"
+          rgba="0.1 0.1 0.1 1" contype="2" conaffinity="1"/>
+
+    <!-- ============================================================ -->
+    <!-- TABLE LEGS (4) — decorative, not physics-critical             -->
+    <!-- ============================================================ -->
+    <geom name="leg_FL" type="cylinder" size="0.04" fromto="-0.60 0 -1.15  -0.60 0.76 -1.15"
+          rgba="0.35 0.18 0.08 1" contype="0" conaffinity="0"/>
+    <geom name="leg_FR" type="cylinder" size="0.04" fromto="0.60 0 -1.15   0.60 0.76 -1.15"
+          rgba="0.35 0.18 0.08 1" contype="0" conaffinity="0"/>
+    <geom name="leg_HL" type="cylinder" size="0.04" fromto="-0.60 0 1.15   -0.60 0.76 1.15"
+          rgba="0.35 0.18 0.08 1" contype="0" conaffinity="0"/>
+    <geom name="leg_HR" type="cylinder" size="0.04" fromto="0.60 0 1.15    0.60 0.76 1.15"
+          rgba="0.35 0.18 0.08 1" contype="0" conaffinity="0"/>
+
+    <!-- ============================================================ -->
+    <!-- BALLS                                                         -->
+    <!--                                                               -->
+    <!-- Standard 8-ball rack:                                         -->
+    <!--   Cue ball at foot spot: (0, 0.8086, -0.635)                 -->
+    <!--   Rack apex (1-ball): (0, 0.8086, 0.635)                     -->
+    <!--   8-ball in center of third row                               -->
+    <!--   Ball spacing: 0.05715m (one ball diameter) + tiny gap       -->
+    <!--                                                               -->
+    <!--   Row spacing along Z: 0.0495 (diameter × cos(30°))          -->
+    <!--   Column spacing along X: 0.05715 (one diameter)             -->
+    <!--   Each row offsets X by ±0.028575 (half ball)                -->
+    <!--                                                               -->
+    <!-- Y position: slate top (0.78) + ball radius (0.028575)        -->
+    <!--           = 0.808575 ≈ 0.8086                                -->
+    <!-- ============================================================ -->
+
+    <!-- Cue Ball (white) — at foot spot -->
+    <body name="cue_ball" pos="0 0.8086 -0.635">
+      <joint class="ball" name="cue_j"/>
+      <geom class="ball" name="cue_g" rgba="0.95 0.95 0.92 1"/>
+    </body>
+
+    <!-- ======== RACK — 15 balls in triangle ======== -->
+    <!-- Row 1 (apex): 1 ball -->
+    <body name="ball_1" pos="0 0.8086 0.635">
+      <joint class="ball" name="b1_j"/>
+      <geom class="ball" name="b1_g" rgba="0.95 0.85 0.1 1"/>  <!-- yellow solid -->
+    </body>
+
+    <!-- Row 2: 2 balls -->
+    <body name="ball_2" pos="-0.0294 0.8086 0.6845">
+      <joint class="ball" name="b2_j"/>
+      <geom class="ball" name="b2_g" rgba="0.1 0.15 0.75 1"/>  <!-- blue solid -->
+    </body>
+    <body name="ball_9" pos="0.0294 0.8086 0.6845">
+      <joint class="ball" name="b9_j"/>
+      <geom class="ball" name="b9_g" rgba="0.95 0.85 0.1 0.7"/>  <!-- yellow stripe -->
+    </body>
+
+    <!-- Row 3: 3 balls (8-ball in center) -->
+    <body name="ball_3" pos="-0.0588 0.8086 0.734">
+      <joint class="ball" name="b3_j"/>
+      <geom class="ball" name="b3_g" rgba="0.85 0.15 0.1 1"/>  <!-- red solid -->
+    </body>
+    <body name="ball_8" pos="0 0.8086 0.734">
+      <joint class="ball" name="b8_j"/>
+      <geom class="ball" name="b8_g" rgba="0.05 0.05 0.05 1"/>  <!-- 8-ball BLACK -->
+    </body>
+    <body name="ball_10" pos="0.0588 0.8086 0.734">
+      <joint class="ball" name="b10_j"/>
+      <geom class="ball" name="b10_g" rgba="0.1 0.15 0.75 0.7"/>  <!-- blue stripe -->
+    </body>
+
+    <!-- Row 4: 4 balls -->
+    <body name="ball_4" pos="-0.0882 0.8086 0.7835">
+      <joint class="ball" name="b4_j"/>
+      <geom class="ball" name="b4_g" rgba="0.3 0.0 0.5 1"/>  <!-- purple solid -->
+    </body>
+    <body name="ball_11" pos="-0.0294 0.8086 0.7835">
+      <joint class="ball" name="b11_j"/>
+      <geom class="ball" name="b11_g" rgba="0.85 0.15 0.1 0.7"/>  <!-- red stripe -->
+    </body>
+    <body name="ball_12" pos="0.0294 0.8086 0.7835">
+      <joint class="ball" name="b12_j"/>
+      <geom class="ball" name="b12_g" rgba="0.3 0.0 0.5 0.7"/>  <!-- purple stripe -->
+    </body>
+    <body name="ball_5" pos="0.0882 0.8086 0.7835">
+      <joint class="ball" name="b5_j"/>
+      <geom class="ball" name="b5_g" rgba="0.9 0.45 0.0 1"/>  <!-- orange solid -->
+    </body>
+
+    <!-- Row 5 (back): 5 balls -->
+    <body name="ball_6" pos="-0.1176 0.8086 0.833">
+      <joint class="ball" name="b6_j"/>
+      <geom class="ball" name="b6_g" rgba="0.1 0.5 0.15 1"/>  <!-- green solid -->
+    </body>
+    <body name="ball_13" pos="-0.0588 0.8086 0.833">
+      <joint class="ball" name="b13_j"/>
+      <geom class="ball" name="b13_g" rgba="0.9 0.45 0.0 0.7"/>  <!-- orange stripe -->
+    </body>
+    <body name="ball_7" pos="0 0.8086 0.833">
+      <joint class="ball" name="b7_j"/>
+      <geom class="ball" name="b7_g" rgba="0.5 0.0 0.02 1"/>  <!-- maroon solid -->
+    </body>
+    <body name="ball_14" pos="0.0588 0.8086 0.833">
+      <joint class="ball" name="b14_j"/>
+      <geom class="ball" name="b14_g" rgba="0.1 0.5 0.15 0.7"/>  <!-- green stripe -->
+    </body>
+    <body name="ball_15" pos="0.1176 0.8086 0.833">
+      <joint class="ball" name="b15_j"/>
+      <geom class="ball" name="b15_g" rgba="0.5 0.0 0.02 0.7"/>  <!-- maroon stripe -->
+    </body>
+
+  </worldbody>
+
+  <!-- ============================================================ -->
+  <!-- CONTACT PAIRS — Fine-tune ball-ball and ball-surface          -->
+  <!-- ============================================================ -->
+  <!--
+  <contact>
+    Uncomment and customize for specific ball-ball restitution tuning:
+    <pair geom1="cue_g" geom2="b1_g" friction="0.05 0.05 0.005 0.001 0.001"
+          solref="0.0008 0.95"/>
+  </contact>
+  -->
+
+  <!-- ============================================================ -->
+  <!-- SENSORS (optional) — Track ball positions for scoring         -->
+  <!-- ============================================================ -->
+  <sensor>
+    <framepos name="cue_pos" objtype="body" objname="cue_ball"/>
+    <framepos name="b1_pos" objtype="body" objname="ball_1"/>
+    <framepos name="b2_pos" objtype="body" objname="ball_2"/>
+    <framepos name="b3_pos" objtype="body" objname="ball_3"/>
+    <framepos name="b4_pos" objtype="body" objname="ball_4"/>
+    <framepos name="b5_pos" objtype="body" objname="ball_5"/>
+    <framepos name="b6_pos" objtype="body" objname="ball_6"/>
+    <framepos name="b7_pos" objtype="body" objname="ball_7"/>
+    <framepos name="b8_pos" objtype="body" objname="ball_8"/>
+    <framepos name="b9_pos" objtype="body" objname="ball_9"/>
+    <framepos name="b10_pos" objtype="body" objname="ball_10"/>
+    <framepos name="b11_pos" objtype="body" objname="ball_11"/>
+    <framepos name="b12_pos" objtype="body" objname="ball_12"/>
+    <framepos name="b13_pos" objtype="body" objname="ball_13"/>
+    <framepos name="b14_pos" objtype="body" objname="ball_14"/>
+    <framepos name="b15_pos" objtype="body" objname="ball_15"/>
+    
+    <!-- Velocity sensors for detecting when balls stop -->
+    <framexaxis name="cue_vel" objtype="body" objname="cue_ball"/>
+  </sensor>
+
+</mujoco>

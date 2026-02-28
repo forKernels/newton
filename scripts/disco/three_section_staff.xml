@@ -1,0 +1,127 @@
+<!--
+  Three-Section Staff (三節棍) — MuJoCo XML Format
+  
+  WHY MJCF OVER URDF FOR CHAINS:
+  - MJCF has native "ball" joint type (3-DOF rotation)
+  - URDF only has revolute (1-DOF) — requires 2-3 stacked revolutes to fake a ball joint
+  - Newton uses MuJoCo Warp as primary solver, so MJCF is the native format
+  
+  Usage:
+    builder = newton.ModelBuilder()
+    builder.add_mjcf("three_section_staff.xml", floating=True)
+    model = builder.finalize()
+    solver = newton.SolverMuJoCo()
+    
+  To hold rod_1 stationary:
+    Remove the <freejoint/> from rod_1's body
+    (it becomes fixed to world at its origin position)
+-->
+<mujoco model="three_section_staff">
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicit">
+    <flag contact="enable" constraint="enable"/>
+  </option>
+
+  <default>
+    <joint damping="0.3" armature="0.001"/>
+    <geom friction="0.5 0.005 0.001" condim="3" contype="1" conaffinity="1"/>
+    <default class="rod">
+      <geom type="capsule" size="0.015" rgba="0.55 0.35 0.18 1" density="700"/>
+    </default>
+    <default class="chain">
+      <geom type="capsule" size="0.005" rgba="0.72 0.72 0.74 1" density="7800"/>
+      <joint damping="0.2"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <!-- Ground plane -->
+    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.3 0.3 0.3 1" 
+          contype="1" conaffinity="1"/>
+
+    <!-- ============================================ -->
+    <!-- ROD 1 — Base section (the one you grip)      -->
+    <!-- Spawns at height 2.0m, hanging down          -->
+    <!-- ============================================ -->
+    <body name="rod_1" pos="0 0 2.0">
+      <freejoint name="root"/>  <!-- Remove this line to fix rod_1 to world -->
+      <geom class="rod" fromto="0 0 -0.30  0 0 0.30" name="rod_1_geom"/>
+      
+      <!-- ============================================ -->
+      <!-- CHAIN 1 — 4 ball-jointed capsule links       -->
+      <!-- ============================================ -->
+      <body name="c1_link1" pos="0 0 0.325">
+        <joint type="ball" name="c1_j1" damping="0.2"/>
+        <geom class="chain" fromto="0 0 -0.0125  0 0 0.0125" name="c1_g1"/>
+        
+        <body name="c1_link2" pos="0 0 0.025">
+          <joint type="ball" name="c1_j2" damping="0.2"/>
+          <geom class="chain" fromto="0 0 -0.0125  0 0 0.0125" name="c1_g2"/>
+          
+          <body name="c1_link3" pos="0 0 0.025">
+            <joint type="ball" name="c1_j3" damping="0.2"/>
+            <geom class="chain" fromto="0 0 -0.0125  0 0 0.0125" name="c1_g3"/>
+            
+            <body name="c1_link4" pos="0 0 0.025">
+              <joint type="ball" name="c1_j4" damping="0.2"/>
+              <geom class="chain" fromto="0 0 -0.0125  0 0 0.0125" name="c1_g4"/>
+
+              <!-- ============================================ -->
+              <!-- ROD 2 — Middle section                       -->
+              <!-- ============================================ -->
+              <body name="rod_2" pos="0 0 0.3125">
+                <joint type="ball" name="rod2_j" damping="0.3"/>
+                <geom class="rod" fromto="0 0 -0.30  0 0 0.30" name="rod_2_geom"/>
+                
+                <!-- ============================================ -->
+                <!-- CHAIN 2 — 4 ball-jointed capsule links       -->
+                <!-- ============================================ -->
+                <body name="c2_link1" pos="0 0 0.325">
+                  <joint type="ball" name="c2_j1" damping="0.2"/>
+                  <geom class="chain" fromto="0 0 -0.0125  0 0 0.0125" name="c2_g1"/>
+                  
+                  <body name="c2_link2" pos="0 0 0.025">
+                    <joint type="ball" name="c2_j2" damping="0.2"/>
+                    <geom class="chain" fromto="0 0 -0.0125  0 0 0.0125" name="c2_g2"/>
+                    
+                    <body name="c2_link3" pos="0 0 0.025">
+                      <joint type="ball" name="c2_j3" damping="0.2"/>
+                      <geom class="chain" fromto="0 0 -0.0125  0 0 0.0125" name="c2_g3"/>
+                      
+                      <body name="c2_link4" pos="0 0 0.025">
+                        <joint type="ball" name="c2_j4" damping="0.2"/>
+                        <geom class="chain" fromto="0 0 -0.0125  0 0 0.0125" name="c2_g4"/>
+
+                        <!-- ============================================ -->
+                        <!-- ROD 3 — End section                          -->
+                        <!-- ============================================ -->
+                        <body name="rod_3" pos="0 0 0.3125">
+                          <joint type="ball" name="rod3_j" damping="0.3"/>
+                          <geom class="rod" fromto="0 0 -0.30  0 0 0.30" name="rod_3_geom"/>
+                        </body>
+                        
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              
+            </body>
+          </body>
+        </body>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <!-- ============================================ -->
+  <!-- ACTUATORS (optional — for controlled motion) -->
+  <!-- ============================================ -->
+  <!-- Uncomment to add torque control to rod joints:
+  <actuator>
+    <motor joint="rod2_j" ctrlrange="-10 10" gear="1"/>
+    <motor joint="rod3_j" ctrlrange="-10 10" gear="1"/>
+  </actuator>
+  -->
+
+</mujoco>
