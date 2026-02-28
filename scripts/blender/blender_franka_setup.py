@@ -364,12 +364,18 @@ def import_franka_meshes():
 
 def import_garment(obj_path, color=(0.9, 0.5, 0.6, 1.0)):
     """
-    Import garment OBJ from Maria dataset and lay flat on the table.
-    Uses direct mesh.data.transform() for reliability.
+    Import garment OBJ and place on table.
+
+    Supports two modes:
+      - *_clean.obj from clean_cloth_dataset.py: already in meters, centered, oriented.
+        Just import and place on table.
+      - Raw *_sim.obj from Maria dataset: scale cm→m, rotate 180° Y, center origin.
     """
     if not os.path.isfile(obj_path):
         print(f"ERROR: garment not found: {obj_path}")
         return None
+
+    is_clean = "_clean.obj" in obj_path
 
     # Import OBJ with NO axis conversion
     try:
@@ -384,37 +390,46 @@ def import_garment(obj_path, color=(0.9, 0.5, 0.6, 1.0)):
     cloth.rotation_euler = (0, 0, 0)
     cloth.scale = (1, 1, 1)
 
-    # Scale cm → meters, flip Y (neckline up) and Z (lay flat)
-    scale = CLOTH_SCALE
-    cloth.data.transform(Matrix.Diagonal(Vector((scale, -scale, -scale, 1.0))))
-    cloth.data.flip_normals()
+    if not is_clean:
+        # Raw mesh: scale cm→m, rotate 180° around Y, center origin
+        scale = CLOTH_SCALE
+        cloth.data.transform(Matrix.Scale(scale, 4))
+        cloth.data.transform(Matrix.Rotation(math.pi, 4, 'Y'))
+
+        # Center vertices: bbox center XY, bottom at Z=0
+        verts = [Vector(v.co) for v in cloth.data.vertices]
+        if verts:
+            xs = [v.x for v in verts]
+            ys = [v.y for v in verts]
+            zs = [v.z for v in verts]
+            cx = (min(xs) + max(xs)) / 2
+            cy = (min(ys) + max(ys)) / 2
+            cz = min(zs)
+            cloth.data.transform(Matrix.Translation(Vector((-cx, -cy, -cz))))
+
+        cloth.data.update()
+        print(f"  (raw mesh — applied scale + rotation + centering)")
+    else:
+        print(f"  (clean mesh — already in meters, centered)")
+
     cloth.data.update()
 
-    # Get bounding box
-    verts = [Vector(v.co) for v in cloth.data.vertices]
-    if not verts:
-        return cloth
-
-    xs = [v.x for v in verts]
-    ys = [v.y for v in verts]
-    zs = [v.z for v in verts]
-
-    bbox_w = max(xs) - min(xs)
-    bbox_d = max(ys) - min(ys)
-    bbox_h = max(zs) - min(zs)
-
-    # Center vertices at origin, bottom at Z=0
-    cx = (min(xs) + max(xs)) / 2
-    cy = (min(ys) + max(ys)) / 2
-    cz = min(zs)
-    cloth.data.transform(Matrix.Translation(Vector((-cx, -cy, -cz))))
-    cloth.data.update()
-
-    # Set Blender origin to geometry center (critical for correct pivots)
+    # Set Blender origin to geometry center
     bpy.ops.object.select_all(action="DESELECT")
     cloth.select_set(True)
     bpy.context.view_layer.objects.active = cloth
     bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+
+    # Measure bbox for table sizing
+    verts = [Vector(v.co) for v in cloth.data.vertices]
+    if not verts:
+        return cloth
+    xs = [v.x for v in verts]
+    ys = [v.y for v in verts]
+    zs = [v.z for v in verts]
+    bbox_w = max(xs) - min(xs)
+    bbox_d = max(ys) - min(ys)
+    bbox_h = max(zs) - min(zs)
 
     # Position on table
     table_top = NEWTON_SCENE["platform_top_z"]
