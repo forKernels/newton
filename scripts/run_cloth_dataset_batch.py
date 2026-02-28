@@ -75,6 +75,7 @@ def run_single_simulation(
     device: str = "cuda:0",
     num_frames: int = 600,
     robot_target_mode: str = "bbox-grasp",
+    robot: str = "franka",
     extra_args: list[str] | None = None,
 ) -> dict:
     """Run a single cloth_dataset_pickup simulation as a subprocess.
@@ -101,6 +102,8 @@ def run_single_simulation(
         "bbox-center-ground",
         "--robot-target-mode",
         robot_target_mode,
+        "--robot",
+        robot,
         "--robot-start-delay",
         "1.5",
         "--quiet",
@@ -114,6 +117,7 @@ def run_single_simulation(
     try:
         result = subprocess.run(
             cmd,
+            check=False,
             capture_output=True,
             text=True,
             timeout=600,  # 10 min max per garment
@@ -163,6 +167,13 @@ def main():
         default="bbox-grasp",
         choices=["default", "bbox-grasp", "bbox-fold"],
         help="Robot trajectory mode (default: bbox-grasp).",
+    )
+    parser.add_argument(
+        "--robot",
+        type=str,
+        default="franka",
+        choices=["franka", "ur5e-robotiq", "ur5e-leap", "ur5e-shadow"],
+        help="Robot arm+gripper configuration (default: franka).",
     )
     parser.add_argument("--max-items", type=int, default=None, help="Max items to process (for testing).")
     parser.add_argument("--skip-existing", action="store_true", help="Skip garments that already have output USDA.")
@@ -238,6 +249,7 @@ def main():
             device=args.device,
             num_frames=args.num_frames,
             robot_target_mode=args.robot_target_mode,
+            robot=args.robot,
             extra_args=args.extra_args,
         )
 

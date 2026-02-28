@@ -58,6 +58,92 @@ from newton import Model, ModelBuilder, State, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 from newton.utils import transform_twist
 
+_MENAGERIE_GIT_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
+
+# Robot configurations for multi-robot support.
+# Each entry describes how to load, compose, and control a particular arm+gripper combination.
+ROBOT_CONFIGS = {
+    "franka": {
+        "source": "newton-assets",
+        "format": "urdf",
+        "asset_name": "franka_emika_panda",
+        "asset_path": "urdf/fr3_franka_hand.urdf",
+        "ee_link_suffix": None,  # Uses body_count - 3
+        "ee_offset": [0.0, 0.0, 0.22],
+        "init_q": [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307],
+        "arm_dof_count": 7,
+        "gripper_dof_count": 2,
+        "gripper_scale": 0.04,
+    },
+    "ur5e-robotiq": {
+        "source": "menagerie",
+        "format": "mjcf",
+        "arm_folder": "universal_robots_ur5e",
+        "arm_file": "ur5e.xml",
+        "hand_folder": "robotiq_2f85",
+        "hand_file": "2f85.xml",
+        "ee_link_suffix": "/wrist_3_link",
+        "hand_xform_pos": [0.0, 0.1, 0.0],
+        "hand_xform_rot_axis": [1.0, 0.0, 0.0],
+        "hand_xform_rot_angle": -1.5708,
+        "ee_offset": [0.0, 0.0, 0.15],
+        "init_q": [0, -1.5708, 1.5708, -1.5708, -1.5708, 0],
+        "arm_dof_count": 6,
+        "gripper_dof_indices_in_hand": [0, 4],
+        "gripper_dof_count": 2,
+        "gripper_scale": 1.0,
+        "gripper_ke": 20.0,
+        "gripper_kd": 1.0,
+    },
+    "ur5e-leap": {
+        "source": "menagerie",
+        "format": "mjcf",
+        "arm_folder": "universal_robots_ur5e",
+        "arm_file": "ur5e.xml",
+        "hand_folder": "leap_hand",
+        "hand_file": "left_hand.xml",
+        "ee_link_suffix": "/wrist_3_link",
+        "hand_xform_pos": [-0.065, 0.28, 0.10],
+        "hand_xform_rot": "leap",  # Special rotation for LEAP hand
+        "ee_offset": [0.0, 0.0, 0.20],
+        "init_q": [0, -1.5708, 1.5708, -1.5708, -1.5708, 0],
+        "arm_dof_count": 6,
+        # LEAP hand has 16 DOFs but we only control a subset for grip
+        "gripper_dof_indices_in_hand": [0, 4, 8, 12],
+        "gripper_dof_count": 4,
+        "gripper_scale": 1.0,
+        "gripper_ke": 10.0,
+        "gripper_kd": 0.5,
+    },
+    "ur5e-shadow": {
+        "source": "menagerie",
+        "format": "mjcf",
+        "arm_folder": "universal_robots_ur5e",
+        "arm_file": "ur5e.xml",
+        "hand_folder": "shadow_dexee",
+        "hand_file": "scene.xml",
+        "ee_link_suffix": "/wrist_3_link",
+        "hand_xform_pos": [0.0, 0.1, 0.0],
+        "hand_xform_rot_axis": [1.0, 0.0, 0.0],
+        "hand_xform_rot_angle": -1.5708,
+        "ee_offset": [0.0, 0.0, 0.25],
+        "init_q": [0, -1.5708, 1.5708, -1.5708, -1.5708, 0],
+        "arm_dof_count": 6,
+        "gripper_dof_indices_in_hand": [0, 5, 10, 15],
+        "gripper_dof_count": 4,
+        "gripper_scale": 1.0,
+        "gripper_ke": 10.0,
+        "gripper_kd": 0.5,
+    },
+}
+
+
+def _download_menagerie_folder(folder_name: str):
+    """Download a folder from the MuJoCo Menagerie repository."""
+    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
+
+    return download_git_folder(git_url=_MENAGERIE_GIT_URL, folder_path=folder_name)
+
 
 @wp.kernel
 def compute_ee_delta(
@@ -201,6 +287,12 @@ def _load_cloth_mesh_from_path(cloth_path: str, cloth_usd_prim_path: str | None 
                 f"OBJ file must be triangulated for add_cloth_mesh(); found {mesh.faces.shape[1]} vertices/face: {cloth_path}"
             )
 
+        # Check for degenerate faces (zero-area triangles)
+        areas = mesh.area_faces
+        degenerate_count = int(np.sum(areas < 1e-10))
+        if degenerate_count > 0:
+            print(f"WARNING: {degenerate_count} degenerate (zero-area) faces in {cloth_path}")
+
         vertices = [wp.vec3(float(v[0]), float(v[1]), float(v[2])) for v in np.asarray(mesh.vertices)]
         indices = np.asarray(mesh.faces, dtype=np.int32).reshape(-1).tolist()
         return vertices, indices
@@ -303,6 +395,16 @@ def _rotate_vertices_y_up_to_z_up(vertices: list[wp.vec3]) -> list[wp.vec3]:
     return [wp.vec3(float(v[0]), -float(v[2]), float(v[1])) for v in vertices]
 
 
+def _rotate_vertices_lay_flat(vertices: list[wp.vec3]) -> list[wp.vec3]:
+    """Rotate a standing garment to lie flat on the XY plane.
+
+    After Y-up→Z-up rotation the garment's height runs along Z.
+    This tips it forward (-90° around X): (x, y, z) -> (x, -z, y).
+    The garment then lies in the XY plane with thickness along Z.
+    """
+    return [wp.vec3(float(v[0]), -float(v[2]), float(v[1])) for v in vertices]
+
+
 def _detect_y_up_mesh(vertices: list[wp.vec3]) -> bool:
     """Detect if a mesh is in Y-up coordinates by checking which axis has the largest extent.
 
@@ -348,15 +450,14 @@ def _build_bbox_robot_key_poses(
     """Build a bbox-driven pickup/fold trajectory [N, 9].
 
     Generates multiple pick-drag-release cycles that fold the garment
-    from its edges toward the center, similar to the hardcoded default
-    trajectory but adapted to each garment's world-space bounding box.
+    from its edges toward the opposite side, adapted to each garment's
+    world-space bounding box.
 
     All targets are clamped to the Franka's reachable workspace:
-        X: [-0.30, 0.31],  Y: [-0.60, -0.21],  Z: [support_z, support_z+0.20]
+        X: [-0.30, 0.31],  Y: [-0.60, -0.21]
     """
     bbox_min = np.asarray(bbox_min, dtype=np.float32)
     bbox_max = np.asarray(bbox_max, dtype=np.float32)
-    center = 0.5 * (bbox_min + bbox_max)
 
     # Franka reachable workspace (from the working default key poses)
     X_LO, X_HI = -0.30, 0.31
@@ -370,12 +471,18 @@ def _build_bbox_robot_key_poses(
     reach_cx = 0.5 * (reach_x_lo + reach_x_hi)
     reach_cy = 0.5 * (reach_y_lo + reach_y_hi)
 
-    # Z heights relative to table surface
+    # Garment thickness: 3D body-fitted garments puff up above the table.
+    # Use the bbox Z extent to estimate how high the cloth surface sits.
+    garment_thickness = float(np.clip(bbox_max[2] - bbox_min[2], 0.0, 0.25))
+    # After settling, the garment surface is roughly at table + half the thickness
+    cloth_surface_z = float(support_z) + 0.5 * garment_thickness
+
+    # Z heights — grab AT the cloth surface, not at the table
     table_z = float(support_z)
-    hover_z = float(np.clip(table_z + 0.15, 0.22, 0.40))
-    down_z = float(np.clip(table_z + 0.01, 0.15, 0.30))
-    grab_z = float(np.clip(table_z + 0.005, 0.15, 0.30))
-    lift_z = float(np.clip(table_z + 0.12, 0.22, 0.38))
+    hover_z = float(np.clip(cloth_surface_z + 0.12, 0.24, 0.42))
+    down_z = float(np.clip(cloth_surface_z + 0.02, 0.18, 0.34))
+    grab_z = float(np.clip(cloth_surface_z + 0.005, 0.16, 0.32))
+    lift_z = float(np.clip(cloth_surface_z + 0.10, 0.26, 0.42))
     place_z = float(np.clip(table_z + 0.03, 0.16, 0.34))
 
     grip_open = clamp_open_activation_val
@@ -386,32 +493,26 @@ def _build_bbox_robot_key_poses(
         return [dur, float(np.clip(x, X_LO, X_HI)), float(np.clip(y, Y_LO, Y_HI)), z, *quat, grip]
 
     def fold_cycle(pick_x: float, pick_y: float, place_x: float, place_y: float) -> list[list[float]]:
-        """One pick-drag-release cycle: hover → down → grab → lift → move → place → release → hover."""
+        """One pick-drag-release cycle: hover → down → grab → lift → carry → place → release → hover."""
         return [
-            kp(2.0, pick_x, pick_y, hover_z, grip_open),
-            kp(1.5, pick_x, pick_y, down_z, grip_open),
+            kp(2.5, pick_x, pick_y, hover_z, grip_open),
+            kp(2.0, pick_x, pick_y, down_z, grip_open),
             kp(1.0, pick_x, pick_y, grab_z, grip_close),
-            kp(1.5, pick_x, pick_y, lift_z, grip_close),
-            kp(2.0, place_x, place_y, lift_z, grip_close),
-            kp(1.5, place_x, place_y, place_z, grip_close),
-            kp(0.8, place_x, place_y, place_z, grip_open),
-            kp(1.0, place_x, place_y, hover_z, grip_open),
+            kp(2.0, pick_x, pick_y, lift_z, grip_close),
+            kp(2.5, place_x, place_y, lift_z, grip_close),
+            kp(2.0, place_x, place_y, place_z, grip_close),
+            kp(1.0, place_x, place_y, place_z, grip_open),
+            kp(1.5, place_x, place_y, hover_z, grip_open),
         ]
 
     key_poses: list[list[float]] = []
 
     if mode == "bbox-fold":
-        # Generate 4 fold cycles from the edges toward the center,
-        # matching the default trajectory's pattern of: top-right, bottom-right,
-        # top-left, bottom corners.
-        # Fold 1: +X edge → center (right side toward middle)
-        key_poses.extend(fold_cycle(reach_x_hi, reach_cy, reach_cx, reach_cy))
-        # Fold 2: -X edge → center (left side toward middle)
-        key_poses.extend(fold_cycle(reach_x_lo, reach_cy, reach_cx, reach_cy))
-        # Fold 3: far Y edge → center (top toward middle)
-        key_poses.extend(fold_cycle(reach_cx, reach_y_lo, reach_cx, reach_cy))
-        # Fold 4: near Y edge → center (bottom toward middle)
-        key_poses.extend(fold_cycle(reach_cx, reach_y_hi, reach_cx, reach_cy))
+        # Fold edge-to-opposite-edge (not edge-to-center) for a proper half-fold.
+        # Fold 1: +X edge → -X edge (fold right side over to the left)
+        key_poses.extend(fold_cycle(reach_x_hi, reach_cy, reach_x_lo, reach_cy))
+        # Fold 2: far Y → near Y (fold far edge over toward the robot)
+        key_poses.extend(fold_cycle(reach_cx, reach_y_lo, reach_cx, reach_y_hi))
     else:
         # bbox-grasp: single pick-lift-release
         key_poses.extend(
@@ -500,17 +601,23 @@ class Example:
         self.cloth_scale = getattr(args, "cloth_scale", 0.01) if args is not None else 0.01
         self.cloth_scale_auto = getattr(args, "cloth_scale_auto", False) if args is not None else False
         self.cloth_center_mode = getattr(args, "cloth_center_mode", "auto") if args is not None else "auto"
-        self.cloth_y_up = getattr(args, "cloth_y_up", "no") if args is not None else "no"
+        self.cloth_y_up = getattr(args, "cloth_y_up", "auto") if args is not None else "auto"
+        self.cloth_lay_flat = getattr(args, "cloth_lay_flat", "auto") if args is not None else "auto"
         self.cloth_density = getattr(args, "cloth_density", 0.2) if args is not None else 0.2
-        cloth_pos = getattr(args, "cloth_pos", (0.0, 0.70, 0.28)) if args is not None else (0.0, 0.70, 0.28)
+        cloth_pos = getattr(args, "cloth_pos", None) if args is not None else None
+        self._cloth_pos_explicit = cloth_pos is not None
+        if cloth_pos is None:
+            cloth_pos = (0.0, 0.70, 0.28)  # legacy default (matches shirt-space mode)
         cloth_vel = getattr(args, "cloth_vel", (0.0, 0.0, 0.0)) if args is not None else (0.0, 0.0, 0.0)
         self.cloth_pos = wp.vec3(*cloth_pos)
         self.cloth_vel = wp.vec3(*cloth_vel)
-        self.cloth_yaw_deg = getattr(args, "cloth_yaw_deg", 180.0) if args is not None else 180.0
+        cloth_yaw_deg = getattr(args, "cloth_yaw_deg", None) if args is not None else None
+        self._cloth_yaw_explicit = cloth_yaw_deg is not None
+        self.cloth_yaw_deg = float(cloth_yaw_deg) if cloth_yaw_deg is not None else 180.0
 
         self.trajectory_json_path = getattr(args, "trajectory_json", None) if args is not None else None
         self.robot_target_mode = getattr(args, "robot_target_mode", "default") if args is not None else "default"
-        self.robot_start_delay = float(getattr(args, "robot_start_delay", 2.0) if args is not None else 2.0)
+        self.robot_start_delay = float(getattr(args, "robot_start_delay", 4.0) if args is not None else 4.0)
         # Match cloth_franka robot base: (-0.5, -0.5, -0.1)
         robot_base_pos = getattr(args, "robot_base_pos", (-0.5, -0.5, -0.1)) if args is not None else (-0.5, -0.5, -0.1)
         self.robot_base_pos = np.asarray(robot_base_pos, dtype=np.float32)
@@ -527,15 +634,16 @@ class Example:
         self.cloth_bbox_max_world: list[float] | None = None
         self.robot_target_mode_applied = "default"
         self.robot_delay_park_target: np.ndarray | None = None
+        self.robot_type = getattr(args, "robot", "franka") if args is not None else "franka"
 
         if self.add_robot:
-            franka = ModelBuilder()
-            self.create_articulation(franka)
+            robot_builder = ModelBuilder()
+            self.create_articulation(robot_builder)
 
-            self.scene.add_world(franka)
-            self.bodies_per_world = franka.body_count
-            self.dof_q_per_world = franka.joint_coord_count
-            self.dof_qd_per_world = franka.joint_dof_count
+            self.scene.add_world(robot_builder)
+            self.bodies_per_world = robot_builder.body_count
+            self.dof_q_per_world = robot_builder.joint_coord_count
+            self.dof_qd_per_world = robot_builder.joint_dof_count
 
         if self.scene_usd_path:
             self.scene.add_usd(
@@ -569,15 +677,60 @@ class Example:
             self.cloth_scale = inferred_scale
             self.cloth_scale_inferred_units = inferred_units
 
-        # For external meshes, shift vertices to match the built-in shirt's
-        # coordinate space so the standard transforms place them over the table.
+        # Auto-detect and fix Y-up meshes (before centering)
         if self.cloth_path:
-            vertices = _shift_to_shirt_space(vertices)
+            if self.cloth_y_up == "auto":
+                if _detect_y_up_mesh(vertices):
+                    vertices = _rotate_vertices_y_up_to_z_up(vertices)
+            elif self.cloth_y_up == "yes":
+                vertices = _rotate_vertices_y_up_to_z_up(vertices)
 
-        # Record raw bbox (after shift, before add_cloth_mesh transform)
+        # Lay flat: tip the garment from standing upright to lying on the XY plane.
+        # After Y→Z rotation the garment height runs along Z; this tips it forward
+        # so it lies flat on the table instead of standing up.
+        if self.cloth_path:
+            lay_flat = self.cloth_lay_flat
+            if lay_flat == "auto":
+                # Auto: lay flat when using bbox-center-ground (the table-placement mode)
+                lay_flat = "yes" if self.cloth_center_mode in ("bbox-center", "bbox-center-ground") else "no"
+            if lay_flat == "yes":
+                vertices = _rotate_vertices_lay_flat(vertices)
+
+        # For external meshes, recenter vertices for predictable placement.
+        # bbox-center / bbox-center-ground uses the garment's own bounding box
+        # (correct for all garment types including pants/skirts).
+        # auto / none falls back to shifting to the built-in shirt's coordinate
+        # space for backward compatibility with the default transforms.
+        if self.cloth_path:
+            if self.cloth_center_mode in ("bbox-center", "bbox-center-ground"):
+                vertices, _, _ = _recenter_cloth_vertices(vertices, self.cloth_center_mode)
+            else:
+                vertices = _shift_to_shirt_space(vertices)
+
+        # Record raw bbox (after centering and lay-flat, before add_cloth_mesh transform)
         verts_np = np.array([[float(v[0]), float(v[1]), float(v[2])] for v in vertices], dtype=np.float32)
         self.cloth_bbox_min_raw = [float(x) for x in np.min(verts_np, axis=0)]
         self.cloth_bbox_max_raw = [float(x) for x in np.max(verts_np, axis=0)]
+
+        # Auto-compute cloth position and yaw for bbox-center modes.
+        # The legacy defaults (pos=(0, 0.70, 0.28), yaw=180°) were designed for
+        # shirt-space mode.  For bbox-center-ground the garment is already centered
+        # at XY=0 so yaw=0 and the position should place it on the table within the
+        # robot workspace.
+        if (
+            self.cloth_path
+            and self.cloth_center_mode in ("bbox-center", "bbox-center-ground")
+            and self.cloth_place_on_platform
+        ):
+            bbox_extent_raw = np.max(verts_np, axis=0) - np.min(verts_np, axis=0)
+            scaled_z_extent = float(bbox_extent_raw[2]) * float(self.cloth_scale)
+            if not self._cloth_pos_explicit:
+                auto_x = float(self.platform_pos[0])
+                auto_y = float(self.platform_pos[1])
+                auto_z = self.platform_top_z + self.cloth_platform_clearance + 0.5 * scaled_z_extent
+                self.cloth_pos = wp.vec3(auto_x, auto_y, auto_z)
+            if not self._cloth_yaw_explicit:
+                self.cloth_yaw_deg = 0.0  # Centered mesh doesn't need 180° flip
 
         # Compute world-space bbox after placement transforms
         bbox_min_world, bbox_max_world = _estimate_world_bbox_for_placed_cloth(
@@ -779,21 +932,14 @@ class Example:
             self.graph = None
 
     def create_articulation(self, builder):
-        asset_path = newton.utils.download_asset("franka_emika_panda")
+        cfg = ROBOT_CONFIGS[self.robot_type]
 
-        builder.add_urdf(
-            str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-            xform=wp.transform(
-                (float(self.robot_base_pos[0]), float(self.robot_base_pos[1]), float(self.robot_base_pos[2])),
-                wp.quat_identity(),
-            ),
-            floating=False,
-            scale=1,  # unit: cm
-            enable_self_collisions=False,
-            collapse_fixed_joints=True,
-            force_show_colliders=False,
-        )
-        builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
+        if cfg["source"] == "newton-assets":
+            self._create_articulation_franka(builder, cfg)
+        elif cfg["source"] == "menagerie":
+            self._create_articulation_menagerie(builder, cfg)
+        else:
+            raise ValueError(f"Unknown robot source: {cfg['source']}")
 
         clamp_close_activation_val = 0.06
         clamp_open_activation_val = 0.8
@@ -845,14 +991,96 @@ class Example:
         if self.trajectory_json_path:
             self.robot_key_poses = _load_robot_key_poses_from_json(self.trajectory_json_path)
         self._set_robot_key_poses(self.robot_key_poses)
+
+    def _create_articulation_franka(self, builder, cfg):
+        """Load Franka FR3 with built-in hand from newton-assets URDF."""
+        asset_path = newton.utils.download_asset(cfg["asset_name"])
+
+        builder.add_urdf(
+            str(asset_path / cfg["asset_path"]),
+            xform=wp.transform(
+                (float(self.robot_base_pos[0]), float(self.robot_base_pos[1]), float(self.robot_base_pos[2])),
+                wp.quat_identity(),
+            ),
+            floating=False,
+            scale=1,
+            enable_self_collisions=False,
+            collapse_fixed_joints=True,
+            force_show_colliders=False,
+        )
+        builder.joint_q[:6] = cfg["init_q"]
+
         self.endeffector_id = builder.body_count - 3
-        self.endeffector_offset = wp.transform(
-            [
-                0.0,
-                0.0,
-                0.22,
-            ],
-            wp.quat_identity(),
+        self.endeffector_offset = wp.transform(cfg["ee_offset"], wp.quat_identity())
+        self.gripper_dof_count = cfg["gripper_dof_count"]
+        self.gripper_scale = cfg["gripper_scale"]
+        self.gripper_dof_indices: list[int] | None = None  # Use last N DOFs
+
+    def _create_articulation_menagerie(self, builder, cfg):
+        """Load a composed arm+hand from MuJoCo Menagerie MJCF files."""
+        base_pos = (float(self.robot_base_pos[0]), float(self.robot_base_pos[1]), float(self.robot_base_pos[2]))
+        arm_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(wp.pi))
+
+        # Download and load the arm
+        arm_folder = _download_menagerie_folder(cfg["arm_folder"])
+        builder.add_mjcf(
+            str(arm_folder / cfg["arm_file"]),
+            xform=wp.transform(base_pos, arm_quat),
+            floating=False,
+            enable_self_collisions=False,
+        )
+
+        # Set arm initial joint positions
+        arm_dof_count = cfg["arm_dof_count"]
+        builder.joint_q[-arm_dof_count:] = cfg["init_q"]
+
+        # Record gripper DOF offset before attaching the hand
+        gripper_dof_offset = builder.joint_dof_count
+
+        # Find end-effector body by label
+        ee_suffix = cfg["ee_link_suffix"]
+        ee_body_idx = next(i for i, lbl in enumerate(builder.body_label) if lbl.endswith(ee_suffix))
+
+        # Compute hand attachment transform
+        if cfg.get("hand_xform_rot") == "leap":
+            # Special rotation for LEAP hand
+            quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(wp.pi) / 2)
+            quat_y = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(wp.pi))
+            hand_quat = quat_y * quat_z
+        else:
+            rot_axis = cfg.get("hand_xform_rot_axis", [1.0, 0.0, 0.0])
+            rot_angle = cfg.get("hand_xform_rot_angle", 0.0)
+            hand_quat = wp.quat_from_axis_angle(wp.vec3(*rot_axis), float(rot_angle))
+        hand_pos = tuple(cfg.get("hand_xform_pos", [0.0, 0.0, 0.0]))
+        ee_xform = wp.transform(hand_pos, hand_quat)
+
+        # Download and attach the hand
+        hand_folder = _download_menagerie_folder(cfg["hand_folder"])
+        builder.add_mjcf(
+            str(hand_folder / cfg["hand_file"]),
+            xform=ee_xform,
+            parent_body=ee_body_idx,
+        )
+
+        # Set gripper joint gains for driver joints
+        gripper_ke = cfg.get("gripper_ke", 20.0)
+        gripper_kd = cfg.get("gripper_kd", 1.0)
+        gripper_indices_in_hand = cfg.get("gripper_dof_indices_in_hand", [])
+        self.gripper_dof_indices = [gripper_dof_offset + i for i in gripper_indices_in_hand]
+        for idx in self.gripper_dof_indices:
+            builder.joint_target_ke[idx] = gripper_ke
+            builder.joint_target_kd[idx] = gripper_kd
+
+        self.endeffector_id = ee_body_idx
+        self.endeffector_offset = wp.transform(cfg["ee_offset"], wp.quat_identity())
+        self.gripper_dof_count = cfg["gripper_dof_count"]
+        self.gripper_scale = cfg.get("gripper_scale", 1.0)
+
+        print(
+            f"Robot: {self.robot_type}, arm_dofs={arm_dof_count}, "
+            f"gripper_dof_offset={gripper_dof_offset}, "
+            f"gripper_dofs={self.gripper_dof_indices}, "
+            f"total_dofs={builder.joint_dof_count}"
         )
 
     def _set_robot_key_poses(self, key_poses: np.ndarray) -> None:
@@ -993,8 +1221,15 @@ class Example:
         delta_q = J_inv @ delta_target + N @ delta_q_null
 
         # Apply gripper finger control
-        delta_q[-2] = self.target[-1] * 0.04 - q[-2]
-        delta_q[-1] = self.target[-1] * 0.04 - q[-1]
+        grip_activation = self.target[-1]
+        if self.gripper_dof_indices is not None:
+            # Composed robot: use explicit DOF indices from config
+            for idx in self.gripper_dof_indices:
+                delta_q[idx] = grip_activation * self.gripper_scale - q[idx]
+        else:
+            # Franka: last N DOFs are gripper fingers
+            for i in range(1, self.gripper_dof_count + 1):
+                delta_q[-i] = grip_activation * self.gripper_scale - q[-i]
 
         self.target_joint_qd.assign(delta_q)
 
@@ -1083,6 +1318,7 @@ class Example:
 
         metadata = {
             "example": "cloth_dataset_pickup",
+            "robot_type": self.robot_type,
             "scene_usd_path": self.scene_usd_path,
             "scene_root_path": self.scene_root_path,
             "cloth_path": self.cloth_path,
@@ -1092,6 +1328,7 @@ class Example:
             "cloth_scale_inferred_units": self.cloth_scale_inferred_units,
             "cloth_center_mode": self.cloth_center_mode,
             "cloth_center_mode_applied": self.cloth_center_mode_applied,
+            "cloth_lay_flat": self.cloth_lay_flat,
             "cloth_density": float(self.cloth_density),
             "cloth_bbox_min_raw": self.cloth_bbox_min_raw,
             "cloth_bbox_max_raw": self.cloth_bbox_max_raw,
@@ -1212,19 +1449,27 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cloth-y-up",
         type=str,
-        default="no",
+        default="auto",
         choices=["auto", "yes", "no"],
         help="Rotate mesh from Y-up (Blender/Maya) to Z-up (Newton). "
         "'auto' detects from bounding box. 'no' keeps the mesh flat (for folding simulations).",
+    )
+    parser.add_argument(
+        "--cloth-lay-flat",
+        type=str,
+        default="auto",
+        choices=["auto", "yes", "no"],
+        help="Tip garment from standing upright to lying flat on the table. "
+        "'auto' enables when using bbox-center-ground mode.",
     )
     parser.add_argument("--cloth-density", type=float, default=0.2, help="Cloth areal density.")
     parser.add_argument(
         "--cloth-pos",
         type=float,
         nargs=3,
-        default=(0.0, 0.70, 0.28),
+        default=None,
         metavar=("X", "Y", "Z"),
-        help="Initial cloth position.",
+        help="Initial cloth position [m]. Auto-computed to center on the table when using bbox-center-ground.",
     )
     parser.add_argument(
         "--cloth-vel",
@@ -1234,7 +1479,12 @@ if __name__ == "__main__":
         metavar=("VX", "VY", "VZ"),
         help="Initial cloth velocity.",
     )
-    parser.add_argument("--cloth-yaw-deg", type=float, default=180.0, help="Initial cloth yaw rotation in degrees.")
+    parser.add_argument(
+        "--cloth-yaw-deg",
+        type=float,
+        default=None,
+        help="Initial cloth yaw rotation in degrees. Auto-set to 0 for bbox-center-ground, 180 for shirt-space.",
+    )
     parser.add_argument(
         "--cloth-particle-radius",
         type=float,
@@ -1273,7 +1523,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--robot-start-delay",
         type=float,
-        default=2.0,
+        default=4.0,
         help="Delay robot motion [s] so the cloth can fall/settle before the trajectory starts.",
     )
     parser.add_argument(
@@ -1283,6 +1533,13 @@ if __name__ == "__main__":
         default=(0.0, 0.0, 0.0),
         metavar=("DX", "DY", "DZ"),
         help="World-space offset added to all robot keypose targets to align the pickup motion with the cloth.",
+    )
+    parser.add_argument(
+        "--robot",
+        type=str,
+        default="franka",
+        choices=list(ROBOT_CONFIGS.keys()),
+        help="Robot arm+gripper configuration (default: franka).",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for numpy-based setup.")
     parser.add_argument(
