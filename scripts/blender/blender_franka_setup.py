@@ -32,11 +32,12 @@ URDF joint reference (all axes are LOCAL Z in the URDF frame):
   Fingers: prismatic along local Y, ±0.04m
 """
 
-import bpy
 import math
 import os
 import xml.etree.ElementTree as ET
-from mathutils import Vector, Matrix, Euler
+
+import bpy
+from mathutils import Euler, Matrix, Vector
 
 # =============================================================================
 # CONFIGURATION — Edit these paths
@@ -68,6 +69,7 @@ NEWTON_SCENE = {
 # URDF PARSING + FK
 # =============================================================================
 
+
 def parse_urdf(urdf_path):
     """Parse the FR3 URDF, return ordered joints and link mesh paths."""
     tree = ET.parse(urdf_path)
@@ -88,17 +90,19 @@ def parse_urdf(urdf_path):
         lower = float(lim.get("lower", "0")) if lim is not None else 0
         upper = float(lim.get("upper", "0")) if lim is not None else 0
 
-        joints.append({
-            "name": j.get("name"),
-            "type": j.get("type"),
-            "parent_link": j.find("parent").get("link"),
-            "child_link": j.find("child").get("link"),
-            "xyz": xyz,
-            "rpy": rpy,
-            "axis": axis,
-            "lower": lower,
-            "upper": upper,
-        })
+        joints.append(
+            {
+                "name": j.get("name"),
+                "type": j.get("type"),
+                "parent_link": j.find("parent").get("link"),
+                "child_link": j.find("child").get("link"),
+                "xyz": xyz,
+                "rpy": rpy,
+                "axis": axis,
+                "lower": lower,
+                "upper": upper,
+            }
+        )
 
     # Resolve visual DAE mesh paths
     link_meshes = {}
@@ -139,12 +143,12 @@ def compute_link_transforms(joints):
 # SCENE HELPERS
 # =============================================================================
 
+
 def clean_scene():
     """Remove all objects, meshes, materials, armatures, actions."""
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    for coll in [bpy.data.meshes, bpy.data.materials,
-                 bpy.data.armatures, bpy.data.actions]:
+    for coll in [bpy.data.meshes, bpy.data.materials, bpy.data.armatures, bpy.data.actions]:
         for item in coll:
             coll.remove(item)
 
@@ -190,6 +194,7 @@ def create_ground():
 # DAE MESH IMPORT
 # =============================================================================
 
+
 def parse_dae_node_transform(filepath):
     """Extract the per-node transform matrix from a COLLADA DAE file.
 
@@ -209,12 +214,14 @@ def parse_dae_node_transform(filepath):
             vals = [float(v) for v in text.split()]
             if len(vals) == 16:
                 # COLLADA stores row-major
-                return Matrix((
-                    vals[0:4],
-                    vals[4:8],
-                    vals[8:12],
-                    vals[12:16],
-                ))
+                return Matrix(
+                    (
+                        vals[0:4],
+                        vals[4:8],
+                        vals[8:12],
+                        vals[12:16],
+                    )
+                )
     except Exception as e:
         print(f"  WARNING: could not parse DAE transform: {e}")
     return Matrix.Identity(4)
@@ -261,6 +268,7 @@ def import_dae(filepath, name):
 # =============================================================================
 # FRANKA MESH IMPORT (no rigging — you do that)
 # =============================================================================
+
 
 def import_franka_meshes():
     """
@@ -343,8 +351,7 @@ def import_franka_meshes():
         ax = f"({world_axis.x:+.2f}, {world_axis.y:+.2f}, {world_axis.z:+.2f})"
         pos = world_pos.translation
         lim = f"[{math.degrees(j['lower']):+.1f}° .. {math.degrees(j['upper']):+.1f}°]"
-        print(f"    {j['name']:20s}  pos=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})  "
-              f"axis={ax}  {lim}")
+        print(f"    {j['name']:20s}  pos=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})  axis={ax}  {lim}")
 
     # TCP empty
     tcp_T = link_transforms.get("fr3_hand_tcp", Matrix.Identity(4))
@@ -361,6 +368,7 @@ def import_franka_meshes():
 # =============================================================================
 # GARMENT IMPORT
 # =============================================================================
+
 
 def import_garment(obj_path, color=(0.9, 0.5, 0.6, 1.0)):
     """
@@ -394,7 +402,7 @@ def import_garment(obj_path, color=(0.9, 0.5, 0.6, 1.0)):
         # Raw mesh: scale cm→m, rotate 180° around Y, center origin
         scale = CLOTH_SCALE
         cloth.data.transform(Matrix.Scale(scale, 4))
-        cloth.data.transform(Matrix.Rotation(math.pi, 4, 'Y'))
+        cloth.data.transform(Matrix.Rotation(math.pi, 4, "Y"))
 
         # Center vertices: bbox center XY, bottom at Z=0
         verts = [Vector(v.co) for v in cloth.data.vertices]
@@ -408,9 +416,9 @@ def import_garment(obj_path, color=(0.9, 0.5, 0.6, 1.0)):
             cloth.data.transform(Matrix.Translation(Vector((-cx, -cy, -cz))))
 
         cloth.data.update()
-        print(f"  (raw mesh — applied scale + rotation + centering)")
+        print("  (raw mesh — applied scale + rotation + centering)")
     else:
-        print(f"  (clean mesh — already in meters, centered)")
+        print("  (clean mesh — already in meters, centered)")
 
     cloth.data.update()
 
@@ -459,6 +467,7 @@ def import_garment(obj_path, color=(0.9, 0.5, 0.6, 1.0)):
 # MAIN
 # =============================================================================
 
+
 def setup_scene():
     print("=" * 60)
     print("FRANKA FR3 — MESH IMPORT (RIGGING-READY)")
@@ -504,9 +513,9 @@ def setup_scene():
 
     rx, ry, rz = NEWTON_SCENE["robot_base"]
     print(f"""
-{'=' * 60}
+{"=" * 60}
 READY — Franka FR3 meshes imported, ready for rigging
-{'=' * 60}
+{"=" * 60}
 
 Layout:
   FrankaRoot empty at ({rx}, {ry}, {rz})

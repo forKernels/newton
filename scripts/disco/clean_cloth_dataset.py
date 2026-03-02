@@ -1,39 +1,38 @@
 """
-Clean Cloth Dataset — Fix meshes + generate fabric variants
-============================================================
-Processes garment OBJ meshes from the Maria/GarmentCode dataset:
-  1. Cleans geometry: scale cm→m, rotate 180° Y, center origin, remove degenerates
-  2. Generates fabric variants: each garment × N compatible fabrics = multiplied dataset
+Sim Prep -- Cloth Dataset (Blender)
+====================================
+Blender script to prepare garment meshes for Newton cloth simulation.
 
-The same cleaned mesh is shared across fabric variants — only the
-cloth_properties.json differs. This lets Newton simulate the same dress
-as silk, cotton, wool, etc. with different physics.
+Does NOT touch the mesh geometry. Only:
+  1. Scale cm -> m (apply)
+  2. Set origin to center of volume
+  3. Floor garment (bottom at Z=0)
+  4. Shade smooth
+  5. Solidify modifier (0.005 thickness), apply
+  6. Export cleaned OBJ + cloth_properties.json
 
-Usage:
-  # Clean + all fabric variants:
-  python scripts/disco/clean_cloth_dataset.py \
-      --dataset-dir "D:\_blender\_myBlender\SimulationWork\ClothDataset\_Maria_Set" \
-      --output-dir "D:\_blender\_myBlender\SimulationWork\ClothDataset\_Maria_Clean"
+Usage (headless):
+  blender --background --python scripts/disco/clean_cloth_dataset.py -- \
+      --dataset-dir "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set" \
+      --output-dir "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Clean"
 
-  # Specific fabrics only:
-  python scripts/disco/clean_cloth_dataset.py \
-      --dataset-dir "D:\_blender\_myBlender\SimulationWork\ClothDataset\_Maria_Set" \
-      --output-dir "D:\_blender\_myBlender\SimulationWork\ClothDataset\_Maria_Clean" \
-      --fabrics silk denim cotton
+  # Single garment test:
+  blender --background --python scripts/disco/clean_cloth_dataset.py -- \
+      --dataset-dir "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set" \
+      --categories dress_sleeveless_2550 --max-items 1 --fabrics default
 
-  # Single "default" fabric per category (no multiplication):
-  python scripts/disco/clean_cloth_dataset.py \
-      --dataset-dir "D:\_blender\_myBlender\SimulationWork\ClothDataset\_Maria_Set" \
-      --output-dir "D:\_blender\_myBlender\SimulationWork\ClothDataset\_Maria_Clean" \
-      --fabrics default
+  # In-place (writes next to original):
+  blender --background --python scripts/disco/clean_cloth_dataset.py -- \
+      --dataset-dir "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set" \
+      --categories dress_sleeveless_2550 --max-items 1 --fabrics default
 
   # Dry run:
-  python scripts/disco/clean_cloth_dataset.py \
-      --dataset-dir "D:\_blender\_myBlender\SimulationWork\ClothDataset\_Maria_Set" \
+  blender --background --python scripts/disco/clean_cloth_dataset.py -- \
+      --dataset-dir "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set" \
       --dry-run
 
   # List all available fabrics:
-  python scripts/disco/clean_cloth_dataset.py --list-fabrics
+  blender --background --python scripts/disco/clean_cloth_dataset.py -- --list-fabrics
 """
 
 from __future__ import annotations
@@ -41,16 +40,18 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 import time
 from pathlib import Path
 
-import numpy as np
+import bpy
+from mathutils import Vector
 
 # =============================================================================
-# FABRIC LIBRARY — Physical properties for simulation
+# FABRIC LIBRARY -- Physical properties for simulation
 # =============================================================================
 # Sources: textile engineering references, typical values for cloth simulation.
-# density = kg/m² (areal density, not volumetric)
+# density = kg/m^2 (areal density, not volumetric)
 # tri_ke  = stretch stiffness (higher = resists stretching more)
 # tri_ka  = area preservation stiffness
 # tri_kd  = damping coefficient
@@ -59,7 +60,7 @@ import numpy as np
 FABRICS = {
     # --- Lightweight ---
     "silk": {
-        "description": "Silk — very light, smooth, fluid drape",
+        "description": "Silk -- very light, smooth, fluid drape",
         "density": 0.08,
         "tri_ke": 30.0,
         "tri_ka": 25.0,
@@ -68,7 +69,7 @@ FABRICS = {
         "weight_class": "ultralight",
     },
     "chiffon": {
-        "description": "Chiffon — sheer, floaty, delicate",
+        "description": "Chiffon -- sheer, floaty, delicate",
         "density": 0.06,
         "tri_ke": 20.0,
         "tri_ka": 15.0,
@@ -77,7 +78,7 @@ FABRICS = {
         "weight_class": "ultralight",
     },
     "organza": {
-        "description": "Organza — crisp, sheer, holds shape",
+        "description": "Organza -- crisp, sheer, holds shape",
         "density": 0.07,
         "tri_ke": 45.0,
         "tri_ka": 40.0,
@@ -86,7 +87,7 @@ FABRICS = {
         "weight_class": "ultralight",
     },
     "satin": {
-        "description": "Satin — smooth, glossy, medium drape",
+        "description": "Satin -- smooth, glossy, medium drape",
         "density": 0.12,
         "tri_ke": 40.0,
         "tri_ka": 35.0,
@@ -94,10 +95,9 @@ FABRICS = {
         "friction": 0.15,
         "weight_class": "light",
     },
-
     # --- Light-Medium ---
     "cotton": {
-        "description": "Cotton broadcloth — everyday woven, medium body",
+        "description": "Cotton broadcloth -- everyday woven, medium body",
         "density": 0.15,
         "tri_ke": 80.0,
         "tri_ka": 70.0,
@@ -106,7 +106,7 @@ FABRICS = {
         "weight_class": "light",
     },
     "linen": {
-        "description": "Linen — natural fiber, crisp, wrinkles easily",
+        "description": "Linen -- natural fiber, crisp, wrinkles easily",
         "density": 0.17,
         "tri_ke": 100.0,
         "tri_ka": 90.0,
@@ -115,7 +115,7 @@ FABRICS = {
         "weight_class": "light",
     },
     "jersey": {
-        "description": "Jersey knit — stretchy, soft, t-shirt fabric",
+        "description": "Jersey knit -- stretchy, soft, t-shirt fabric",
         "density": 0.18,
         "tri_ke": 35.0,
         "tri_ka": 30.0,
@@ -124,7 +124,7 @@ FABRICS = {
         "weight_class": "light",
     },
     "polyester": {
-        "description": "Polyester — wrinkle-resistant, slightly slippery",
+        "description": "Polyester -- wrinkle-resistant, slightly slippery",
         "density": 0.14,
         "tri_ke": 60.0,
         "tri_ka": 55.0,
@@ -132,10 +132,9 @@ FABRICS = {
         "friction": 0.30,
         "weight_class": "light",
     },
-
     # --- Medium ---
     "cotton_twill": {
-        "description": "Cotton twill — chinos, structured but not stiff",
+        "description": "Cotton twill -- chinos, structured but not stiff",
         "density": 0.25,
         "tri_ke": 120.0,
         "tri_ka": 110.0,
@@ -144,7 +143,7 @@ FABRICS = {
         "weight_class": "medium",
     },
     "wool": {
-        "description": "Wool — warm, medium drape, textured surface",
+        "description": "Wool -- warm, medium drape, textured surface",
         "density": 0.28,
         "tri_ke": 100.0,
         "tri_ka": 90.0,
@@ -153,7 +152,7 @@ FABRICS = {
         "weight_class": "medium",
     },
     "flannel": {
-        "description": "Flannel — soft, brushed, warm",
+        "description": "Flannel -- soft, brushed, warm",
         "density": 0.24,
         "tri_ke": 90.0,
         "tri_ka": 80.0,
@@ -162,7 +161,7 @@ FABRICS = {
         "weight_class": "medium",
     },
     "velvet": {
-        "description": "Velvet — plush, heavy drape, grippy surface",
+        "description": "Velvet -- plush, heavy drape, grippy surface",
         "density": 0.30,
         "tri_ke": 85.0,
         "tri_ka": 75.0,
@@ -171,7 +170,7 @@ FABRICS = {
         "weight_class": "medium",
     },
     "corduroy": {
-        "description": "Corduroy — ribbed texture, medium-heavy",
+        "description": "Corduroy -- ribbed texture, medium-heavy",
         "density": 0.32,
         "tri_ke": 130.0,
         "tri_ka": 120.0,
@@ -179,10 +178,9 @@ FABRICS = {
         "friction": 0.55,
         "weight_class": "medium",
     },
-
     # --- Heavy ---
     "denim": {
-        "description": "Denim — heavy, stiff, jeans fabric",
+        "description": "Denim -- heavy, stiff, jeans fabric",
         "density": 0.40,
         "tri_ke": 250.0,
         "tri_ka": 230.0,
@@ -191,7 +189,7 @@ FABRICS = {
         "weight_class": "heavy",
     },
     "canvas": {
-        "description": "Canvas — heavy-duty, very stiff, work wear",
+        "description": "Canvas -- heavy-duty, very stiff, work wear",
         "density": 0.45,
         "tri_ke": 300.0,
         "tri_ka": 280.0,
@@ -200,7 +198,7 @@ FABRICS = {
         "weight_class": "heavy",
     },
     "leather": {
-        "description": "Leather — heavy, stiff, minimal stretch",
+        "description": "Leather -- heavy, stiff, minimal stretch",
         "density": 0.60,
         "tri_ke": 400.0,
         "tri_ka": 380.0,
@@ -209,7 +207,7 @@ FABRICS = {
         "weight_class": "heavy",
     },
     "wool_coat": {
-        "description": "Wool coating — thick, structured, overcoats",
+        "description": "Wool coating -- thick, structured, overcoats",
         "density": 0.50,
         "tri_ke": 280.0,
         "tri_ka": 260.0,
@@ -218,7 +216,7 @@ FABRICS = {
         "weight_class": "heavy",
     },
     "fleece": {
-        "description": "Fleece — soft, thick, stretchy, high friction",
+        "description": "Fleece -- soft, thick, stretchy, high friction",
         "density": 0.35,
         "tri_ke": 60.0,
         "tri_ka": 50.0,
@@ -227,7 +225,7 @@ FABRICS = {
         "weight_class": "heavy",
     },
     "neoprene": {
-        "description": "Neoprene — thick, rubbery, wetsuit material",
+        "description": "Neoprene -- thick, rubbery, wetsuit material",
         "density": 0.55,
         "tri_ke": 150.0,
         "tri_ka": 140.0,
@@ -239,60 +237,126 @@ FABRICS = {
 
 
 # =============================================================================
-# GARMENT → COMPATIBLE FABRICS mapping
+# GARMENT -> COMPATIBLE FABRICS mapping
 # =============================================================================
-# Each garment category maps to a list of fabrics that make physical sense.
-# Running with all compatible fabrics multiplies the dataset.
 
 CATEGORY_FABRICS = {
     "dress_sleeveless": [
-        "silk", "chiffon", "satin", "cotton", "linen", "jersey", "polyester",
+        "silk",
+        "chiffon",
+        "satin",
+        "cotton",
+        "linen",
+        "jersey",
+        "polyester",
     ],
     "dress": [
-        "silk", "chiffon", "satin", "cotton", "linen", "jersey", "polyester",
-        "wool", "velvet",
+        "silk",
+        "chiffon",
+        "satin",
+        "cotton",
+        "linen",
+        "jersey",
+        "polyester",
+        "wool",
+        "velvet",
     ],
     "tee_sleeveless": [
-        "jersey", "cotton", "polyester", "silk",
+        "jersey",
+        "cotton",
+        "polyester",
+        "silk",
     ],
     "tee": [
-        "jersey", "cotton", "polyester", "flannel",
+        "jersey",
+        "cotton",
+        "polyester",
+        "flannel",
     ],
     "jacket": [
-        "denim", "canvas", "leather", "wool_coat", "cotton_twill", "corduroy",
+        "denim",
+        "canvas",
+        "leather",
+        "wool_coat",
+        "cotton_twill",
+        "corduroy",
         "neoprene",
     ],
     "jacket_hood": [
-        "fleece", "denim", "canvas", "neoprene", "wool_coat",
+        "fleece",
+        "denim",
+        "canvas",
+        "neoprene",
+        "wool_coat",
     ],
     "pants_straight_sides": [
-        "denim", "cotton_twill", "wool", "corduroy", "linen", "polyester",
-        "leather", "flannel",
+        "denim",
+        "cotton_twill",
+        "wool",
+        "corduroy",
+        "linen",
+        "polyester",
+        "leather",
+        "flannel",
     ],
     "pants": [
-        "denim", "cotton_twill", "wool", "corduroy", "linen", "polyester",
+        "denim",
+        "cotton_twill",
+        "wool",
+        "corduroy",
+        "linen",
+        "polyester",
         "leather",
     ],
     "skirt_2_panels": [
-        "silk", "cotton", "linen", "polyester", "wool", "satin", "velvet",
+        "silk",
+        "cotton",
+        "linen",
+        "polyester",
+        "wool",
+        "satin",
+        "velvet",
     ],
     "skirt_4_panels": [
-        "silk", "cotton", "linen", "polyester", "wool", "satin", "velvet",
+        "silk",
+        "cotton",
+        "linen",
+        "polyester",
+        "wool",
+        "satin",
+        "velvet",
         "chiffon",
     ],
     "skirt_8_panels": [
-        "silk", "cotton", "linen", "polyester", "wool", "chiffon", "organza",
+        "silk",
+        "cotton",
+        "linen",
+        "polyester",
+        "wool",
+        "chiffon",
+        "organza",
     ],
     "skirt": [
-        "silk", "cotton", "linen", "polyester", "wool", "satin",
+        "silk",
+        "cotton",
+        "linen",
+        "polyester",
+        "wool",
+        "satin",
     ],
     "jumpsuit_sleeveless": [
-        "jersey", "cotton", "linen", "polyester", "denim",
+        "jersey",
+        "cotton",
+        "linen",
+        "polyester",
+        "denim",
     ],
 }
 
-# Fallback: if category not found, offer a broad set
 DEFAULT_FABRICS = ["cotton", "polyester", "jersey", "wool", "denim"]
+
+SOLIDIFY_THICKNESS = 0.005
+CLOTH_SCALE = 0.01  # cm -> m
 
 
 def get_fabrics_for_category(category_name: str) -> list[str]:
@@ -318,123 +382,105 @@ def get_fabric_properties(fabric_name: str) -> dict:
 
 
 # =============================================================================
-# Mesh cleaning (unchanged geometry operations)
+# Blender mesh processing
 # =============================================================================
 
-def load_obj_raw(obj_path: str) -> tuple[np.ndarray, np.ndarray]:
-    """Load OBJ vertices and faces without any library dependency."""
-    vertices = []
-    faces = []
-    with open(obj_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("v "):
-                parts = line.split()
-                vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
-            elif line.startswith("f "):
-                parts = line.split()[1:]
-                face_verts = []
-                for p in parts:
-                    idx = int(p.split("/")[0]) - 1
-                    face_verts.append(idx)
-                if len(face_verts) == 3:
-                    faces.append(face_verts)
-                elif len(face_verts) == 4:
-                    faces.append([face_verts[0], face_verts[1], face_verts[2]])
-                    faces.append([face_verts[0], face_verts[2], face_verts[3]])
-                elif len(face_verts) > 4:
-                    for i in range(1, len(face_verts) - 1):
-                        faces.append([face_verts[0], face_verts[i], face_verts[i + 1]])
 
-    return np.array(vertices, dtype=np.float64), np.array(faces, dtype=np.int32)
+def clear_scene():
+    """Remove all objects from the scene."""
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete(use_global=False)
+    for mesh in bpy.data.meshes:
+        bpy.data.meshes.remove(mesh)
 
 
-def write_obj(filepath: str, vertices: np.ndarray, faces: np.ndarray, comment: str = ""):
-    """Write a clean OBJ file."""
-    with open(filepath, "w") as f:
-        if comment:
-            for line in comment.split("\n"):
-                f.write(f"# {line}\n")
-        f.write(f"# {len(vertices)} vertices, {len(faces)} faces\n\n")
-        for v in vertices:
-            f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
-        f.write("\n")
-        for face in faces:
-            f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+def process_garment(obj_path: str, out_path: str) -> dict:
+    """Import, prep for sim, and export a single garment.
 
+    Steps:
+      1. Import OBJ
+      2. Scale cm -> m (apply)
+      3. Set origin to center of volume
+      4. Floor garment (bottom at Z=0)
+      5. Shade smooth
+      6. Solidify modifier (0.005), apply
+      7. Export OBJ
 
-def clean_mesh(
-    vertices: np.ndarray,
-    faces: np.ndarray,
-    scale: float = 0.01,
-    rotate_y_180: bool = True,
-    center_origin: bool = True,
-    remove_degenerate: bool = True,
-    degenerate_threshold: float = 1e-10,
-) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Clean a garment mesh: scale, rotate, center, remove bad faces."""
-    stats = {
-        "original_verts": len(vertices),
-        "original_faces": len(faces),
+    Returns stats dict.
+    """
+    clear_scene()
+
+    # Import OBJ
+    try:
+        bpy.ops.wm.obj_import(filepath=obj_path)
+    except AttributeError:
+        bpy.ops.import_scene.obj(filepath=obj_path)
+
+    obj = bpy.context.selected_objects[0]
+    bpy.context.view_layer.objects.active = obj
+
+    verts_before = len(obj.data.vertices)
+    faces_before = len(obj.data.polygons)
+
+    # 1. Scale cm -> m
+    obj.scale = (CLOTH_SCALE, CLOTH_SCALE, CLOTH_SCALE)
+    bpy.ops.object.transform_apply(scale=True)
+
+    # 2. Origin to center of volume
+    bpy.ops.object.origin_set(type="ORIGIN_CENTER_OF_VOLUME", center="MEDIAN")
+
+    # 3. Floor: raise so bottom is at Z=0
+    bbox_corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    min_z = min(v.z for v in bbox_corners)
+    obj.location.z -= min_z
+    bpy.ops.object.transform_apply(location=True)
+
+    # 4. Shade smooth
+    bpy.ops.object.shade_smooth()
+
+    # 5. Solidify modifier
+    bpy.ops.object.modifier_add(type="SOLIDIFY")
+    obj.modifiers["Solidify"].thickness = SOLIDIFY_THICKNESS
+    bpy.ops.object.modifier_apply(modifier="Solidify")
+
+    verts_after = len(obj.data.vertices)
+    faces_after = len(obj.data.polygons)
+
+    # Measure final bbox
+    bbox_corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    bb_min = Vector((min(v.x for v in bbox_corners), min(v.y for v in bbox_corners), min(v.z for v in bbox_corners)))
+    bb_max = Vector((max(v.x for v in bbox_corners), max(v.y for v in bbox_corners), max(v.z for v in bbox_corners)))
+    extent = bb_max - bb_min
+
+    # Export OBJ
+    obj.select_set(True)
+    try:
+        bpy.ops.wm.obj_export(
+            filepath=out_path,
+            export_selected_objects=True,
+            export_uv=True,
+            export_normals=True,
+        )
+    except AttributeError:
+        bpy.ops.export_scene.obj(
+            filepath=out_path,
+            use_selection=True,
+        )
+
+    return {
+        "verts_before": verts_before,
+        "faces_before": faces_before,
+        "verts_after": verts_after,
+        "faces_after": faces_after,
+        "extent_m": [round(extent.x, 4), round(extent.y, 4), round(extent.z, 4)],
+        "solidify_thickness": SOLIDIFY_THICKNESS,
     }
-
-    verts = vertices.copy()
-
-    # 1. Scale (cm → meters)
-    verts *= scale
-    stats["scale_applied"] = scale
-
-    # 2. Rotate 180° around Y axis: (x, y, z) → (-x, y, -z)
-    if rotate_y_180:
-        verts[:, 0] *= -1
-        verts[:, 2] *= -1
-        stats["rotated_y_180"] = True
-
-    # 3. Remove degenerate faces
-    good_faces = faces
-    if remove_degenerate and len(faces) > 0:
-        v0 = verts[faces[:, 0]]
-        v1 = verts[faces[:, 1]]
-        v2 = verts[faces[:, 2]]
-        cross = np.cross(v1 - v0, v2 - v0)
-        areas = 0.5 * np.linalg.norm(cross, axis=1)
-        mask = areas > degenerate_threshold
-        degenerate_count = int(np.sum(~mask))
-        good_faces = faces[mask]
-        stats["degenerate_removed"] = degenerate_count
-    else:
-        stats["degenerate_removed"] = 0
-
-    # 4. Center origin: bbox center XY, bottom at Z=0
-    if center_origin and len(verts) > 0:
-        bbox_min = verts.min(axis=0)
-        bbox_max = verts.max(axis=0)
-        center_x = (bbox_min[0] + bbox_max[0]) / 2.0
-        center_y = (bbox_min[1] + bbox_max[1]) / 2.0
-        bottom_z = bbox_min[2]
-        verts[:, 0] -= center_x
-        verts[:, 1] -= center_y
-        verts[:, 2] -= bottom_z
-        stats["origin_centered"] = True
-
-    # Final bbox
-    if len(verts) > 0:
-        bbox_min = verts.min(axis=0)
-        bbox_max = verts.max(axis=0)
-        extent = bbox_max - bbox_min
-        stats["clean_bbox_min"] = bbox_min.tolist()
-        stats["clean_bbox_max"] = bbox_max.tolist()
-        stats["clean_extent_m"] = [round(x, 4) for x in extent.tolist()]
-
-    stats["clean_verts"] = len(verts)
-    stats["clean_faces"] = len(good_faces)
-
-    return verts, good_faces, stats
 
 
 # =============================================================================
 # Dataset scanner
 # =============================================================================
+
 
 def find_garments(dataset_dir: str, categories: list[str] | None = None) -> list[dict]:
     """Find all *_sim.obj garment meshes in the dataset."""
@@ -445,10 +491,7 @@ def find_garments(dataset_dir: str, categories: list[str] | None = None) -> list
     if categories:
         cat_dirs = [dataset / c for c in categories if (dataset / c).is_dir()]
     else:
-        cat_dirs = sorted(
-            d for d in dataset.iterdir()
-            if d.is_dir() and not d.name.endswith((".zip", ".rar"))
-        )
+        cat_dirs = sorted(d for d in dataset.iterdir() if d.is_dir() and not d.name.endswith((".zip", ".rar")))
 
     items = []
     for cat_dir in cat_dirs:
@@ -459,14 +502,16 @@ def find_garments(dataset_dir: str, categories: list[str] | None = None) -> list
             sim_objs = list(garment_dir.glob("*_sim.obj"))
             if sim_objs:
                 spec_path = garment_dir / "specification.json"
-                items.append({
-                    "category": category,
-                    "garment_id": garment_dir.name,
-                    "obj_path": str(sim_objs[0]),
-                    "garment_dir": str(garment_dir),
-                    "has_spec": spec_path.exists(),
-                    "spec_path": str(spec_path) if spec_path.exists() else None,
-                })
+                items.append(
+                    {
+                        "category": category,
+                        "garment_id": garment_dir.name,
+                        "obj_path": str(sim_objs[0]),
+                        "garment_dir": str(garment_dir),
+                        "has_spec": spec_path.exists(),
+                        "spec_path": str(spec_path) if spec_path.exists() else None,
+                    }
+                )
     return items
 
 
@@ -474,61 +519,82 @@ def find_garments(dataset_dir: str, categories: list[str] | None = None) -> list
 # Main
 # =============================================================================
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Clean cloth dataset + generate fabric variants for dataset multiplication"
-    )
+    # Parse args after "--" (blender passes its own args before that)
+    argv = sys.argv
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1 :]
+    else:
+        argv = []
+
+    parser = argparse.ArgumentParser(description="Sim prep: scale + floor + solidify garment meshes (Blender)")
     parser.add_argument(
-        "--dataset-dir", type=str, default=None,
+        "--dataset-dir",
+        type=str,
+        default=None,
         help="Root dataset directory (e.g. _Maria_Set)",
     )
     parser.add_argument(
-        "--output-dir", type=str, default=None,
-        help="Output directory for cleaned meshes + fabric variants",
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory for prepped meshes (omit for in-place)",
     )
     parser.add_argument(
-        "--categories", type=str, nargs="*", default=None,
+        "--categories",
+        type=str,
+        nargs="*",
+        default=None,
         help="Category folders to process (omit for all)",
     )
     parser.add_argument(
-        "--fabrics", type=str, nargs="*", default=None,
-        help="Fabric names to generate (omit for all compatible per category, "
-             "'default' for one per category)",
+        "--fabrics",
+        type=str,
+        nargs="*",
+        default=None,
+        help="Fabric names to generate (omit for all compatible, 'default' for one per category)",
     )
     parser.add_argument(
-        "--max-items", type=int, default=None,
+        "--max-items",
+        type=int,
+        default=None,
         help="Max garments to process (for testing)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Report what would be done without writing files",
     )
     parser.add_argument(
-        "--copy-assets", action="store_true",
+        "--copy-assets",
+        action="store_true",
         help="Copy specification.json, PNGs, etc. to each variant folder",
     )
     parser.add_argument(
-        "--list-fabrics", action="store_true",
+        "--list-fabrics",
+        action="store_true",
         help="Print all available fabrics and exit",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # --list-fabrics mode
     if args.list_fabrics:
-        print(f"\n{'='*70}")
-        print(f"FABRIC LIBRARY — {len(FABRICS)} fabrics available")
-        print(f"{'='*70}\n")
-        print(f"  {'Name':<14s} {'Weight':<12s} {'Density':>8s} {'Stiff':>7s} "
-              f"{'Damp':>10s} {'Frict':>6s}  Description")
-        print(f"  {'─'*14} {'─'*12} {'─'*8} {'─'*7} {'─'*10} {'─'*6}  {'─'*30}")
+        print(f"\n{'=' * 70}")
+        print(f"FABRIC LIBRARY -- {len(FABRICS)} fabrics available")
+        print(f"{'=' * 70}\n")
+        print(f"  {'Name':<14s} {'Weight':<12s} {'Density':>8s} {'Stiff':>7s} {'Damp':>10s} {'Frict':>6s}  Description")
+        print(f"  {'-' * 14} {'-' * 12} {'-' * 8} {'-' * 7} {'-' * 10} {'-' * 6}  {'-' * 30}")
         for name, props in sorted(FABRICS.items(), key=lambda x: x[1]["density"]):
-            print(f"  {name:<14s} {props['weight_class']:<12s} {props['density']:>7.2f}  "
-                  f"{props['tri_ke']:>6.0f}  {props['tri_kd']:>9.1e}  {props['friction']:>5.2f}  "
-                  f"{props['description']}")
+            print(
+                f"  {name:<14s} {props['weight_class']:<12s} {props['density']:>7.2f}  "
+                f"{props['tri_ke']:>6.0f}  {props['tri_kd']:>9.1e}  {props['friction']:>5.2f}  "
+                f"{props['description']}"
+            )
 
-        print(f"\n{'='*70}")
-        print(f"CATEGORY → COMPATIBLE FABRICS")
-        print(f"{'='*70}\n")
+        print(f"\n{'=' * 70}")
+        print("CATEGORY -> COMPATIBLE FABRICS")
+        print(f"{'=' * 70}\n")
         for cat, fabrics in sorted(CATEGORY_FABRICS.items()):
             print(f"  {cat:<25s}  {len(fabrics):2d} fabrics: {', '.join(fabrics)}")
         print()
@@ -538,7 +604,8 @@ def main():
         parser.error("--dataset-dir is required (unless using --list-fabrics)")
 
     print("=" * 70)
-    print("CLOTH DATASET CLEANER + FABRIC VARIANT GENERATOR")
+    print("SIM PREP -- CLOTH DATASET (Blender)")
+    print("  Scale cm->m | Origin center of volume | Floor | Shade smooth | Solidify")
     print("=" * 70)
 
     # Discover garments
@@ -550,13 +617,13 @@ def main():
         return
 
     if args.max_items:
-        items = items[:args.max_items]
+        items = items[: args.max_items]
 
     # Determine fabric mode
     use_default_only = args.fabrics and args.fabrics == ["default"]
     requested_fabrics = None if use_default_only else args.fabrics
 
-    # Preview multiplication
+    # Preview
     total_variants = 0
     for item in items:
         cat = item["category"]
@@ -568,8 +635,7 @@ def main():
                 compatible = [f for f in compatible if f in requested_fabrics]
             total_variants += max(len(compatible), 1)
 
-    print(f"Fabric variants to generate: {total_variants} "
-          f"({len(items)} garments × fabrics)")
+    print(f"Fabric variants to generate: {total_variants} ({len(items)} garments x fabrics)")
     if args.fabrics:
         print(f"Fabric filter: {args.fabrics}")
 
@@ -599,17 +665,7 @@ def main():
             if not fabrics_to_gen:
                 fabrics_to_gen = [get_fabrics_for_category(cat)[0]]
 
-        print(f"\n[{i+1}/{len(items)}] {cat}/{gid}  ({len(fabrics_to_gen)} variants)")
-
-        # Load and clean mesh ONCE
-        verts, faces = load_obj_raw(obj_path)
-        clean_verts, clean_faces, mesh_stats = clean_mesh(verts, faces)
-
-        extent = mesh_stats.get("clean_extent_m", [0, 0, 0])
-        degen = mesh_stats.get("degenerate_removed", 0)
-        degen_str = f"  [{degen} degen removed]" if degen > 0 else ""
-        print(f"  mesh: {mesh_stats['clean_verts']:,}v {mesh_stats['clean_faces']:,}f  "
-              f"extent={extent[0]:.3f}x{extent[1]:.3f}x{extent[2]:.3f}m{degen_str}")
+        print(f"\n[{i + 1}/{len(items)}] {cat}/{gid}  ({len(fabrics_to_gen)} variants)")
 
         # Read original spec
         original_units = 100
@@ -618,80 +674,86 @@ def main():
                 spec = json.load(f)
             original_units = spec.get("properties", {}).get("units_in_meter", 100)
 
-        # Generate each fabric variant
+        # Process mesh once via Blender, export to first variant path
+        # Then copy the same OBJ for additional fabric variants
+        first_out_obj = None
+        mesh_stats = None
+
         for fabric_name in fabrics_to_gen:
             fabric_props = get_fabric_properties(fabric_name)
 
-            cloth_props = {
-                "category": cat,
-                "garment_id": gid,
-                "fabric": fabric_name,
-                "fabric_description": fabric_props["description"],
-                "weight_class": fabric_props["weight_class"],
-                "density": fabric_props["density"],
-                "tri_ke": fabric_props["tri_ke"],
-                "tri_ka": fabric_props["tri_ka"],
-                "tri_kd": fabric_props["tri_kd"],
-                "friction": fabric_props["friction"],
-                "original_units_in_meter": original_units,
-                "units": "meters",
-                "clean_extent_m": extent,
-            }
-
-            if not args.dry_run and output_root:
-                # Output: category/garment_id/fabric_name/
+            # Determine output path
+            if output_root:
                 variant_dir = output_root / cat / gid / fabric_name
+                out_obj = str(variant_dir / f"{gid}_sim_prep.obj")
+            else:
+                orig = Path(obj_path)
+                variant_dir = orig.parent
+                out_obj = str(orig.parent / orig.name.replace("_sim.obj", f"_{fabric_name}_sim_prep.obj"))
+
+            if not args.dry_run:
                 variant_dir.mkdir(parents=True, exist_ok=True)
 
-                # Write cleaned OBJ (same mesh for all variants)
-                out_obj = variant_dir / f"{gid}_clean.obj"
-                if not out_obj.exists():
-                    comment = (
-                        f"Cleaned by clean_cloth_dataset.py\n"
-                        f"Source: {obj_path}\n"
-                        f"Scale: cm -> meters (0.01)\n"
-                        f"Origin: bbox center XY, bottom Z=0\n"
-                        f"Rotated: 180 deg around Y\n"
-                        f"Units: meters\n"
-                        f"Fabric variant: {fabric_name}"
+                if first_out_obj is None:
+                    # First variant: run Blender processing
+                    mesh_stats = process_garment(obj_path, out_obj)
+                    first_out_obj = out_obj
+
+                    extent = mesh_stats["extent_m"]
+                    print(
+                        f"  mesh: {mesh_stats['verts_before']:,}v {mesh_stats['faces_before']:,}f"
+                        f" -> {mesh_stats['verts_after']:,}v {mesh_stats['faces_after']:,}f"
+                        f" (solidify)"
                     )
-                    write_obj(str(out_obj), clean_verts, clean_faces, comment=comment)
+                    print(f"  extent: {extent[0]:.3f} x {extent[1]:.3f} x {extent[2]:.3f} m")
+                else:
+                    # Additional variants: copy the already-processed OBJ
+                    if out_obj != first_out_obj:
+                        shutil.copy2(first_out_obj, out_obj)
 
                 # Write fabric-specific properties
-                out_props = variant_dir / "cloth_properties.json"
-                with open(str(out_props), "w") as f:
+                cloth_props = {
+                    "category": cat,
+                    "garment_id": gid,
+                    "fabric": fabric_name,
+                    "fabric_description": fabric_props["description"],
+                    "weight_class": fabric_props["weight_class"],
+                    "density": fabric_props["density"],
+                    "tri_ke": fabric_props["tri_ke"],
+                    "tri_ka": fabric_props["tri_ka"],
+                    "tri_kd": fabric_props["tri_kd"],
+                    "friction": fabric_props["friction"],
+                    "original_units_in_meter": original_units,
+                    "units": "meters",
+                    "solidify_thickness": SOLIDIFY_THICKNESS,
+                }
+                if mesh_stats:
+                    cloth_props["extent_m"] = mesh_stats["extent_m"]
+
+                if output_root:
+                    props_path = variant_dir / "cloth_properties.json"
+                else:
+                    props_path = variant_dir / f"cloth_properties_{fabric_name}.json"
+                with open(str(props_path), "w") as f:
                     json.dump(cloth_props, f, indent=2)
 
                 # Copy supporting assets
-                if args.copy_assets:
+                if args.copy_assets and output_root:
                     src_dir = Path(item["garment_dir"])
                     for asset in src_dir.iterdir():
                         if asset.suffix in (".json", ".png", ".svg", ".txt"):
-                            if asset.name != "cloth_properties.json":
+                            if "cloth_properties" not in asset.name:
                                 dest = variant_dir / asset.name
                                 if not dest.exists():
                                     shutil.copy2(str(asset), str(dest))
 
-            elif not args.dry_run and not output_root:
-                # In-place mode: write next to original
-                orig = Path(obj_path)
-                out_obj = orig.parent / orig.name.replace("_sim.obj", f"_{fabric_name}_clean.obj")
-                out_props = orig.parent / f"cloth_properties_{fabric_name}.json"
-
-                comment = (
-                    f"Cleaned by clean_cloth_dataset.py\n"
-                    f"Fabric: {fabric_name}\n"
-                    f"Units: meters"
-                )
-                write_obj(str(out_obj), clean_verts, clean_faces, comment=comment)
-                with open(str(out_props), "w") as f:
-                    json.dump(cloth_props, f, indent=2)
-
             total_written += 1
-            print(f"    {fabric_name:<14s}  density={fabric_props['density']:.2f}  "
-                  f"stiffness={fabric_props['tri_ke']:.0f}  "
-                  f"friction={fabric_props['friction']:.2f}  "
-                  f"({fabric_props['weight_class']})")
+            print(
+                f"    {fabric_name:<14s}  density={fabric_props['density']:.2f}  "
+                f"stiffness={fabric_props['tri_ke']:.0f}  "
+                f"friction={fabric_props['friction']:.2f}  "
+                f"({fabric_props['weight_class']})"
+            )
 
         # Track stats
         if cat not in category_stats:
@@ -709,9 +771,7 @@ def main():
             "total_garments": len(items),
             "total_variants": total_written,
             "multiplication_factor": round(total_written / max(len(items), 1), 1),
-            "fabrics_used": sorted(set(
-                f for cs in category_stats.values() for f in cs["fabrics"]
-            )),
+            "fabrics_used": sorted(set(f for cs in category_stats.values() for f in cs["fabrics"])),
             "categories": {
                 cat: {
                     "garments": cs["garments"],
@@ -720,11 +780,12 @@ def main():
                 }
                 for cat, cs in sorted(category_stats.items())
             },
-            "cleaning_params": {
-                "scale": 0.01,
-                "rotate_y_180": True,
-                "center_origin": True,
-                "remove_degenerate": True,
+            "prep_params": {
+                "scale": CLOTH_SCALE,
+                "origin": "ORIGIN_CENTER_OF_VOLUME",
+                "floor": True,
+                "shade_smooth": True,
+                "solidify_thickness": SOLIDIFY_THICKNESS,
                 "units": "meters",
             },
             "fabric_library_version": "1.0",
@@ -734,21 +795,22 @@ def main():
             json.dump(manifest, f, indent=2)
 
     # Summary
-    print(f"\n{'='*70}")
-    print(f"DONE — {total_written} variants from {len(items)} garments in {duration:.1f}s")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print(f"DONE -- {total_written} variants from {len(items)} garments in {duration:.1f}s")
+    print(f"{'=' * 70}")
     print(f"\n  {'Category':<35s} {'Garments':>9s} {'Fabrics':>8s} {'Variants':>9s}  Multiplier")
-    print(f"  {'─'*35} {'─'*9} {'─'*8} {'─'*9}  {'─'*10}")
+    print(f"  {'-' * 35} {'-' * 9} {'-' * 8} {'-' * 9}  {'-' * 10}")
     for cat, cs in sorted(category_stats.items()):
         mult = cs["variants"] / max(cs["garments"], 1)
-        print(f"  {cat:<35s} {cs['garments']:>9d} {len(cs['fabrics']):>8d} "
-              f"{cs['variants']:>9d}  ×{mult:.0f}")
+        print(f"  {cat:<35s} {cs['garments']:>9d} {len(cs['fabrics']):>8d} {cs['variants']:>9d}  x{mult:.0f}")
 
     total_garments = sum(cs["garments"] for cs in category_stats.values())
     total_fabrics = len(set(f for cs in category_stats.values() for f in cs["fabrics"]))
-    print(f"  {'─'*35} {'─'*9} {'─'*8} {'─'*9}  {'─'*10}")
-    print(f"  {'TOTAL':<35s} {total_garments:>9d} {total_fabrics:>8d} "
-          f"{total_written:>9d}  ×{total_written/max(total_garments,1):.1f}")
+    print(f"  {'-' * 35} {'-' * 9} {'-' * 8} {'-' * 9}  {'-' * 10}")
+    print(
+        f"  {'TOTAL':<35s} {total_garments:>9d} {total_fabrics:>8d} "
+        f"{total_written:>9d}  x{total_written / max(total_garments, 1):.1f}"
+    )
 
     if output_root:
         print(f"\n  Output: {output_root}")

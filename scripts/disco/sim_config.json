@@ -1,0 +1,7 @@
+{
+  "furniture_dir": "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes",
+  "garment_dir": "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set",
+  "output_dir": "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Sims",
+  "blender_preset_dir": "C:/Program Files/Blender Foundation/Blender 4.5/4.5/scripts/presets/cloth",
+  "blender_exe": "blender"
+}
