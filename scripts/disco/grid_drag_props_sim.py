@@ -4,29 +4,28 @@ Grid Cloth Drag Over Props Simulation (Blender)
 Places props (scanned objects) on the floor or on furniture, then drags a
 grid cloth across them.  The cloth catches and drapes over props as it passes.
 
-Props are loaded from a directory of OBJ/USD/blend files (e.g. MuJoCo scanned
-objects).  Optionally a furniture piece (table, chair) is placed as the base
-surface.
+Props are discovered automatically from multiple asset libraries:
+  - MuJoCo scanned objects  (OBJ)
+  - Nvidia SimReady Kitchen (OBJ — objects + fixtures)
+  - Nvidia SimReady Warehouse (USD)
+  - Any additional directories passed via --props-dir
 
 Output pipeline: bake -> .blend -> .abc -> .usda -> .json
 
 Usage (headless):
+  # Uses all default prop dirs (edit PROP_DIRS below to match your machine):
   blender --background --python scripts/disco/grid_drag_props_sim.py -- \
-      --props-dir "C:/_git/mujoco_scanned_objects/models" \
-      --output-dir "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Sims" \
-      --cloth-preset Cotton --num-samples 5 --num-props 3
+      --output-dir "/path/to/output" --num-props 3
 
-  # With furniture as base surface:
+  # Override prop dirs (one or more):
   blender --background --python scripts/disco/grid_drag_props_sim.py -- \
-      --props-dir "C:/_git/mujoco_scanned_objects/models" \
-      --furniture-dir "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes" \
-      --furniture Chair_01.blend \
-      --num-props 2 --grid-size 1.5
+      --props-dir "/data/mujoco/models" "/data/kitchen/objects" \
+      --output-dir "/path/to/output"
 
-  # Floor only (no furniture):
+  # With furniture + scatter:
   blender --background --python scripts/disco/grid_drag_props_sim.py -- \
-      --props-dir "C:/_git/mujoco_scanned_objects/models" \
-      --surface floor --num-props 4
+      --furniture-dir "/path/to/scenes" --furniture Chair_01.blend \
+      --scatter-all --num-props 3
 """
 
 from __future__ import annotations
@@ -67,7 +66,29 @@ from cloth_sim_utils import (
 from mathutils import Vector
 
 # =============================================================================
-# Constants
+# Prop asset directories  (edit these to match your machine / VM)
+# Pass --props-dir on CLI to override at runtime.
+# =============================================================================
+
+PROP_DIRS = [
+    # MuJoCo scanned household objects (~1030 items, OBJ)
+    "C:/_git/mujoco_scanned_objects/models",
+    # Nvidia SimReady Kitchen — objects (baskets, cups, bowls, ~922 items, OBJ)
+    "C:/_git/SimReady-Kitchen/objects_lightwheel",
+    # Nvidia SimReady Kitchen — fixtures (blenders, ovens, fridges, ~602 items, OBJ)
+    "C:/_git/SimReady-Kitchen/fixtures_lightwheel",
+    # Nvidia SimReady Warehouse — props (boxes, pallets, racks, ~479 items, USD)
+    "C:/_git/SimReady-Warehouse/Props",
+]
+
+# =============================================================================
+# Furniture directory  (edit to match your machine)
+# =============================================================================
+
+FURNITURE_DIR = "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes"
+
+# =============================================================================
+# Simulation constants
 # =============================================================================
 
 DEFAULT_FRAMES = 60
@@ -93,36 +114,90 @@ SCATTER_LIFT_SCENES = 0.15  # metres to lift furniture before dropping
 # =============================================================================
 
 
-def find_props(props_dir: str, limit: int | None = None) -> list[Path]:
-    """Find importable prop files (.obj, .usd, .usda, .usdc, .blend).
+def _discover_dir(root: Path) -> list[Path]:
+    """Discover prop items in a single directory (auto-detects layout).
 
-    For mujoco_scanned_objects layout: looks for models/*/model.obj
-    Also supports flat directories of mixed formats.
+    Supported layouts:
+      - mujoco:            ``*/model.obj``
+      - kitchen objects:   ``**/visual/*.obj``   (one OBJ per item)
+      - kitchen fixtures:  ``**/visuals/*.obj``  (multi-part → returns directory)
+      - warehouse USD:     ``**/*.usd``          (skips ``*_physics.usd``)
+      - fallback:          loose ``*.obj / *.usd / *.blend`` at root
     """
-    root = Path(props_dir)
-    if not root.is_dir():
-        raise FileNotFoundError(f"Props directory not found: {props_dir}")
+    props: list[Path] = []
+    seen_items: set[Path] = set()  # item directories already claimed
 
-    props = []
+    # Pattern 1 — mujoco: */model.obj
+    for f in sorted(root.glob("*/model.obj")):
+        props.append(f)
+        seen_items.add(f.parent)
 
-    # mujoco layout: models/*/model.obj
-    for model_obj in sorted(root.glob("*/model.obj")):
-        props.append(model_obj)
+    # Pattern 2 — kitchen objects: **/visual/*.obj (single visual per item)
+    for vis_dir in sorted(root.glob("**/visual")):
+        item_dir = vis_dir.parent
+        if item_dir in seen_items:
+            continue
+        objs = sorted(vis_dir.glob("*.obj"))
+        if objs:
+            props.append(objs[0])
+            seen_items.add(item_dir)
 
-    # Also pick up loose files
+    # Pattern 3 — kitchen fixtures: **/visuals/*.obj (multi-part)
+    #   Return the directory so import_prop imports all parts together.
+    for vis_dir in sorted(root.glob("**/visuals")):
+        item_dir = vis_dir.parent
+        if item_dir in seen_items:
+            continue
+        objs = list(vis_dir.glob("*.obj"))
+        if objs:
+            props.append(vis_dir)  # directory → import_prop handles it
+            seen_items.add(item_dir)
+
+    # Pattern 4 — warehouse USD (skip *_physics.usd and top-level scene files)
+    for f in sorted(root.glob("**/*.usd")):
+        if f.parent in seen_items or "_physics" in f.stem:
+            continue
+        # Skip USD files at the repo root (scene-level, not individual props)
+        if f.parent == root:
+            continue
+        props.append(f)
+        seen_items.add(f.parent)
+
+    # Fallback — loose files at the root level
     for ext in ("*.obj", "*.usd", "*.usda", "*.usdc", "*.blend"):
         for f in sorted(root.glob(ext)):
-            if f not in props:
+            if f not in props and f.parent not in seen_items:
                 props.append(f)
-
-    if limit and len(props) > limit:
-        props = props[:limit]
 
     return props
 
 
-def import_prop(filepath: Path) -> list[bpy.types.Object]:
-    """Import a prop file and return the imported mesh objects."""
+def find_props(prop_dirs: list[str], limit: int | None = None) -> list[Path]:
+    """Discover props across multiple asset directories.
+
+    Silently skips directories that don't exist (handy when the same script
+    runs on machines with different asset sets).
+    """
+    all_props: list[Path] = []
+
+    for d in prop_dirs:
+        root = Path(d)
+        if not root.is_dir():
+            print(f"  props dir not found, skipping: {d}")
+            continue
+
+        found = _discover_dir(root)
+        print(f"  {root.name}: {len(found)} props")
+        all_props.extend(found)
+
+    if limit and len(all_props) > limit:
+        all_props = all_props[:limit]
+
+    return all_props
+
+
+def _import_file(filepath: Path) -> list[bpy.types.Object]:
+    """Import a single OBJ / USD / blend file."""
     ext = filepath.suffix.lower()
     before = set(bpy.data.objects)
 
@@ -144,9 +219,23 @@ def import_prop(filepath: Path) -> list[bpy.types.Object]:
         return []
 
     after = set(bpy.data.objects)
-    new_objs = [o for o in (after - before) if o.type == "MESH"]
+    return [o for o in (after - before) if o.type == "MESH"]
 
-    # Apply transforms
+
+def import_prop(filepath: Path) -> list[bpy.types.Object]:
+    """Import a prop (single file or multi-part directory) and return mesh objects.
+
+    If *filepath* is a directory (kitchen fixtures ``visuals/`` folder), all
+    OBJ files inside are imported together as one prop.
+    """
+    if filepath.is_dir():
+        new_objs = []
+        for obj_file in sorted(filepath.glob("*.obj")):
+            new_objs.extend(_import_file(obj_file))
+    else:
+        new_objs = _import_file(filepath)
+
+    # Apply transforms so bounding boxes are in world space
     for obj in new_objs:
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
@@ -204,8 +293,22 @@ def place_props_on_surface(
             obj.select_set(False)
 
         all_objs.extend(objs)
+
+        # Derive a human-readable prop name from any layout
+        if prop_path.is_dir():
+            # multi-part dir (kitchen fixtures visuals/)
+            prop_name = prop_path.parent.name
+        elif prop_path.name == "model.obj":
+            # mujoco layout
+            prop_name = prop_path.parent.name
+        elif prop_path.parent.name in ("visual", "visuals"):
+            # kitchen objects  (visual/ItemName.obj)
+            prop_name = prop_path.parent.parent.name
+        else:
+            prop_name = prop_path.stem
+
         meta_list.append({
-            "prop": prop_path.parent.name if prop_path.name == "model.obj" else prop_path.stem,
+            "prop": prop_name,
             "position": [round(x, 4), round(y, 4), round(surface_z, 4)],
             "scale": round(scale, 3),
             "rotation_z": round(rot_z, 1),
@@ -692,8 +795,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="Grid cloth drag over props simulation (Blender)")
     parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--props-dir", type=str, default=None, help="Directory of prop models (OBJ/USD/blend)")
-    parser.add_argument("--furniture-dir", type=str, default=None, help="Furniture .blend directory (optional)")
+    parser.add_argument(
+        "--props-dir", type=str, nargs="+", default=None,
+        help="One or more prop asset directories (overrides PROP_DIRS default list)",
+    )
+    parser.add_argument("--furniture-dir", type=str, default=FURNITURE_DIR, help="Furniture .blend directory")
     parser.add_argument("--furniture", type=str, default=None, help="Specific furniture .blend (optional)")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--cloth-preset", type=str, default="Cotton")
@@ -715,8 +821,9 @@ def main():
     apply_config_defaults(parser, config)
     args = parser.parse_args(argv)
 
-    if not args.props_dir:
-        parser.error("--props-dir is required")
+    # Use PROP_DIRS default list if --props-dir not given
+    prop_dirs = args.props_dir if args.props_dir else list(PROP_DIRS)
+
     if not args.output_dir:
         parser.error("--output-dir is required (or set in config)")
 
@@ -729,9 +836,14 @@ def main():
     print("GRID CLOTH DRAG OVER PROPS SIMULATION")
     print("=" * 70)
 
-    # Discover props
-    all_props = find_props(args.props_dir)
-    print(f"Props available: {len(all_props)}")
+    # Discover props across all directories
+    print(f"Searching {len(prop_dirs)} prop directories:")
+    all_props = find_props(prop_dirs)
+    print(f"Props available: {len(all_props)} total")
+
+    if not all_props:
+        print("ERROR: No props found in any directory. Check PROP_DIRS or --props-dir.")
+        return
 
     # Furniture (optional)
     furniture_path = None

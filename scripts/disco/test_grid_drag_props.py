@@ -1,7 +1,7 @@
 """Quick test: grid cloth drag over props (50 frames) with physics scatter.
 
-Tests with 2 random props on Chair_01 surface.
-Scatter-all enabled: props and furniture get physics-dropped before cloth sim.
+Discovers props from all configured sources (mujoco, kitchen, warehouse).
+Tests with 2 random props on Chair_01 surface, scatter-all enabled.
 Verifies .blend, .usda, .json output.
 """
 
@@ -13,10 +13,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from grid_drag_props_sim import find_props, run_single_sim
+from grid_drag_props_sim import PROP_DIRS, find_props, run_single_sim
 
 FURNITURE = Path("D:/_blender/_myBlender/SimulationWork/seedAssets/scenes/Chair_01.blend")
-PROPS_DIR = "C:/_git/mujoco_scanned_objects/models"
 OUTPUT = Path("D:/_blender/_myBlender/SimulationWork/ClothDataset/_TestSims")
 FRAMES = 50
 GRID_SIZE = 1.0
@@ -24,15 +23,25 @@ NUM_PROPS = 2
 
 errors = []
 
-# Discover props and pick a few
-all_props = find_props(PROPS_DIR)
-print(f"Found {len(all_props)} props")
+# Discover props from ALL configured directories
+print("Searching prop directories:")
+all_props = find_props(PROP_DIRS)
+print(f"Total props available: {len(all_props)}")
+
+if not all_props:
+    print("ERROR: No props found. Check PROP_DIRS paths.")
+    sys.exit(1)
 
 rng = random.Random(42)
 prop_paths = rng.sample(all_props, min(NUM_PROPS, len(all_props)))
-print(f"Selected {len(prop_paths)} props for test:")
+print(f"\nSelected {len(prop_paths)} props for test:")
 for p in prop_paths:
-    print(f"  {p.parent.name if p.name == 'model.obj' else p.stem}")
+    if p.is_dir():
+        print(f"  [multi-part] {p.parent.name}")
+    elif p.name == "model.obj":
+        print(f"  {p.parent.name}")
+    else:
+        print(f"  {p.stem}")
 
 print(f"\n>>> TEST: GRID DRAG OVER PROPS ({FRAMES} frames, {NUM_PROPS} props, scatter_all) <<<")
 result = run_single_sim(
