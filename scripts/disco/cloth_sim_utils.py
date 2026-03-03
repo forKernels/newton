@@ -77,8 +77,9 @@ BLENDER_PRESET_DIR = Path(
     )
 )
 
-COLLISION_THICKNESS = 0.002
-COLLISION_FRICTION = 5.0
+COLLISION_THICKNESS = 0.0001  # object collision distance [m]
+COLLISION_FRICTION = 80.0
+COLLISION_DAMPING = 1.0  # collision damping on furniture
 BBOX_MARGIN = 0.10  # 10% inward margin for XY placement
 
 # Furniture stems to skip (not droppable surfaces)
@@ -121,13 +122,29 @@ def append_furniture(blend_path: str) -> list[bpy.types.Object]:
 
 
 def import_garment(obj_path: str) -> bpy.types.Object:
-    """Import a garment OBJ and return the object."""
+    """Import a garment OBJ and return the object.
+
+    Applies the OBJ import rotation (Y-up → Z-up) directly to the mesh data
+    so that ``rotation_euler`` can be freely set later without losing the
+    upright orientation.
+    """
     try:
         bpy.ops.wm.obj_import(filepath=obj_path)
     except AttributeError:
         bpy.ops.import_scene.obj(filepath=obj_path)
 
-    return bpy.context.selected_objects[0]
+    garment = bpy.context.selected_objects[0]
+
+    # Bake the importer's Y-up → Z-up rotation into the mesh vertices
+    bpy.context.view_layer.objects.active = garment
+    garment.select_set(True)
+    bpy.ops.object.transform_apply(rotation=True, scale=True, location=False)
+
+    # Centre the origin on the geometry so rotations pivot correctly
+    bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="MEDIAN")
+
+    garment.select_set(False)
+    return garment
 
 
 # =============================================================================
@@ -167,33 +184,115 @@ def garment_height(obj: bpy.types.Object) -> float:
     return max(v.z for v in corners) - min(v.z for v in corners)
 
 
+def garment_bottom_offset(obj: bpy.types.Object) -> float:
+    """Return how far below the object origin the garment's lowest point is.
+
+    Use this to place the garment so its bottom edge sits at a target Z::
+
+        garment.location.z = target_z + garment_bottom_offset(garment)
+    """
+    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    bottom_z = min(v.z for v in corners)
+    return obj.location.z - bottom_z
+
+
 # =============================================================================
 # Collision and cloth setup
 # =============================================================================
 
 
 def add_collision(objects: list[bpy.types.Object]):
-    """Add Collision modifier to each mesh object."""
+    """Add Collision modifier to each mesh object with high friction/damping."""
     for obj in objects:
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
         bpy.ops.object.modifier_add(type="COLLISION")
         obj.collision.thickness_outer = COLLISION_THICKNESS
         obj.collision.cloth_friction = COLLISION_FRICTION
+        obj.collision.damping = COLLISION_DAMPING
         obj.select_set(False)
 
 
+CLOTH_QUALITY_STEPS = 30  # cloth simulation substeps per frame
+CLOTH_COLLISION_QUALITY = 8  # collision solver iterations
+CLOTH_MASS = 0.04  # per-vertex mass [kg] (range 0.03–0.08 works well)
+SELF_COLLISION_DISTANCE = 0.0001  # self-collision distance [m]
+
+
+def prepare_garment_mesh(garment: bpy.types.Object) -> bpy.types.Object:
+    """Set Shade Smooth on the garment."""
+    bpy.context.view_layer.objects.active = garment
+    garment.select_set(True)
+    bpy.ops.object.shade_smooth()
+    garment.select_set(False)
+    return garment
+
+
 def apply_cloth_preset(garment: bpy.types.Object, preset_name: str):
-    """Add Cloth modifier and apply a Blender built-in cloth preset."""
+    """Add Cloth modifier and apply a Blender built-in cloth preset.
+
+    Blender's built-in preset files reference ``bpy.context.cloth`` which is
+    only available when the cloth modifier is selected in the UI properties
+    panel.  In background (headless) mode this attribute doesn't exist, so we
+    rewrite the preset code to access the modifier directly via a local
+    variable instead.
+    """
     bpy.context.view_layer.objects.active = garment
     garment.select_set(True)
     bpy.ops.object.modifier_add(type="CLOTH")
 
     preset_file = BLENDER_PRESET_DIR / f"{preset_name}.py"
     if preset_file.exists():
-        exec(compile(preset_file.read_text(), str(preset_file), "exec"))
+        # Replace UI-only bpy.context.cloth with the actual modifier object
+        code = preset_file.read_text()
+        code = code.replace("bpy.context.cloth", "_cloth_mod")
+        cloth_mod = garment.modifiers["Cloth"]
+        exec(compile(code, str(preset_file), "exec"), {"bpy": bpy, "_cloth_mod": cloth_mod})
     else:
         print(f"  WARNING: Preset not found: {preset_file}, using Blender defaults")
+
+    # Override preset values -- applied AFTER preset exec
+    cloth_mod = garment.modifiers.get("Cloth")
+    if cloth_mod:
+        s = cloth_mod.settings
+        s.quality = CLOTH_QUALITY_STEPS
+        s.mass = CLOTH_MASS
+
+        # Stiffness
+        s.tension_stiffness = 10.0
+        s.compression_stiffness = 10.0
+        s.shear_stiffness = 10.0
+        s.bending_stiffness = 0.5
+
+        # Damping
+        s.tension_damping = 10.0
+        s.compression_damping = 10.0
+        s.shear_damping = 10.0
+        s.bending_damping = 0.5
+
+        # Object collision
+        cloth_mod.collision_settings.use_collision = True
+        cloth_mod.collision_settings.distance_min = 0.0001
+        cloth_mod.collision_settings.collision_quality = CLOTH_COLLISION_QUALITY
+
+        # Self-collision
+        cloth_mod.collision_settings.use_self_collision = True
+        cloth_mod.collision_settings.self_distance_min = SELF_COLLISION_DISTANCE
+
+        print(
+            f"    cloth: quality={s.quality} mass={s.mass}kg "
+            f"stiffness T={s.tension_stiffness} C={s.compression_stiffness} "
+            f"S={s.shear_stiffness} B={s.bending_stiffness}"
+        )
+        print(
+            f"    cloth damping: T={s.tension_damping} C={s.compression_damping} "
+            f"S={s.shear_damping} B={s.bending_damping}"
+        )
+        print(
+            f"    cloth collision: quality={cloth_mod.collision_settings.collision_quality} "
+            f"obj_dist={cloth_mod.collision_settings.distance_min} "
+            f"self_dist={cloth_mod.collision_settings.self_distance_min}"
+        )
 
 
 # =============================================================================
@@ -202,17 +301,58 @@ def apply_cloth_preset(garment: bpy.types.Object, preset_name: str):
 
 
 def bake_simulation(frame_count: int):
-    """Bake the cloth simulation for the given number of frames."""
+    """Bake all physics caches for the given number of frames.
+
+    Sets the frame range on the scene **and** on every individual point cache
+    (cloth, rigid body, soft body, …) so the bake doesn't overshoot or
+    fall back to Blender's default 250-frame range.
+    """
     scene = bpy.context.scene
     scene.frame_start = 1
     scene.frame_end = frame_count
+
+    # Align per-modifier point caches (cloth, soft body, …)
+    for obj in scene.objects:
+        for mod in obj.modifiers:
+            if hasattr(mod, "point_cache"):
+                mod.point_cache.frame_start = 1
+                mod.point_cache.frame_end = frame_count
+
+    # Align rigid body world cache
+    if scene.rigidbody_world and scene.rigidbody_world.point_cache:
+        scene.rigidbody_world.point_cache.frame_start = 1
+        scene.rigidbody_world.point_cache.frame_end = frame_count
 
     bpy.ops.ptcache.bake_all(bake=True)
     scene.frame_set(frame_count)
 
 
+def export_alembic(filepath: str):
+    """Export the scene as Alembic (.abc) with deformed mesh animation.
+
+    Alembic natively handles deforming meshes from cloth/physics caches,
+    unlike Blender's USD exporter which writes only the rest mesh.
+    """
+    scene = bpy.context.scene
+    bpy.ops.wm.alembic_export(
+        filepath=filepath,
+        start=scene.frame_start,
+        end=scene.frame_end,
+        evaluation_mode="RENDER",
+        export_hair=False,
+        export_particles=False,
+        export_custom_properties=True,
+        flatten=False,
+    )
+
+
 def export_usda(filepath: str):
-    """Export the scene as USDA with animation."""
+    """Export the scene as USDA with animation.
+
+    Note: Blender's USD exporter does not reliably capture cloth/physics
+    deformation.  Prefer ``export_alembic()`` for simulation data.
+    The scene frame range (frame_start/frame_end) must be set before calling.
+    """
     bpy.ops.wm.usd_export(
         filepath=filepath,
         export_animation=True,
@@ -306,6 +446,134 @@ def write_metadata(json_path: str, metadata: dict):
     """Write a JSON sidecar file."""
     with open(json_path, "w") as f:
         json.dump(metadata, f, indent=2)
+
+
+# =============================================================================
+# Floor plane, vertex group, blend save, ABC→USDA conversion
+# =============================================================================
+
+
+def add_floor_plane(z_position: float, size: float = 20.0) -> bpy.types.Object:
+    """Create a large collision plane at *z_position*.
+
+    Uses the same thickness and friction as ``add_collision()``.
+    Returns the created plane object.
+    """
+    bpy.ops.mesh.primitive_plane_add(size=size, location=(0, 0, z_position))
+    floor = bpy.context.active_object
+    floor.name = "Floor"
+
+    bpy.ops.object.modifier_add(type="COLLISION")
+    floor.collision.thickness_outer = COLLISION_THICKNESS
+    floor.collision.cloth_friction = COLLISION_FRICTION
+
+    floor.select_set(False)
+    return floor
+
+
+def save_blend(filepath: str):
+    """Save the current scene as a .blend file."""
+    bpy.ops.wm.save_as_mainfile(filepath=str(filepath))
+
+
+def create_vertex_group(
+    garment: bpy.types.Object,
+    group_name: str,
+    center: Vector,
+    radius: float,
+) -> tuple:
+    """Create a vertex group for vertices near *center* (world space).
+
+    Returns ``(vertex_group, pinned_count)``.
+    """
+    bpy.context.view_layer.objects.active = garment
+    garment.select_set(True)
+
+    if group_name in garment.vertex_groups:
+        garment.vertex_groups.remove(garment.vertex_groups[group_name])
+    vg = garment.vertex_groups.new(name=group_name)
+
+    mesh = garment.data
+    pinned = []
+    for v in mesh.vertices:
+        world_co = garment.matrix_world @ v.co
+        if (world_co - center).length <= radius:
+            pinned.append(v.index)
+
+    if pinned:
+        vg.add(pinned, 1.0, "REPLACE")
+
+    garment.select_set(False)
+    return vg, len(pinned)
+
+
+def create_cloth_grid(
+    size: float = 1.0,
+    cuts: int = 30,
+    thickness: float = 0.001,
+    subdiv_level: int = 1,
+) -> bpy.types.Object:
+    """Create a subdivided grid mesh with thickness for cloth simulation.
+
+    Adds Solidify + Subdivision Surface modifiers, applies them so the
+    final mesh is baked, then sets Shade Smooth and centres the origin.
+
+    Args:
+        size: Grid side length in metres.
+        cuts: Subdivision cuts per axis.
+        thickness: Solidify thickness in metres.
+        subdiv_level: Subdivision Surface viewport level.
+    """
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=cuts, y_subdivisions=cuts, size=size)
+    grid = bpy.context.active_object
+    grid.name = "ClothGrid"
+
+    bpy.context.view_layer.objects.active = grid
+    grid.select_set(True)
+
+    # Solidify for thickness
+    sol = grid.modifiers.new("Solidify", "SOLIDIFY")
+    sol.thickness = thickness
+    sol.offset = 0.0
+
+    # Subdivision Surface for smoother deformation
+    sub = grid.modifiers.new("Subdiv", "SUBSURF")
+    sub.levels = subdiv_level
+    sub.render_levels = subdiv_level + 1
+
+    # Apply both modifiers so the mesh is baked before cloth sim
+    bpy.ops.object.modifier_apply(modifier="Solidify")
+    bpy.ops.object.modifier_apply(modifier="Subdiv")
+
+    # Shade Smooth by Angle (Blender 4.x: adds Smooth by Angle modifier)
+    try:
+        bpy.ops.object.shade_auto_smooth()
+    except AttributeError:
+        bpy.ops.object.shade_smooth()
+
+    bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="MEDIAN")
+
+    grid.select_set(False)
+    return grid
+
+
+def convert_abc_to_usda(abc_path: str, usda_path: str):
+    """Import an Alembic file and re-export as USDA.
+
+    This roundtrip captures per-frame deformed mesh data that Blender's
+    direct USD exporter misses for cloth/physics simulations.
+    The scene frame range is preserved from the prior bake.
+    """
+    clear_scene()
+
+    bpy.ops.wm.alembic_import(filepath=str(abc_path))
+
+    bpy.ops.wm.usd_export(
+        filepath=str(usda_path),
+        export_animation=True,
+        export_mesh_colors=False,
+        selected_objects_only=False,
+    )
 
 
 # =============================================================================
