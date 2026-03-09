@@ -36,15 +36,22 @@ def load_sim_config(config_path: str | Path | None = None) -> dict:
 def apply_config_defaults(parser, config: dict):
     """Set argparse defaults from a config dict.
 
-    Maps config keys to CLI arg names (underscores become hyphens):
-      furniture_dir  ->  --furniture-dir
+    Maps config keys to CLI arg names:
+      dtc_dir        ->  --dtc-dir
+      scenes_dir     ->  --scenes-dir
+      props_dir      ->  --props-dir
       garment_dir    ->  --garment-dir
       output_dir     ->  --output-dir
+      lego_model_dir ->  --lego-model-dir
     """
     mapping = {
+        "dtc_dir": "dtc_dir",
+        "scenes_dir": "scenes_dir",
         "furniture_dir": "furniture_dir",
+        "props_dir": "props_dir",
         "garment_dir": "garment_dir",
         "output_dir": "output_dir",
+        "lego_model_dir": "lego_model_dir",
     }
     defaults = {}
     for cfg_key, arg_dest in mapping.items():

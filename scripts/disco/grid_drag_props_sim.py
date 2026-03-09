@@ -1,31 +1,29 @@
 """
 Grid Cloth Drag Over Props Simulation (Blender)
 =================================================
-Places props (scanned objects) on the floor or on furniture, then drags a
-grid cloth across them.  The cloth catches and drapes over props as it passes.
+Places props on the floor or on furniture, then drags a grid cloth across
+them.  The cloth catches and drapes over props as it passes.
 
-Props are discovered automatically from multiple asset libraries:
-  - MuJoCo scanned objects  (OBJ)
-  - Nvidia SimReady Kitchen (OBJ — objects + fixtures)
-  - Nvidia SimReady Warehouse (USD)
-  - Any additional directories passed via --props-dir
+Props come from:
+  - DTC dataset (Meta sim-ready objects, ~1325 unique shapes)
+  - Custom Blender props (your own .blend files in props_dir)
+
+All paths are configured via sim_config.json for portability across machines.
 
 Output pipeline: bake -> .blend -> .abc -> .usda -> .json
 
 Usage (headless):
-  # Uses all default prop dirs (edit PROP_DIRS below to match your machine):
   blender --background --python scripts/disco/grid_drag_props_sim.py -- \
       --output-dir "/path/to/output" --num-props 3
 
-  # Override prop dirs (one or more):
-  blender --background --python scripts/disco/grid_drag_props_sim.py -- \
-      --props-dir "/data/mujoco/models" "/data/kitchen/objects" \
-      --output-dir "/path/to/output"
-
   # With furniture + scatter:
   blender --background --python scripts/disco/grid_drag_props_sim.py -- \
-      --furniture-dir "/path/to/scenes" --furniture Chair_01.blend \
+      --scenes-dir "/path/to/scenes" --furniture Chair_01.blend \
       --scatter-all --num-props 3
+
+  # Override DTC path at runtime:
+  blender --background --python scripts/disco/grid_drag_props_sim.py -- \
+      --dtc-dir "/data/dtc/sim_ready" --output-dir "/path/to/output"
 """
 
 from __future__ import annotations
@@ -66,26 +64,12 @@ from cloth_sim_utils import (
 from mathutils import Vector
 
 # =============================================================================
-# Prop asset directories  (edit these to match your machine / VM)
-# Pass --props-dir on CLI to override at runtime.
+# Default directories — overridden by sim_config.json or CLI args
 # =============================================================================
 
-PROP_DIRS = [
-    # MuJoCo scanned household objects (~1030 items, OBJ)
-    "C:/_git/mujoco_scanned_objects/models",
-    # Nvidia SimReady Kitchen — objects (baskets, cups, bowls, ~922 items, OBJ)
-    "C:/_git/SimReady-Kitchen/objects_lightwheel",
-    # Nvidia SimReady Kitchen — fixtures (blenders, ovens, fridges, ~602 items, OBJ)
-    "C:/_git/SimReady-Kitchen/fixtures_lightwheel",
-    # Nvidia SimReady Warehouse — props (boxes, pallets, racks, ~479 items, USD)
-    "C:/_git/SimReady-Warehouse/Props",
-]
-
-# =============================================================================
-# Furniture directory  (edit to match your machine)
-# =============================================================================
-
-FURNITURE_DIR = "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes"
+DEFAULT_DTC_DIR = "C:/_git/dtc/sim_ready"
+DEFAULT_SCENES_DIR = "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes"
+DEFAULT_PROPS_DIR = "D:/_blender/_myBlender/SimulationWork/seedAssets/props"
 
 # =============================================================================
 # Simulation constants
@@ -114,80 +98,125 @@ SCATTER_LIFT_SCENES = 0.15  # metres to lift furniture before dropping
 # =============================================================================
 
 
-def _discover_dir(root: Path) -> list[Path]:
-    """Discover prop items in a single directory (auto-detects layout).
+import json as _json
+import re as _re
 
-    Supported layouts:
-      - mujoco:            ``*/model.obj``
-      - kitchen objects:   ``**/visual/*.obj``   (one OBJ per item)
-      - kitchen fixtures:  ``**/visuals/*.obj``  (multi-part → returns directory)
-      - warehouse USD:     ``**/*.usd``          (skips ``*_physics.usd``)
-      - fallback:          loose ``*.obj / *.usd / *.blend`` at root
+
+def _group_by_shape(names: list[str]) -> dict[str, list[str]]:
+    """Group DTC folder names by physical shape identity (skip color variants).
+
+    E.g. Airplane_B0B2CNHW9M_Blue, _White, _Yellow → same shape key.
+    Returns dict mapping shape_key -> list of folder names.
     """
-    props: list[Path] = []
-    seen_items: set[Path] = set()  # item directories already claimed
-
-    # Pattern 1 — mujoco: */model.obj
-    for f in sorted(root.glob("*/model.obj")):
-        props.append(f)
-        seen_items.add(f.parent)
-
-    # Pattern 2 — kitchen objects: **/visual/*.obj (single visual per item)
-    for vis_dir in sorted(root.glob("**/visual")):
-        item_dir = vis_dir.parent
-        if item_dir in seen_items:
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for name in sorted(names):
+        clean = _re.sub(r"_TU$", "", name)
+        asin = _re.match(r"^(.+?)_(B[A-Z0-9]{9,}|TS\d+)_(.+)$", clean)
+        if asin:
+            groups[f"{asin.group(1)}_{asin.group(2)}"].append(name)
             continue
-        objs = sorted(vis_dir.glob("*.obj"))
-        if objs:
-            props.append(objs[0])
-            seen_items.add(item_dir)
-
-    # Pattern 3 — kitchen fixtures: **/visuals/*.obj (multi-part)
-    #   Return the directory so import_prop imports all parts together.
-    for vis_dir in sorted(root.glob("**/visuals")):
-        item_dir = vis_dir.parent
-        if item_dir in seen_items:
+        book = _re.match(r"^(Book_\d+)_(.+)$", clean)
+        if book:
+            groups[book.group(1)].append(name)
             continue
-        objs = list(vis_dir.glob("*.obj"))
-        if objs:
-            props.append(vis_dir)  # directory → import_prop handles it
-            seen_items.add(item_dir)
-
-    # Pattern 4 — warehouse USD (skip *_physics.usd and top-level scene files)
-    for f in sorted(root.glob("**/*.usd")):
-        if f.parent in seen_items or "_physics" in f.stem:
+        toy = _re.match(r"^(\w+_Toy)_([A-F0-9]+)_(.+)$", clean)
+        if toy:
+            groups[f"{toy.group(1)}_{toy.group(2)}"].append(name)
             continue
-        # Skip USD files at the repo root (scene-level, not individual props)
-        if f.parent == root:
-            continue
-        props.append(f)
-        seen_items.add(f.parent)
+        groups[clean].append(name)
+    return dict(groups)
 
-    # Fallback — loose files at the root level
-    for ext in ("*.obj", "*.usd", "*.usda", "*.usdc", "*.blend"):
-        for f in sorted(root.glob(ext)):
-            if f not in props and f.parent not in seen_items:
-                props.append(f)
+
+def _discover_dtc(dtc_dir: Path, unique_only: bool = True) -> list[dict]:
+    """Discover DTC sim-ready props.
+
+    Returns list of dicts with keys: path (to GLB), name, metadata (dict).
+    Filters to unique shapes when unique_only=True (~1325 from ~1997).
+    """
+    if not dtc_dir.is_dir():
+        print(f"  DTC dir not found, skipping: {dtc_dir}")
+        return []
+
+    # Collect all asset folders that have metadata
+    all_folders = sorted([
+        d for d in dtc_dir.iterdir()
+        if d.is_dir() and (d / "metadata.json").exists()
+    ])
+
+    if unique_only:
+        groups = _group_by_shape([d.name for d in all_folders])
+        unique_names = set()
+        for variants in groups.values():
+            unique_names.add(sorted(variants, key=lambda x: (len(x), x))[0])
+        folders = [d for d in all_folders if d.name in unique_names]
+    else:
+        folders = all_folders
+
+    props = []
+    for d in folders:
+        # Prefer textured GLB
+        glb = d / "visual_textured.glb"
+        if not glb.exists():
+            glb = d / "visual.glb"
+        if not glb.exists():
+            continue
+
+        meta_path = d / "metadata.json"
+        with open(meta_path) as f:
+            meta = _json.load(f)
+
+        props.append({
+            "path": glb,
+            "name": d.name,
+            "metadata": meta,
+        })
 
     return props
 
 
-def find_props(prop_dirs: list[str], limit: int | None = None) -> list[Path]:
-    """Discover props across multiple asset directories.
+def _discover_blender_props(props_dir: Path) -> list[dict]:
+    """Discover custom Blender props (.blend files).
 
-    Silently skips directories that don't exist (handy when the same script
-    runs on machines with different asset sets).
+    Returns list of dicts with keys: path, name, metadata (None).
     """
-    all_props: list[Path] = []
+    if not props_dir.is_dir():
+        print(f"  Props dir not found, skipping: {props_dir}")
+        return []
 
-    for d in prop_dirs:
-        root = Path(d)
-        if not root.is_dir():
-            print(f"  props dir not found, skipping: {d}")
-            continue
+    props = []
+    for f in sorted(props_dir.glob("**/*.blend")):
+        props.append({
+            "path": f,
+            "name": f.stem,
+            "metadata": None,
+        })
+    return props
 
-        found = _discover_dir(root)
-        print(f"  {root.name}: {len(found)} props")
+
+def find_props(
+    dtc_dir: str | None = None,
+    props_dir: str | None = None,
+    unique_only: bool = True,
+    limit: int | None = None,
+) -> list[dict]:
+    """Discover props from DTC dataset and custom Blender props.
+
+    Returns list of prop dicts: path, name, metadata.
+    Silently skips directories that don't exist.
+    """
+    all_props: list[dict] = []
+
+    if dtc_dir:
+        dtc_root = Path(dtc_dir)
+        found = _discover_dtc(dtc_root, unique_only=unique_only)
+        print(f"  DTC: {len(found)} props {'(unique only)' if unique_only else '(all variants)'}")
+        all_props.extend(found)
+
+    if props_dir:
+        props_root = Path(props_dir)
+        found = _discover_blender_props(props_root)
+        print(f"  Custom props: {len(found)} .blend files")
         all_props.extend(found)
 
     if limit and len(all_props) > limit:
@@ -197,11 +226,13 @@ def find_props(prop_dirs: list[str], limit: int | None = None) -> list[Path]:
 
 
 def _import_file(filepath: Path) -> list[bpy.types.Object]:
-    """Import a single OBJ / USD / blend file."""
+    """Import a single mesh file (GLB, OBJ, USD, or blend)."""
     ext = filepath.suffix.lower()
     before = set(bpy.data.objects)
 
-    if ext == ".obj":
+    if ext in (".glb", ".gltf"):
+        bpy.ops.import_scene.gltf(filepath=str(filepath))
+    elif ext == ".obj":
         try:
             bpy.ops.wm.obj_import(filepath=str(filepath))
         except AttributeError:
@@ -222,18 +253,14 @@ def _import_file(filepath: Path) -> list[bpy.types.Object]:
     return [o for o in (after - before) if o.type == "MESH"]
 
 
-def import_prop(filepath: Path) -> list[bpy.types.Object]:
-    """Import a prop (single file or multi-part directory) and return mesh objects.
+def import_prop(prop_info: dict) -> list[bpy.types.Object]:
+    """Import a prop and return mesh objects.
 
-    If *filepath* is a directory (kitchen fixtures ``visuals/`` folder), all
-    OBJ files inside are imported together as one prop.
+    Args:
+        prop_info: Dict with keys: path, name, metadata (from find_props).
     """
-    if filepath.is_dir():
-        new_objs = []
-        for obj_file in sorted(filepath.glob("*.obj")):
-            new_objs.extend(_import_file(obj_file))
-    else:
-        new_objs = _import_file(filepath)
+    filepath = prop_info["path"]
+    new_objs = _import_file(filepath)
 
     # Apply transforms so bounding boxes are in world space
     for obj in new_objs:
@@ -246,7 +273,7 @@ def import_prop(filepath: Path) -> list[bpy.types.Object]:
 
 
 def place_props_on_surface(
-    prop_paths: list[Path],
+    prop_infos: list[dict],
     surface_z: float,
     surface_center: Vector,
     spread: float,
@@ -254,13 +281,16 @@ def place_props_on_surface(
 ) -> tuple[list[bpy.types.Object], list[dict]]:
     """Import and scatter props on a surface.
 
+    Args:
+        prop_infos: List of prop dicts from find_props (path, name, metadata).
+
     Returns (all_prop_objects, prop_metadata_list).
     """
     all_objs = []
     meta_list = []
 
-    for i, prop_path in enumerate(prop_paths):
-        objs = import_prop(prop_path)
+    for i, prop_info in enumerate(prop_infos):
+        objs = import_prop(prop_info)
         if not objs:
             continue
 
@@ -283,6 +313,12 @@ def place_props_on_surface(
             obj.select_set(True)
             bpy.ops.object.transform_apply(scale=True)
 
+            # DTC meshes are Y-up with base-center pivot — rotate to Z-up
+            dtc_meta = prop_info.get("metadata")
+            if dtc_meta:
+                obj.rotation_euler.x = math.radians(90)
+                bpy.ops.object.transform_apply(rotation=True)
+
             # Position on surface: find prop's bottom and place it at surface_z
             corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
             bottom = min(c.z for c in corners)
@@ -294,27 +330,23 @@ def place_props_on_surface(
 
         all_objs.extend(objs)
 
-        # Derive a human-readable prop name from any layout
-        if prop_path.is_dir():
-            # multi-part dir (kitchen fixtures visuals/)
-            prop_name = prop_path.parent.name
-        elif prop_path.name == "model.obj":
-            # mujoco layout
-            prop_name = prop_path.parent.name
-        elif prop_path.parent.name in ("visual", "visuals"):
-            # kitchen objects  (visual/ItemName.obj)
-            prop_name = prop_path.parent.parent.name
-        else:
-            prop_name = prop_path.stem
+        prop_name = prop_info["name"]
 
-        meta_list.append({
+        # Include DTC physics metadata in output if available
+        entry = {
             "prop": prop_name,
             "position": [round(x, 4), round(y, 4), round(surface_z, 4)],
             "scale": round(scale, 3),
             "rotation_z": round(rot_z, 1),
-        })
+        }
+        if dtc_meta:
+            entry["category"] = dtc_meta.get("category")
+            entry["mass_kg"] = dtc_meta.get("mass_kg")
+            entry["material_class"] = dtc_meta.get("material_class")
+            entry["dimensions_m"] = dtc_meta.get("dimensions_m")
 
-        print(f"    prop[{i}]: {meta_list[-1]['prop']} scale={scale:.2f} at ({x:.3f}, {y:.3f})")
+        meta_list.append(entry)
+        print(f"    prop[{i}]: {prop_name} scale={scale:.2f} at ({x:.3f}, {y:.3f})")
 
     return all_objs, meta_list
 
@@ -327,6 +359,7 @@ def place_props_on_surface(
 def physics_scatter(
     scatter_objs: list[bpy.types.Object],
     ground_objs: list[bpy.types.Object],
+    prop_infos: list[dict] | None = None,
     lift: float = 0.3,
     frames: int = SCATTER_FRAMES,
     add_rotation: bool = True,
@@ -338,9 +371,13 @@ def physics_scatter(
     then bakes the final positions back into the object transforms and removes
     all rigid body data (so the cloth sim starts clean).
 
+    When prop_infos is provided, DTC metadata (mass, friction, restitution)
+    is applied per-object instead of generic defaults.
+
     Args:
         scatter_objs: Objects to drop (active rigid bodies).
         ground_objs: Objects that stay fixed (passive rigid bodies, e.g. floor/furniture).
+        prop_infos: Optional list of prop dicts (same order as scatter groups).
         lift: Metres to lift scatter objects before dropping.
         frames: Number of rigid body sim frames.
         add_rotation: Add random rotation to scatter objects before dropping.
@@ -363,6 +400,25 @@ def physics_scatter(
         obj.rigid_body.friction = 0.8
         obj.select_set(False)
 
+    # Build per-object physics lookup from DTC metadata
+    # prop_infos maps 1:1 to prop groups, but each group may have multiple objects.
+    # We apply the same physics to all objects from the same prop.
+    obj_physics = {}
+    if prop_infos:
+        obj_idx = 0
+        for info in prop_infos:
+            meta = info.get("metadata")
+            if meta:
+                physics = {
+                    "mass": meta.get("mass_kg", 0.5),
+                    "friction": meta.get("friction_static", 0.5),
+                    "restitution": meta.get("restitution", 0.15),
+                }
+            else:
+                physics = {"mass": 0.5, "friction": 0.5, "restitution": 0.15}
+            # Each prop may have produced 1+ objects; we map by name prefix
+            obj_physics[info["name"]] = physics
+
     # Lift and add active rigid body to scatter objects
     for obj in scatter_objs:
         obj.location.z += lift
@@ -373,9 +429,18 @@ def physics_scatter(
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
         bpy.ops.rigidbody.object_add(type="ACTIVE")
-        obj.rigid_body.mass = 0.5
-        obj.rigid_body.friction = 0.8
-        obj.rigid_body.restitution = 0.1
+
+        # Try to find DTC physics for this object
+        phys = {"mass": 0.5, "friction": 0.5, "restitution": 0.15}
+        if obj_physics:
+            for prop_name, p in obj_physics.items():
+                if prop_name in obj.name:
+                    phys = p
+                    break
+
+        obj.rigid_body.mass = phys["mass"]
+        obj.rigid_body.friction = phys["friction"]
+        obj.rigid_body.restitution = phys["restitution"]
         obj.select_set(False)
 
     bpy.context.view_layer.update()
@@ -521,7 +586,7 @@ def keyframe_drag(
 
 def run_single_sim(
     furniture_path: Path | None,
-    prop_paths: list[Path],
+    prop_infos: list[dict],
     preset_name: str,
     output_dir: Path,
     seed: int,
@@ -554,7 +619,7 @@ def run_single_sim(
         print(f"  SKIP (exists): {usda_path.relative_to(output_dir)}")
         return {"skipped": True}
 
-    print(f"  SIM [grid_drag_props]: {surface_name} / {preset_name} #{sample_idx} ({len(prop_paths)} props)")
+    print(f"  SIM [grid_drag_props]: {surface_name} / {preset_name} #{sample_idx} ({len(prop_infos)} props)")
 
     # 1. Clean scene
     clear_scene()
@@ -602,7 +667,7 @@ def run_single_sim(
     # 5. Import and place props ON TOP of the surface
     spread = grid_size * 0.4
     prop_objs, prop_meta = place_props_on_surface(
-        prop_paths, surface_z, surface_center, spread, rng,
+        prop_infos, surface_z, surface_center, spread, rng,
     )
 
     # 6. Physics scatter props if requested
@@ -612,6 +677,7 @@ def run_single_sim(
         physics_scatter(
             scatter_objs=prop_objs,
             ground_objs=ground,
+            prop_infos=prop_infos,
             lift=SCATTER_LIFT_PROPS,
             add_rotation=True,
             rng=rng,
@@ -795,11 +861,10 @@ def main():
 
     parser = argparse.ArgumentParser(description="Grid cloth drag over props simulation (Blender)")
     parser.add_argument("--config", type=str, default=None)
-    parser.add_argument(
-        "--props-dir", type=str, nargs="+", default=None,
-        help="One or more prop asset directories (overrides PROP_DIRS default list)",
-    )
-    parser.add_argument("--furniture-dir", type=str, default=FURNITURE_DIR, help="Furniture .blend directory")
+    parser.add_argument("--dtc-dir", type=str, default=DEFAULT_DTC_DIR, help="DTC sim_ready directory")
+    parser.add_argument("--props-dir", type=str, default=DEFAULT_PROPS_DIR, help="Custom Blender props directory")
+    parser.add_argument("--all-variants", action="store_true", help="Include DTC color variants (default: unique shapes only)")
+    parser.add_argument("--scenes-dir", type=str, default=DEFAULT_SCENES_DIR, help="Furniture/scenes .blend directory")
     parser.add_argument("--furniture", type=str, default=None, help="Specific furniture .blend (optional)")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--cloth-preset", type=str, default="Cotton")
@@ -821,8 +886,11 @@ def main():
     apply_config_defaults(parser, config)
     args = parser.parse_args(argv)
 
-    # Use PROP_DIRS default list if --props-dir not given
-    prop_dirs = args.props_dir if args.props_dir else list(PROP_DIRS)
+    # Config overrides for paths (sim_config.json takes priority over defaults)
+    dtc_dir = config.get("dtc_dir", args.dtc_dir)
+    props_dir = config.get("props_dir", args.props_dir)
+    scenes_dir = config.get("scenes_dir", args.scenes_dir)
+    unique_only = not args.all_variants and config.get("dtc_unique_only", True)
 
     if not args.output_dir:
         parser.error("--output-dir is required (or set in config)")
@@ -836,24 +904,28 @@ def main():
     print("GRID CLOTH DRAG OVER PROPS SIMULATION")
     print("=" * 70)
 
-    # Discover props across all directories
-    print(f"Searching {len(prop_dirs)} prop directories:")
-    all_props = find_props(prop_dirs)
+    # Discover props
+    print("Discovering props:")
+    all_props = find_props(
+        dtc_dir=dtc_dir,
+        props_dir=props_dir,
+        unique_only=unique_only,
+    )
     print(f"Props available: {len(all_props)} total")
 
     if not all_props:
-        print("ERROR: No props found in any directory. Check PROP_DIRS or --props-dir.")
+        print("ERROR: No props found. Check dtc_dir / props_dir in sim_config.json.")
         return
 
-    # Furniture (optional)
+    # Furniture / scenes (optional)
     furniture_path = None
-    if args.furniture_dir and args.furniture:
-        furniture_files = find_furniture(args.furniture_dir, args.furniture)
+    if scenes_dir and args.furniture:
+        furniture_files = find_furniture(scenes_dir, args.furniture)
         if furniture_files:
             furniture_path = furniture_files[0]
             print(f"Furniture: {furniture_path.name}")
-    elif args.furniture_dir:
-        furniture_files = find_furniture(args.furniture_dir)
+    elif scenes_dir:
+        furniture_files = find_furniture(scenes_dir)
         print(f"Furniture pool: {len(furniture_files)} files")
 
     presets = resolve_presets(args.cloth_preset)
@@ -872,8 +944,8 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # If we have a furniture pool, iterate; otherwise just one surface
-    if args.furniture_dir and not args.furniture:
-        furniture_list = find_furniture(args.furniture_dir)
+    if scenes_dir and not args.furniture:
+        furniture_list = find_furniture(scenes_dir)
     elif furniture_path:
         furniture_list = [furniture_path]
     else:
@@ -899,11 +971,11 @@ def main():
                 # Pick random props for this sim
                 sim_rng = random.Random(seed)
                 n = min(args.num_props, len(all_props))
-                prop_paths = sim_rng.sample(all_props, n)
+                prop_selection = sim_rng.sample(all_props, n)
 
                 result = run_single_sim(
                     furniture_path=furn_path,
-                    prop_paths=prop_paths,
+                    prop_infos=prop_selection,
                     preset_name=preset,
                     output_dir=output_dir,
                     seed=seed,

@@ -35,6 +35,27 @@ NEWTON_SCENE = {
 # =============================================================================
 
 
+def _get_script_dir():
+    """Resolve the directory containing this script, even inside Blender's text editor."""
+    # 1. Normal Python execution (__file__ is defined)
+    if "__file__" in dir():
+        return os.path.dirname(os.path.abspath(__file__))
+    # Blender text editor fallbacks:
+    # 2. Text block has a filepath (was opened from disk via Text > Open)
+    text = bpy.context.space_data and getattr(bpy.context.space_data, "text", None)
+    if text and text.filepath:
+        return os.path.dirname(os.path.abspath(text.filepath))
+    # 3. Search all text blocks for one whose filepath is in scripts/blender
+    for t in bpy.data.texts:
+        if t.filepath and "scripts" in t.filepath:
+            return os.path.dirname(os.path.abspath(t.filepath))
+    # 4. .blend file saved in or near the scripts directory
+    if bpy.data.filepath:
+        return os.path.dirname(bpy.data.filepath)
+    # 5. Hardcoded fallback
+    return r"C:\_git\newton_zhao\scripts\blender"
+
+
 def load_asset_paths(json_path=None):
     """Load robot cache paths from robot_asset_paths.json.
 
@@ -42,9 +63,7 @@ def load_asset_paths(json_path=None):
     Returns empty dict if file not found.
     """
     if json_path is None:
-        script_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else ""
-        if not script_dir:
-            script_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else os.getcwd()
+        script_dir = _get_script_dir()
         json_path = os.path.join(script_dir, "robot_asset_paths.json")
 
     if os.path.isfile(json_path):

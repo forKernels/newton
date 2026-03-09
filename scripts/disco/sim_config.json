@@ -1,8 +1,12 @@
 {
+  "dtc_dir": "C:/_git/dtc/sim_ready",
+  "scenes_dir": "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes",
   "furniture_dir": "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes",
+  "props_dir": "D:/_blender/_myBlender/SimulationWork/seedAssets/props",
   "garment_dir": "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set",
   "output_dir": "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Sims",
+  "lego_model_dir": "D:/_blender/_myBlender/SimulationWork/LegoModels",
   "blender_preset_dir": "C:/Program Files/Blender Foundation/Blender 4.5/4.5/scripts/presets/cloth",
   "blender_exe": "blender",
-  "lego_model_dir": "D:/_blender/_myBlender/SimulationWork/LegoModels"
+  "dtc_unique_only": true
 }

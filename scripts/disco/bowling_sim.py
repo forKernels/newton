@@ -119,10 +119,18 @@ def update_pin_physics(pins):
         rb.linear_damping = PIN_LIN_DAMP
         rb.angular_damping = PIN_ANG_DAMP
         rb.collision_shape = "CONVEX_HULL"
+        # Pins are plain active rigid bodies — no keyframes, no kinematic.
+        # They just sit on the floor via gravity until the ball hits them.
+        rb.kinematic = False
 
 
 def setup_ball_roll(scene, ball, direction, speed):
-    """Short kinematic ramp to give the ball initial rolling velocity."""
+    """Short kinematic ramp to give the ball initial rolling velocity.
+
+    Moves the ball a small distance over KINEMATIC_FRAMES with LINEAR
+    interpolation while kinematic=True, then switches to dynamic.
+    Bullet inherits the velocity from the kinematic motion.
+    """
     fps = scene.render.fps
     step = speed / fps
 
@@ -155,32 +163,23 @@ def setup_ball_roll(scene, ball, direction, speed):
     return travel, release
 
 
-def freeze_pins(pins, unfreeze_frame):
-    """Lock pins in place until unfreeze_frame, then release to dynamic."""
-    for pin in pins:
-        rb = pin.rigid_body
-        if not rb:
-            continue
+def setup_camera_follow(ball):
+    """Add a Track To constraint on the active camera so it follows the ball."""
+    cam = bpy.context.scene.camera
+    if not cam:
+        # No camera in scene — skip
+        return
 
-        pos = pin.location.copy()
+    # Remove any existing Track To targeting the ball
+    for c in cam.constraints:
+        if c.type == "TRACK_TO" and c.target == ball:
+            cam.constraints.remove(c)
 
-        pin.location = pos
-        pin.keyframe_insert(data_path="location", frame=1)
-        rb.kinematic = True
-        rb.keyframe_insert(data_path="kinematic", frame=1)
-
-        pin.location = pos
-        pin.keyframe_insert(data_path="location", frame=unfreeze_frame - 1)
-        rb.kinematic = True
-        rb.keyframe_insert(data_path="kinematic", frame=unfreeze_frame - 1)
-
-        rb.kinematic = False
-        rb.keyframe_insert(data_path="kinematic", frame=unfreeze_frame)
-
-        if pin.animation_data and pin.animation_data.action:
-            for fc in pin.animation_data.action.fcurves:
-                for kp in fc.keyframe_points:
-                    kp.interpolation = "CONSTANT"
+    track = cam.constraints.new(type="TRACK_TO")
+    track.target = ball
+    track.track_axis = "TRACK_NEGATIVE_Z"
+    track.up_axis = "UP_Y"
+    print(f"  Camera '{cam.name}' tracking '{ball.name}'")
 
 
 def bake_sim(scene, frames):
@@ -261,8 +260,8 @@ def run_single_sim(
     head_pin = min(pins, key=lambda p: (p.location - ball.location).length)
     lane_dist = (head_pin.location - ball.location).length
 
-    # 1. Clear keyframes
-    clear_all_keyframes(all_objs)
+    # 1. Clear keyframes (ball only — pins have none)
+    clear_all_keyframes([ball])
 
     # 2. Update physics
     update_ball_physics(ball)
@@ -273,19 +272,11 @@ def run_single_sim(
         speed = rng.uniform(ROLL_SPEED_MIN, ROLL_SPEED_MAX)
     direction, aim_deg = compute_roll_direction(ball, pins, aim_offset, rng)
 
-    # 4. Kinematic ramp
+    # 4. Kinematic ramp (ball only — pins are untouched active RBs)
     travel, release_frame = setup_ball_roll(scene, ball, direction, speed)
 
-    # 5. Freeze pins until ball is close
-    fps = scene.render.fps
-    remaining = lane_dist - travel
-    if remaining > 0 and speed > 0:
-        frames_to_impact = remaining / (speed / fps)
-        impact_frame = KINEMATIC_FRAMES + 1 + int(frames_to_impact)
-    else:
-        impact_frame = KINEMATIC_FRAMES + 2
-    unfreeze = max(impact_frame - 1, KINEMATIC_FRAMES + 2)
-    freeze_pins(pins, unfreeze)
+    # 5. Camera follow
+    setup_camera_follow(ball)
 
     # 6. Bake
     bake_sim(scene, frames)
@@ -298,8 +289,7 @@ def run_single_sim(
         "speed_mps": round(speed, 2),
         "aim_offset_deg": round(aim_deg, 1),
         "lane_distance": round(lane_dist, 3),
-        "impact_frame": impact_frame,
-        "unfreeze_frame": unfreeze,
+        "release_frame": release_frame,
         "frames": frames,
         "bake_time_s": round(bake_time, 1),
         "pins": len(pins),
