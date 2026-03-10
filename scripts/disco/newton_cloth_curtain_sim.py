@@ -24,6 +24,7 @@ from newton_sim_utils import (
     CLOTH_PRESETS,
     TEST_FRAMES,
     add_ground_plane,
+    create_blend_file,
     create_viewer,
     load_config,
     write_sim_metadata,
@@ -130,7 +131,6 @@ def run_curtain_sim(
     control = model.control()
     contacts = model.contacts()
 
-    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, None, state_0)
 
     sub_dt = dt / substeps
     wind_dir = wp.vec3(math.cos(wind_angle), math.sin(wind_angle), 0.0)
@@ -235,8 +235,9 @@ def main():
             solver_iters=args.solver_iters,
         )
 
-        usd_path = sim_dir / f"{sim_name}.usd" if args.viewer == "usd" else None
-        viewer = create_viewer(output_path=usd_path, viewer_type=args.viewer)
+        # Always write USDA (the deliverable)
+        usd_path = sim_dir / f"{sim_name}.usda"
+        viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_curtain_sim(
             model, solver,
@@ -260,6 +261,10 @@ def main():
             bbox_size=float(bbox_size),
             **scene_info,
         )
+
+        # Create .blend file referencing the USDA
+        blend_path = sim_dir / f"{sim_name}.blend"
+        create_blend_file(usd_path, blend_path, blender_exe=config.get("blender_exe", "blender"))
 
         print(f"  Done: {sim_dir}")
 

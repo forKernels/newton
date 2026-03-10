@@ -26,6 +26,7 @@ from newton.solvers import SolverImplicitMPM
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
+    create_blend_file,
     create_viewer,
     load_config,
     write_sim_metadata,
@@ -252,8 +253,9 @@ def main():
             use_container=not args.no_container,
         )
 
-        usd_path = sim_dir / f"{sim_name}.usd" if args.viewer == "usd" else None
-        viewer = create_viewer(output_path=usd_path, viewer_type=args.viewer)
+        # Always write USDA (the deliverable)
+        usd_path = sim_dir / f"{sim_name}.usda"
+        viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_beans_sim(
             model, solver,
@@ -278,6 +280,10 @@ def main():
         )
 
         print(f"  Particles settled: z_range=[{min_z:.3f}, {max_z:.3f}], spread={spread:.3f}")
+        # Create .blend file referencing the USDA
+        blend_path = sim_dir / f"{sim_name}.blend"
+        create_blend_file(usd_path, blend_path, blender_exe=config.get("blender_exe", "blender"))
+
         print(f"  Done: {sim_dir}")
 
 

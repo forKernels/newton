@@ -6,10 +6,17 @@ lets it collapse under gravity + optional perturbation.
 
 Cards are thin rigid boxes (not cloth) for crisp stacking and collapse.
 
+Structure types:
+  pyramid — classic tapered house (fewer bays each level)
+  box     — 4-walled rectangular enclosure with flat roof cards
+  tower   — tall narrow single-row of leaning pairs
+
 Usage:
     uv run python scripts/disco/newton_card_house_sim.py
     uv run python scripts/disco/newton_card_house_sim.py --test
     uv run python scripts/disco/newton_card_house_sim.py --seed 42 --levels 4 --perturb
+    uv run python scripts/disco/newton_card_house_sim.py --structure box --levels 3
+    uv run python scripts/disco/newton_card_house_sim.py --structure tower --levels 6
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
     add_table,
+    create_blend_file,
     create_viewer,
     load_config,
     write_sim_metadata,
@@ -45,8 +53,154 @@ def _lean_angle():
     return math.radians(75.0)  # steep lean
 
 
+def _add_leaning_pair(builder, cx, cy, pz, lean, lean_jitter, position_jitter, card_cfg, rng, facing=0.0):
+    """Add a leaning card pair (inverted V) at (cx, cy, pz). Returns card count."""
+    count = 0
+    for side in [-1, 1]:
+        angle = side * lean + rng.uniform(-lean_jitter, lean_jitter)
+        px = cx + side * CARD_HZ * math.sin(math.pi / 2 - lean) * 0.5
+        px += rng.uniform(-position_jitter, position_jitter)
+        py = cy + rng.uniform(-position_jitter, position_jitter)
+
+        # Compose facing rotation (around Z) with lean rotation (around Y)
+        q_lean = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle)
+        if facing != 0.0:
+            q_face = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), facing)
+            # Rotate the leaning card around Z to face a direction
+            cos_f = math.cos(facing)
+            sin_f = math.sin(facing)
+            rpx = cx + (px - cx) * cos_f - (py - cy) * sin_f
+            rpy = cy + (px - cx) * sin_f + (py - cy) * cos_f
+            px, py = rpx, rpy
+            q = q_face * q_lean
+        else:
+            q = q_lean
+
+        body = builder.add_body(
+            xform=wp.transform(p=wp.vec3(px, py, pz), q=q),
+        )
+        builder.add_shape_box(body=body, hx=CARD_HX, hy=CARD_HY, hz=CARD_HZ, cfg=card_cfg)
+        count += 1
+    return count
+
+
+def _add_flat_card(builder, bx, by, bz, card_cfg, rng, position_jitter, facing=0.0):
+    """Add a flat (horizontal) bridge card. Returns 1."""
+    bx += rng.uniform(-position_jitter, position_jitter)
+    by += rng.uniform(-position_jitter, position_jitter)
+    q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2)
+    if facing != 0.0:
+        q_face = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), facing)
+        q = q_face * q
+    body = builder.add_body(
+        xform=wp.transform(p=wp.vec3(bx, by, bz), q=q),
+    )
+    builder.add_shape_box(body=body, hx=CARD_HX, hy=CARD_HY, hz=CARD_HZ, cfg=card_cfg)
+    return 1
+
+
+def _build_pyramid(builder, card_cfg, rng, levels, bays_base, base_z, lean, lean_jitter, position_jitter):
+    """Classic tapered pyramid — fewer bays each level."""
+    card_full_height = CARD_HZ * 2
+    bay_width = card_full_height * math.sin(math.pi - lean) * 1.05
+    level_height = card_full_height * math.cos(math.pi / 2 - lean)
+    total = 0
+
+    for level in range(levels):
+        n_bays = bays_base - level
+        if n_bays <= 0:
+            break
+
+        row_z = base_z + level * (level_height + CARD_HX * 2) + CARD_HZ * math.cos(math.pi / 2 - lean)
+        row_x_start = -(n_bays - 1) * bay_width / 2
+
+        for bay in range(n_bays):
+            cx = row_x_start + bay * bay_width
+            total += _add_leaning_pair(builder, cx, 0.0, row_z, lean, lean_jitter, position_jitter, card_cfg, rng)
+
+        if level < levels - 1:
+            bridge_z = base_z + (level + 1) * (level_height + CARD_HX * 2) - CARD_HX
+            for b in range(n_bays - 1):
+                bx = row_x_start + (b + 0.5) * bay_width
+                total += _add_flat_card(builder, bx, 0.0, bridge_z, card_cfg, rng, position_jitter)
+
+    return total
+
+
+def _build_box(builder, card_cfg, rng, levels, bays_base, base_z, lean, lean_jitter, position_jitter):
+    """4-walled rectangular enclosure with flat roof cards per level."""
+    card_full_height = CARD_HZ * 2
+    bay_width = card_full_height * math.sin(math.pi - lean) * 1.05
+    level_height = card_full_height * math.cos(math.pi / 2 - lean)
+    total = 0
+
+    bays_x = bays_base
+    bays_y = max(2, bays_base - 1)
+    extent_x = (bays_x - 1) * bay_width / 2
+    extent_y = (bays_y - 1) * bay_width / 2
+
+    for level in range(levels):
+        row_z = base_z + level * (level_height + CARD_HX * 2) + CARD_HZ * math.cos(math.pi / 2 - lean)
+
+        # X-facing walls (along +Y and -Y edges)
+        for wall_y in [-extent_y, extent_y]:
+            for bay in range(bays_x):
+                cx = -extent_x + bay * bay_width
+                total += _add_leaning_pair(
+                    builder, cx, wall_y, row_z, lean, lean_jitter, position_jitter, card_cfg, rng, facing=0.0,
+                )
+
+        # Y-facing walls (along +X and -X edges)
+        for wall_x in [-extent_x, extent_x]:
+            for bay in range(bays_y):
+                cy = -extent_y + bay * bay_width
+                total += _add_leaning_pair(
+                    builder, wall_x, cy, row_z, lean, lean_jitter, position_jitter, card_cfg, rng,
+                    facing=math.pi / 2,
+                )
+
+        # Flat roof cards spanning the interior
+        if level < levels - 1:
+            bridge_z = base_z + (level + 1) * (level_height + CARD_HX * 2) - CARD_HX
+            for ix in range(bays_x - 1):
+                for iy in range(bays_y - 1):
+                    bx = -extent_x + (ix + 0.5) * bay_width
+                    by = -extent_y + (iy + 0.5) * bay_width
+                    total += _add_flat_card(builder, bx, by, bridge_z, card_cfg, rng, position_jitter)
+
+    return total
+
+
+def _build_tower(builder, card_cfg, rng, levels, bays_base, base_z, lean, lean_jitter, position_jitter):
+    """Tall narrow single-row of leaning pairs (extruded rectangle)."""
+    card_full_height = CARD_HZ * 2
+    bay_width = card_full_height * math.sin(math.pi - lean) * 1.05
+    level_height = card_full_height * math.cos(math.pi / 2 - lean)
+    total = 0
+
+    n_bays = max(1, bays_base)
+
+    for level in range(levels):
+        row_z = base_z + level * (level_height + CARD_HX * 2) + CARD_HZ * math.cos(math.pi / 2 - lean)
+        row_x_start = -(n_bays - 1) * bay_width / 2
+
+        for bay in range(n_bays):
+            cx = row_x_start + bay * bay_width
+            total += _add_leaning_pair(builder, cx, 0.0, row_z, lean, lean_jitter, position_jitter, card_cfg, rng)
+
+        # Bridge cards between all bays (same count every level, no tapering)
+        if level < levels - 1 and n_bays > 1:
+            bridge_z = base_z + (level + 1) * (level_height + CARD_HX * 2) - CARD_HX
+            for b in range(n_bays - 1):
+                bx = row_x_start + (b + 0.5) * bay_width
+                total += _add_flat_card(builder, bx, 0.0, bridge_z, card_cfg, rng, position_jitter)
+
+    return total
+
+
 def build_card_house_scene(
     seed: int = 0,
+    structure: str = "pyramid",
     levels: int = 3,
     bays_base: int = 3,
     table_height: float = 0.4,
@@ -56,13 +210,12 @@ def build_card_house_scene(
     perturb_speed: float = 0.3,
     solver_iters: int = 10,
 ):
-    """Build a house of cards: leaning pairs per level, flat bridge cards on top.
+    """Build a house of cards with the chosen structure type.
 
-    Structure per level:
-      - N bays of leaning card pairs (inverted V)
-      - (N-1) flat bridge cards spanning adjacent bays
-
-    Each level has one fewer bay than the level below.
+    Structure types:
+      pyramid — classic tapered house, fewer bays each level
+      box     — 4-walled rectangular enclosure with interior roof cards
+      tower   — tall narrow single-row, constant width every level
     """
     rng = random.Random(seed)
 
@@ -79,56 +232,14 @@ def build_card_house_scene(
     card_cfg.restitution = 0.05
 
     lean = _lean_angle()
-    card_full_height = CARD_HZ * 2
-    bay_width = card_full_height * math.sin(math.pi - lean) * 1.05
-    level_height = card_full_height * math.cos(math.pi / 2 - lean)
 
-    total_cards = 0
-
-    for level in range(levels):
-        n_bays = bays_base - level
-        if n_bays <= 0:
-            break
-
-        row_z = base_z + level * (level_height + CARD_HX * 2) + CARD_HZ * math.cos(math.pi / 2 - lean)
-        row_x_start = -(n_bays - 1) * bay_width / 2
-
-        # Leaning pairs
-        for bay in range(n_bays):
-            cx = row_x_start + bay * bay_width
-            cy = 0.0
-
-            for side in [-1, 1]:
-                angle = side * lean + rng.uniform(-lean_jitter, lean_jitter)
-                px = cx + side * CARD_HZ * math.sin(math.pi / 2 - lean) * 0.5
-                px += rng.uniform(-position_jitter, position_jitter)
-                py = cy + rng.uniform(-position_jitter, position_jitter)
-                pz = row_z
-
-                q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle)
-
-                body = builder.add_body(
-                    xform=wp.transform(p=wp.vec3(px, py, pz), q=q),
-                )
-                builder.add_shape_box(body=body, hx=CARD_HX, hy=CARD_HY, hz=CARD_HZ, cfg=card_cfg)
-                total_cards += 1
-
-        # Bridge cards (flat, spanning adjacent bays)
-        if level < levels - 1:
-            bridge_z = base_z + (level + 1) * (level_height + CARD_HX * 2) - CARD_HX
-            for b in range(n_bays - 1):
-                bx = row_x_start + (b + 0.5) * bay_width
-                bx += rng.uniform(-position_jitter, position_jitter)
-                by = rng.uniform(-position_jitter, position_jitter)
-
-                # Flat card (rotated 90 around Y so it lies horizontal)
-                q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2)
-
-                body = builder.add_body(
-                    xform=wp.transform(p=wp.vec3(bx, by, bridge_z), q=q),
-                )
-                builder.add_shape_box(body=body, hx=CARD_HX, hy=CARD_HY, hz=CARD_HZ, cfg=card_cfg)
-                total_cards += 1
+    builders = {
+        "pyramid": _build_pyramid,
+        "box": _build_box,
+        "tower": _build_tower,
+    }
+    build_fn = builders[structure]
+    total_cards = build_fn(builder, card_cfg, rng, levels, bays_base, base_z, lean, lean_jitter, position_jitter)
 
     # Optional perturbation sphere
     sphere_body_idx = None
@@ -144,7 +255,7 @@ def build_card_house_scene(
         builder.add_shape_sphere(body=sphere_body, radius=0.015, cfg=sphere_cfg)
         sphere_body_idx = sphere_body
 
-    print(f"  Cards: {total_cards}, levels: {levels}, base bays: {bays_base}")
+    print(f"  Structure: {structure}, cards: {total_cards}, levels: {levels}, base bays: {bays_base}")
 
     model = builder.finalize()
     solver = newton.solvers.SolverXPBD(model, iterations=solver_iters)
@@ -158,6 +269,7 @@ def build_card_house_scene(
 
     scene_info = {
         "total_cards": total_cards,
+        "structure": structure,
         "levels": levels,
         "bays_base": bays_base,
         "perturb": perturb,
@@ -184,7 +296,6 @@ def run_card_house_sim(
     control = model.control()
     contacts = model.contacts()
 
-    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, None, state_0)
     sub_dt = dt / substeps
 
     if viewer:
@@ -230,6 +341,9 @@ def count_collapsed(model, state, total_cards: int, base_z: float) -> int:
 def main():
     parser = argparse.ArgumentParser(description="Newton Card House Simulation")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--structure", type=str, default="pyramid",
+                        choices=["pyramid", "box", "tower"],
+                        help="Structure shape: pyramid, box, or tower")
     parser.add_argument("--levels", type=int, default=3)
     parser.add_argument("--bays", type=int, default=3, help="Number of bays at base level")
     parser.add_argument("--perturb", action="store_true",
@@ -270,10 +384,11 @@ def main():
         sim_dir = output_dir / "card_house" / sim_name
         sim_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"=== Newton Card House (seed={args.seed}) ===")
+        print(f"=== Newton Card House (seed={args.seed}, structure={args.structure}) ===")
 
         model, solver, initial_state, scene_info = build_card_house_scene(
             seed=args.seed,
+            structure=args.structure,
             levels=args.levels,
             bays_base=args.bays,
             table_height=args.table_height,
@@ -284,8 +399,9 @@ def main():
             solver_iters=args.solver_iters,
         )
 
-        usd_path = sim_dir / f"{sim_name}.usd" if args.viewer == "usd" else None
-        viewer = create_viewer(output_path=usd_path, viewer_type=args.viewer)
+        # Always write USDA (the deliverable)
+        usd_path = sim_dir / f"{sim_name}.usda"
+        viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_card_house_sim(
             model, solver, initial_state,
@@ -305,6 +421,10 @@ def main():
             cards_collapsed=collapsed,
             **scene_info,
         )
+
+        # Create .blend file referencing the USDA
+        blend_path = sim_dir / f"{sim_name}.blend"
+        create_blend_file(usd_path, blend_path, blender_exe=config.get("blender_exe", "blender"))
 
         print(f"  Done: {sim_dir}")
 

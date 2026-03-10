@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import re
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
@@ -294,7 +296,7 @@ def add_dtc_prop_as_rigid_body(
 
     # DTC meshes are Y-up, Newton is Z-up — rotate 90 around X
     y_to_z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
-    q = wp.quat_multiply(q, y_to_z)
+    q = q * y_to_z
 
     xform = wp.transform(p=wp.vec3(*position), q=q)
 
@@ -541,7 +543,6 @@ def run_simulation(
     contacts = model.contacts()
 
     # Evaluate initial forward kinematics
-    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, None, state_0)
 
     if viewer:
         viewer.set_model(model)
@@ -574,6 +575,20 @@ def run_simulation(
 # =============================================================================
 
 
+def _ensure_openusd_env():
+    """Auto-detect OPENUSD_ROOT if not set."""
+    if os.environ.get("OPENUSD_ROOT"):
+        return
+    candidates = [
+        "C:/_tools/OpenUSD/25.08",
+        "C:/Program Files/OpenUSD",
+    ]
+    for c in candidates:
+        if Path(c).is_dir():
+            os.environ["OPENUSD_ROOT"] = c
+            return
+
+
 def create_viewer(
     output_path: str | Path | None = None,
     viewer_type: str = "null",
@@ -584,16 +599,51 @@ def create_viewer(
         output_path: Path for USD/file output. Required for "usd" and "file".
         viewer_type: "null" (headless), "usd" (USD export), "file" (binary), "gl" (interactive).
     """
-    if viewer_type == "null":
-        return newton.viewer.ViewerNull()
-    elif viewer_type == "usd":
+    if viewer_type == "usd":
+        _ensure_openusd_env()
         return newton.viewer.ViewerUSD(str(output_path))
+    elif viewer_type == "null":
+        return newton.viewer.ViewerNull()
     elif viewer_type == "file":
         return newton.viewer.ViewerFile(str(output_path))
     elif viewer_type == "gl":
         return newton.viewer.ViewerGL()
     else:
         raise ValueError(f"Unknown viewer type: {viewer_type}")
+
+
+def create_blend_file(usda_path: str | Path, blend_path: str | Path, blender_exe: str = "blender"):
+    """Create a .blend file that imports the given USDA.
+
+    Runs Blender in background mode with a small Python script that
+    imports the USD stage and saves.
+    """
+    usda_path = Path(usda_path).resolve()
+    blend_path = Path(blend_path).resolve()
+
+    if not usda_path.exists():
+        print(f"  WARNING: USDA not found at {usda_path}, skipping .blend creation")
+        return
+
+    import_script = f'''
+import bpy
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.wm.usd_import(filepath=r"{usda_path}")
+bpy.ops.wm.save_as_mainfile(filepath=r"{blend_path}")
+'''
+    try:
+        result = subprocess.run(
+            [blender_exe, "--background", "--python-expr", import_script],
+            capture_output=True, text=True, errors="replace", timeout=120,
+        )
+        if result.returncode == 0:
+            print(f"  Blender file: {blend_path}")
+        else:
+            print(f"  WARNING: Blender export failed: {result.stderr[-300:]}")
+    except FileNotFoundError:
+        print(f"  WARNING: Blender not found at '{blender_exe}', skipping .blend creation")
+    except subprocess.TimeoutExpired:
+        print("  WARNING: Blender timed out creating .blend file")
 
 
 def write_sim_metadata(

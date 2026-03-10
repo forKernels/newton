@@ -22,6 +22,7 @@ import newton
 
 from newton_sim_utils import (
     TEST_FRAMES,
+    create_blend_file,
     create_viewer,
     load_config,
     write_sim_metadata,
@@ -170,7 +171,6 @@ def run_pool_sim(
     control = model.control()
     contacts = model.contacts()
 
-    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, None, state_0)
     sub_dt = dt / substeps
 
     if viewer:
@@ -241,8 +241,9 @@ def main():
             solver_iters=args.solver_iters,
         )
 
-        usd_path = sim_dir / f"{sim_name}.usd" if args.viewer == "usd" else None
-        viewer = create_viewer(output_path=usd_path, viewer_type=args.viewer)
+        # Always write USDA (the deliverable)
+        usd_path = sim_dir / f"{sim_name}.usda"
+        viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_pool_sim(
             model, solver, initial_state,
@@ -257,6 +258,10 @@ def main():
             seed=args.seed,
             **scene_info,
         )
+
+        # Create .blend file referencing the USDA
+        blend_path = sim_dir / f"{sim_name}.blend"
+        create_blend_file(usd_path, blend_path, blender_exe=config.get("blender_exe", "blender"))
 
         print(f"  Done: {sim_dir}")
 

@@ -28,6 +28,7 @@ from newton_sim_utils import (
     add_dtc_prop_as_rigid_body,
     add_ground_plane,
     add_table,
+    create_blend_file,
     create_viewer,
     discover_dtc_props,
     load_config,
@@ -186,7 +187,6 @@ def run_cloth_drag(
     control = model.control()
     contacts = model.contacts()
 
-    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, None, state_0)
 
     sub_dt = dt / substeps
     drag_vel = wp.vec3(drag_speed, 0.0, 0.0)
@@ -289,8 +289,9 @@ def main():
             solver_iters=args.solver_iters,
         )
 
-        usd_path = sim_dir / f"{sim_name}.usd" if args.viewer == "usd" else None
-        viewer = create_viewer(output_path=usd_path, viewer_type=args.viewer)
+        # Always write USDA (the deliverable)
+        usd_path = sim_dir / f"{sim_name}.usda"
+        viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_cloth_drag(
             model, solver,
@@ -316,6 +317,10 @@ def main():
             bbox_size=float(bbox_size),
             **scene_info,
         )
+
+        # Create .blend file referencing the USDA
+        blend_path = sim_dir / f"{sim_name}.blend"
+        create_blend_file(usd_path, blend_path, blender_exe=config.get("blender_exe", "blender"))
 
         print(f"  Done: {sim_dir}")
 
