@@ -123,6 +123,150 @@ def discover_dtc_props(
 
 
 # =============================================================================
+# USDA Props Discovery (Props_USDA layout: flat dir with .usda + .physics.json)
+# =============================================================================
+
+
+def discover_usda_props(props_dir: str | Path) -> list[dict]:
+    """Discover USDA-format props with .physics.json sidecars.
+
+    Expected layout::
+
+        Props_USDA/
+            Bowl_01.usda
+            Bowl_01.physics.json
+            Avocado_basket.usda
+            Avocado_basket.physics.json
+            textures/
+
+    Returns list of dicts compatible with the DTC prop format:
+      name, path (to .usda), collision_path (None), metadata (physics dict).
+    """
+    root = Path(props_dir)
+    if not root.is_dir():
+        print(f"  WARNING: USDA props dir not found: {props_dir}")
+        return []
+
+    props = []
+    for usda_file in sorted(root.glob("*.usda")):
+        physics_json = usda_file.with_suffix(".physics.json")
+        if not physics_json.exists():
+            continue
+
+        with open(physics_json) as f:
+            physics_data = json.load(f)
+
+        # physics.json has {"objects": [{"name": ..., "physics": {...}}]}
+        obj_list = physics_data.get("objects", [])
+        if not obj_list:
+            continue
+
+        phys = obj_list[0].get("physics", {})
+
+        # Remap to DTC-compatible metadata keys
+        meta = {
+            "mass_kg": phys.get("mass_kg", 0.5),
+            "friction_static": phys.get("friction_static", 0.5),
+            "restitution": phys.get("restitution", 0.2),
+            "dimensions_m": phys.get("dimensions_m", [0.1, 0.1, 0.1]),
+            "collision_primitive": phys.get("collision_primitive"),
+            "collision_strategy": "primitive" if phys.get("collision_primitive") else "hull",
+        }
+
+        props.append({
+            "name": usda_file.stem,
+            "path": usda_file,
+            "collision_path": None,
+            "metadata": meta,
+            "format": "usda",
+        })
+
+    return props
+
+
+def discover_usda_scenes(scenes_dir: str | Path) -> list[dict]:
+    """Discover USDA-format scene files (furniture) with .physics.json sidecars.
+
+    Expected layout::
+
+        Scenes_USDA/
+            Bed_01.usda
+            Bed_01.physics.json
+            Chair/
+                Chair_01.usda
+                Chair_01.physics.json
+            Table/
+                Table_01.usda
+                Table_01.physics.json
+            Sofa/
+                ...
+
+    Returns list of dicts:
+      name, path (to .usda), metadata (physics dict), category.
+    """
+    root = Path(scenes_dir)
+    if not root.is_dir():
+        print(f"  WARNING: Scenes dir not found: {scenes_dir}")
+        return []
+
+    scenes = []
+
+    def _scan_dir(d: Path, category: str = ""):
+        for usda_file in sorted(d.glob("*.usda")):
+            physics_json = usda_file.with_suffix(".physics.json")
+            meta = {}
+            if physics_json.exists():
+                with open(physics_json) as f:
+                    physics_data = json.load(f)
+                obj_list = physics_data.get("objects", [])
+                if obj_list:
+                    meta = obj_list[0].get("physics", {})
+
+            scenes.append({
+                "name": usda_file.stem,
+                "path": usda_file,
+                "category": category or usda_file.stem.split("_")[0],
+                "metadata": meta,
+            })
+
+    # Scan top-level files
+    _scan_dir(root)
+
+    # Scan subdirectories (Chair/, Table/, Sofa/, etc.)
+    for subdir in sorted(root.iterdir()):
+        if subdir.is_dir() and subdir.name != "textures":
+            _scan_dir(subdir, category=subdir.name)
+
+    return scenes
+
+
+def discover_all_props(config: dict) -> list[dict]:
+    """Discover props from both DTC (GLB) and USDA sources.
+
+    Checks config keys: dtc_dir, props_usda_dir, props_dir.
+    Returns combined list.
+    """
+    all_props = []
+
+    # DTC GLB props
+    dtc_dir = config.get("dtc_dir", "")
+    if dtc_dir and Path(dtc_dir).is_dir():
+        dtc_props = discover_dtc_props(
+            dtc_dir,
+            unique_only=config.get("dtc_unique_only", True),
+        )
+        all_props.extend(dtc_props)
+
+    # USDA props
+    usda_dir = config.get("props_usda_dir", config.get("props_dir", ""))
+    if usda_dir and Path(usda_dir).is_dir():
+        usda_props = discover_usda_props(usda_dir)
+        all_props.extend(usda_props)
+
+    return all_props
+
+
+# =============================================================================
 # Garment Discovery
 # =============================================================================
 
@@ -450,36 +594,60 @@ def add_cloth_grid(
 
 
 # =============================================================================
-# Cloth Presets (maps to fabric types)
+# Cloth Presets (unified — derived from clean_cloth_dataset.FABRICS)
 # =============================================================================
 
-CLOTH_PRESETS = {
-    "silk": {
-        "density": 0.08,
-        "tri_ke": 5e2, "tri_ka": 5e2, "tri_kd": 5e-2,
-        "edge_ke": 1e-4, "edge_kd": 1e-3,
-    },
-    "cotton": {
-        "density": 0.15,
-        "tri_ke": 1e3, "tri_ka": 1e3, "tri_kd": 1e-1,
-        "edge_ke": 1e-2, "edge_kd": 1e-2,
-    },
-    "denim": {
-        "density": 0.35,
-        "tri_ke": 5e3, "tri_ka": 5e3, "tri_kd": 5e-1,
-        "edge_ke": 5e-2, "edge_kd": 5e-2,
-    },
-    "leather": {
-        "density": 0.50,
-        "tri_ke": 1e4, "tri_ka": 1e4, "tri_kd": 1.0,
-        "edge_ke": 1e-1, "edge_kd": 1e-1,
-    },
-    "rubber": {
-        "density": 0.80,
-        "tri_ke": 2e4, "tri_ka": 2e4, "tri_kd": 2.0,
-        "edge_ke": 5e-1, "edge_kd": 5e-1,
-    },
-}
+# Import the single source of truth for fabric properties.  The newton-specific
+# sub-dict is extracted so callers can keep using CLOTH_PRESETS["cotton"] etc.
+# If the import fails (e.g. running outside the disco dir), fall back to a
+# self-contained copy of the five most common presets.
+
+try:
+    from fabric_library import FABRICS as _FABRICS
+
+    CLOTH_PRESETS: dict[str, dict] = {}
+    for _name, _props in _FABRICS.items():
+        _n = _props.get("newton", {})
+        CLOTH_PRESETS[_name] = {
+            "density": _n.get("density", _props.get("density", 0.15)),
+            "tri_ke": _n.get("tri_ke", _props.get("tri_ke", 1e3)),
+            "tri_ka": _n.get("tri_ka", _props.get("tri_ka", 1e3)),
+            "tri_kd": _n.get("tri_kd", _props.get("tri_kd", 1e-1)),
+            "edge_ke": _n.get("edge_ke", 0.01),
+            "edge_kd": _n.get("edge_kd", 0.01),
+            "particle_radius": _n.get("particle_radius", 0.005),
+            "self_contact_radius": _n.get("self_contact_radius", 0.01),
+            "contact_mu": _n.get("contact_mu", 0.6),
+        }
+except ImportError:
+    # Fallback: standalone Newton presets (keep in sync with FABRICS)
+    CLOTH_PRESETS = {
+        "silk": {
+            "density": 0.08,
+            "tri_ke": 5e2, "tri_ka": 5e2, "tri_kd": 5e-2,
+            "edge_ke": 1e-4, "edge_kd": 1e-3,
+        },
+        "cotton": {
+            "density": 0.15,
+            "tri_ke": 1e3, "tri_ka": 1e3, "tri_kd": 1e-1,
+            "edge_ke": 1e-2, "edge_kd": 1e-2,
+        },
+        "denim": {
+            "density": 0.35,
+            "tri_ke": 5e3, "tri_ka": 5e3, "tri_kd": 5e-1,
+            "edge_ke": 5e-2, "edge_kd": 5e-2,
+        },
+        "leather": {
+            "density": 0.50,
+            "tri_ke": 1e4, "tri_ka": 1e4, "tri_kd": 1.0,
+            "edge_ke": 1e-1, "edge_kd": 1e-1,
+        },
+        "rubber": {
+            "density": 0.80,
+            "tri_ke": 2e4, "tri_ka": 2e4, "tri_kd": 2.0,
+            "edge_ke": 5e-1, "edge_kd": 5e-1,
+        },
+    }
 
 
 # =============================================================================

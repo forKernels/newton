@@ -47,338 +47,17 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
-# =============================================================================
-# FABRIC LIBRARY -- Physical properties for simulation
-# =============================================================================
-# Sources: textile engineering references, typical values for cloth simulation.
-# density = kg/m^2 (areal density, not volumetric)
-# tri_ke  = stretch stiffness (higher = resists stretching more)
-# tri_ka  = area preservation stiffness
-# tri_kd  = damping coefficient
-# friction = surface friction coefficient
-
-FABRICS = {
-    # --- Lightweight ---
-    "silk": {
-        "description": "Silk -- very light, smooth, fluid drape",
-        "density": 0.08,
-        "tri_ke": 30.0,
-        "tri_ka": 25.0,
-        "tri_kd": 0.5e-6,
-        "friction": 0.20,
-        "weight_class": "ultralight",
-    },
-    "chiffon": {
-        "description": "Chiffon -- sheer, floaty, delicate",
-        "density": 0.06,
-        "tri_ke": 20.0,
-        "tri_ka": 15.0,
-        "tri_kd": 0.3e-6,
-        "friction": 0.25,
-        "weight_class": "ultralight",
-    },
-    "organza": {
-        "description": "Organza -- crisp, sheer, holds shape",
-        "density": 0.07,
-        "tri_ke": 45.0,
-        "tri_ka": 40.0,
-        "tri_kd": 0.4e-6,
-        "friction": 0.22,
-        "weight_class": "ultralight",
-    },
-    "satin": {
-        "description": "Satin -- smooth, glossy, medium drape",
-        "density": 0.12,
-        "tri_ke": 40.0,
-        "tri_ka": 35.0,
-        "tri_kd": 0.6e-6,
-        "friction": 0.15,
-        "weight_class": "light",
-    },
-    # --- Light-Medium ---
-    "cotton": {
-        "description": "Cotton broadcloth -- everyday woven, medium body",
-        "density": 0.15,
-        "tri_ke": 80.0,
-        "tri_ka": 70.0,
-        "tri_kd": 1.2e-6,
-        "friction": 0.45,
-        "weight_class": "light",
-    },
-    "linen": {
-        "description": "Linen -- natural fiber, crisp, wrinkles easily",
-        "density": 0.17,
-        "tri_ke": 100.0,
-        "tri_ka": 90.0,
-        "tri_kd": 1.5e-6,
-        "friction": 0.40,
-        "weight_class": "light",
-    },
-    "jersey": {
-        "description": "Jersey knit -- stretchy, soft, t-shirt fabric",
-        "density": 0.18,
-        "tri_ke": 35.0,
-        "tri_ka": 30.0,
-        "tri_kd": 1.0e-6,
-        "friction": 0.50,
-        "weight_class": "light",
-    },
-    "polyester": {
-        "description": "Polyester -- wrinkle-resistant, slightly slippery",
-        "density": 0.14,
-        "tri_ke": 60.0,
-        "tri_ka": 55.0,
-        "tri_kd": 0.8e-6,
-        "friction": 0.30,
-        "weight_class": "light",
-    },
-    # --- Medium ---
-    "cotton_twill": {
-        "description": "Cotton twill -- chinos, structured but not stiff",
-        "density": 0.25,
-        "tri_ke": 120.0,
-        "tri_ka": 110.0,
-        "tri_kd": 2.0e-6,
-        "friction": 0.40,
-        "weight_class": "medium",
-    },
-    "wool": {
-        "description": "Wool -- warm, medium drape, textured surface",
-        "density": 0.28,
-        "tri_ke": 100.0,
-        "tri_ka": 90.0,
-        "tri_kd": 2.5e-6,
-        "friction": 0.55,
-        "weight_class": "medium",
-    },
-    "flannel": {
-        "description": "Flannel -- soft, brushed, warm",
-        "density": 0.24,
-        "tri_ke": 90.0,
-        "tri_ka": 80.0,
-        "tri_kd": 2.0e-6,
-        "friction": 0.60,
-        "weight_class": "medium",
-    },
-    "velvet": {
-        "description": "Velvet -- plush, heavy drape, grippy surface",
-        "density": 0.30,
-        "tri_ke": 85.0,
-        "tri_ka": 75.0,
-        "tri_kd": 2.5e-6,
-        "friction": 0.65,
-        "weight_class": "medium",
-    },
-    "corduroy": {
-        "description": "Corduroy -- ribbed texture, medium-heavy",
-        "density": 0.32,
-        "tri_ke": 130.0,
-        "tri_ka": 120.0,
-        "tri_kd": 2.5e-6,
-        "friction": 0.55,
-        "weight_class": "medium",
-    },
-    # --- Heavy ---
-    "denim": {
-        "description": "Denim -- heavy, stiff, jeans fabric",
-        "density": 0.40,
-        "tri_ke": 250.0,
-        "tri_ka": 230.0,
-        "tri_kd": 4.0e-6,
-        "friction": 0.45,
-        "weight_class": "heavy",
-    },
-    "canvas": {
-        "description": "Canvas -- heavy-duty, very stiff, work wear",
-        "density": 0.45,
-        "tri_ke": 300.0,
-        "tri_ka": 280.0,
-        "tri_kd": 5.0e-6,
-        "friction": 0.50,
-        "weight_class": "heavy",
-    },
-    "leather": {
-        "description": "Leather -- heavy, stiff, minimal stretch",
-        "density": 0.60,
-        "tri_ke": 400.0,
-        "tri_ka": 380.0,
-        "tri_kd": 6.0e-6,
-        "friction": 0.35,
-        "weight_class": "heavy",
-    },
-    "wool_coat": {
-        "description": "Wool coating -- thick, structured, overcoats",
-        "density": 0.50,
-        "tri_ke": 280.0,
-        "tri_ka": 260.0,
-        "tri_kd": 5.0e-6,
-        "friction": 0.50,
-        "weight_class": "heavy",
-    },
-    "fleece": {
-        "description": "Fleece -- soft, thick, stretchy, high friction",
-        "density": 0.35,
-        "tri_ke": 60.0,
-        "tri_ka": 50.0,
-        "tri_kd": 3.0e-6,
-        "friction": 0.70,
-        "weight_class": "heavy",
-    },
-    "neoprene": {
-        "description": "Neoprene -- thick, rubbery, wetsuit material",
-        "density": 0.55,
-        "tri_ke": 150.0,
-        "tri_ka": 140.0,
-        "tri_kd": 5.0e-6,
-        "friction": 0.60,
-        "weight_class": "heavy",
-    },
-}
-
-
-# =============================================================================
-# GARMENT -> COMPATIBLE FABRICS mapping
-# =============================================================================
-
-CATEGORY_FABRICS = {
-    "dress_sleeveless": [
-        "silk",
-        "chiffon",
-        "satin",
-        "cotton",
-        "linen",
-        "jersey",
-        "polyester",
-    ],
-    "dress": [
-        "silk",
-        "chiffon",
-        "satin",
-        "cotton",
-        "linen",
-        "jersey",
-        "polyester",
-        "wool",
-        "velvet",
-    ],
-    "tee_sleeveless": [
-        "jersey",
-        "cotton",
-        "polyester",
-        "silk",
-    ],
-    "tee": [
-        "jersey",
-        "cotton",
-        "polyester",
-        "flannel",
-    ],
-    "jacket": [
-        "denim",
-        "canvas",
-        "leather",
-        "wool_coat",
-        "cotton_twill",
-        "corduroy",
-        "neoprene",
-    ],
-    "jacket_hood": [
-        "fleece",
-        "denim",
-        "canvas",
-        "neoprene",
-        "wool_coat",
-    ],
-    "pants_straight_sides": [
-        "denim",
-        "cotton_twill",
-        "wool",
-        "corduroy",
-        "linen",
-        "polyester",
-        "leather",
-        "flannel",
-    ],
-    "pants": [
-        "denim",
-        "cotton_twill",
-        "wool",
-        "corduroy",
-        "linen",
-        "polyester",
-        "leather",
-    ],
-    "skirt_2_panels": [
-        "silk",
-        "cotton",
-        "linen",
-        "polyester",
-        "wool",
-        "satin",
-        "velvet",
-    ],
-    "skirt_4_panels": [
-        "silk",
-        "cotton",
-        "linen",
-        "polyester",
-        "wool",
-        "satin",
-        "velvet",
-        "chiffon",
-    ],
-    "skirt_8_panels": [
-        "silk",
-        "cotton",
-        "linen",
-        "polyester",
-        "wool",
-        "chiffon",
-        "organza",
-    ],
-    "skirt": [
-        "silk",
-        "cotton",
-        "linen",
-        "polyester",
-        "wool",
-        "satin",
-    ],
-    "jumpsuit_sleeveless": [
-        "jersey",
-        "cotton",
-        "linen",
-        "polyester",
-        "denim",
-    ],
-}
-
-DEFAULT_FABRICS = ["cotton", "polyester", "jersey", "wool", "denim"]
-
-SOLIDIFY_THICKNESS = 0.005
-CLOTH_SCALE = 0.01  # cm -> m
-
-
-def get_fabrics_for_category(category_name: str) -> list[str]:
-    """Get compatible fabric names for a garment category."""
-    parts = category_name.rsplit("_", 1)
-    base_name = parts[0] if len(parts) == 2 and parts[1].isdigit() else category_name
-
-    if base_name in CATEGORY_FABRICS:
-        return CATEGORY_FABRICS[base_name]
-
-    for key in sorted(CATEGORY_FABRICS.keys(), key=len, reverse=True):
-        if base_name.startswith(key):
-            return CATEGORY_FABRICS[key]
-
-    return DEFAULT_FABRICS
-
-
-def get_fabric_properties(fabric_name: str) -> dict:
-    """Get simulation properties for a named fabric."""
-    if fabric_name not in FABRICS:
-        raise ValueError(f"Unknown fabric: {fabric_name}. Available: {list(FABRICS.keys())}")
-    return FABRICS[fabric_name].copy()
+# Import shared fabric library (no bpy dependency)
+from fabric_library import (
+    CATEGORY_FABRICS,
+    CLOTH_SCALE,
+    DEFAULT_FABRICS,
+    FABRICS,
+    SOLIDIFY_THICKNESS,
+    build_cloth_properties_json,
+    get_fabric_properties,
+    get_fabrics_for_category,
+)
 
 
 # =============================================================================
@@ -711,21 +390,53 @@ def main():
                     if out_obj != first_out_obj:
                         shutil.copy2(first_out_obj, out_obj)
 
-                # Write fabric-specific properties
+                # Write unified multi-engine fabric properties
+                newton_props = fabric_props.get("newton", {})
+                md_props = fabric_props.get("marvelous_designer", {})
+
                 cloth_props = {
                     "category": cat,
                     "garment_id": gid,
                     "fabric": fabric_name,
                     "fabric_description": fabric_props["description"],
                     "weight_class": fabric_props["weight_class"],
-                    "density": fabric_props["density"],
-                    "tri_ke": fabric_props["tri_ke"],
-                    "tri_ka": fabric_props["tri_ka"],
-                    "tri_kd": fabric_props["tri_kd"],
-                    "friction": fabric_props["friction"],
                     "original_units_in_meter": original_units,
                     "units": "meters",
                     "solidify_thickness": SOLIDIFY_THICKNESS,
+                    # Shared
+                    "density": fabric_props["density"],
+                    "friction": fabric_props["friction"],
+                    # Blender cloth modifier
+                    "blender": {
+                        "tri_ke": fabric_props["tri_ke"],
+                        "tri_ka": fabric_props["tri_ka"],
+                        "tri_kd": fabric_props["tri_kd"],
+                        "density": fabric_props["density"],
+                        "friction": fabric_props["friction"],
+                    },
+                    # Newton (Warp) solver
+                    "newton": {
+                        "density": newton_props.get("density", fabric_props["density"]),
+                        "tri_ke": newton_props.get("tri_ke", fabric_props["tri_ke"]),
+                        "tri_ka": newton_props.get("tri_ka", fabric_props["tri_ka"]),
+                        "tri_kd": newton_props.get("tri_kd", fabric_props["tri_kd"]),
+                        "edge_ke": newton_props.get("edge_ke", 0.01),
+                        "edge_kd": newton_props.get("edge_kd", 0.01),
+                        "particle_radius": newton_props.get("particle_radius", 0.005),
+                        "self_contact_radius": newton_props.get("self_contact_radius", 0.01),
+                        "contact_mu": newton_props.get("contact_mu", 0.6),
+                    },
+                    # Marvelous Designer (placeholder — fill from MD export)
+                    "marvelous_designer": {
+                        "preset_name": md_props.get("preset_name"),
+                        "density_gsm": md_props.get("density_gsm"),
+                        "stretch_weft": md_props.get("stretch_weft"),
+                        "stretch_warp": md_props.get("stretch_warp"),
+                        "shear": md_props.get("shear"),
+                        "bending_weft": md_props.get("bending_weft"),
+                        "bending_warp": md_props.get("bending_warp"),
+                        "buckling_ratio": md_props.get("buckling_ratio"),
+                    },
                 }
                 if mesh_stats:
                     cloth_props["extent_m"] = mesh_stats["extent_m"]
