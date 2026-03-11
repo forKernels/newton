@@ -38,14 +38,14 @@ from newton_sim_utils import (
 @wp.kernel
 def _pull_pinned_particles(
     particle_q: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.uint32),
+    particle_flags: wp.array(dtype=wp.int32),
     pull_velocity: wp.vec3,
     dt: float,
 ):
     """Move pinned particles (flag == 0) by pull_velocity * dt."""
     i = wp.tid()
     flags = particle_flags[i]
-    if flags == wp.uint32(0):
+    if flags == 0:
         q = particle_q[i]
         particle_q[i] = q + pull_velocity * dt
 

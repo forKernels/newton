@@ -34,7 +34,7 @@ from newton_sim_utils import (
 @wp.kernel
 def _fold_particles(
     particle_q: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.uint32),
+    particle_flags: wp.array(dtype=wp.int32),
     fold_center: float,
     fold_axis: int,
     fold_velocity: float,
@@ -43,7 +43,7 @@ def _fold_particles(
     """Move pinned particles inward along fold_axis (0=x, 1=y)."""
     i = wp.tid()
     flags = particle_flags[i]
-    if flags == wp.uint32(0):
+    if flags == 0:
         q = particle_q[i]
         if fold_axis == 0:
             sign = wp.sign(q[0] - fold_center)

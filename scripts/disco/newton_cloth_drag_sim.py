@@ -39,7 +39,7 @@ from newton_sim_utils import (
 @wp.kernel
 def _animate_pinned_particles(
     particle_q: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.uint32),
+    particle_flags: wp.array(dtype=wp.int32),
     drag_velocity: wp.vec3,
     dt: float,
 ):
@@ -47,7 +47,7 @@ def _animate_pinned_particles(
     i = wp.tid()
     flags = particle_flags[i]
     # newton uses PARTICLE_FLAG_ACTIVE = 1; pinned particles have flag == 0
-    if flags == wp.uint32(0):
+    if flags == 0:
         q = particle_q[i]
         particle_q[i] = q + drag_velocity * dt
 

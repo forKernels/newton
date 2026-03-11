@@ -485,7 +485,7 @@ def main():
             extra = f"  ERROR: {r['error'][:60]}"
         if r.get("warnings"):
             extra += f"  ({len(r['warnings'])} warnings)"
-        print(f"  {status} {name:<30s}  {t:>5s}s{extra}")
+        print(f"  {status} {name:<30s}  {t:>5.1f}s{extra}")
 
     print(f"\n  Output: {output_dir}")
     print()
