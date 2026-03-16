@@ -1,8 +1,14 @@
 # maria_obj_to_cloth_usd.py
-from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema, Sdf, Gf, Vt
+#
+# Converts Maria garment OBJs to USDA with standard UsdPhysics APIs.
+# Newton loads these via parse_usd() — cloth properties (stiffness, damping)
+# are applied in the Newton sim script, not baked into the USD.
+
+from pxr import Usd, UsdGeom, UsdPhysics, Sdf, Gf, Vt
 import trimesh
 import numpy as np
 from pathlib import Path
+
 
 def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
     mesh = trimesh.load(str(obj_path), process=False)
@@ -37,7 +43,8 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
     # UVs if present
     if hasattr(mesh.visual, 'uv') and mesh.visual.uv is not None:
         uvs = mesh.visual.uv
-        uv_primvar = garment_mesh.CreatePrimvar(
+        primvars_api = UsdGeom.PrimvarsAPI(garment_mesh)
+        uv_primvar = primvars_api.CreatePrimvar(
             "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
         )
         uv_primvar.Set(Vt.Vec2fArray([Gf.Vec2f(*uv) for uv in uvs]))
@@ -58,23 +65,9 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
     mass_api = UsdPhysics.MassAPI.Apply(prim)
     mass_api.CreateMassAttr().Set(0.03 * len(vertices))
 
-    # NOT kinematic — this is the key
+    # Non-kinematic deformable body
     rigid_api = UsdPhysics.RigidBodyAPI.Apply(prim)
     rigid_api.CreateKinematicEnabledAttr().Set(False)
-
-    # Particle cloth API — tells Newton this is cloth
-    PhysxSchema.PhysxParticleAPI.Apply(prim)
-    cloth_api = PhysxSchema.PhysxParticleClothAPI.Apply(prim)
-
-    # Cloth properties
-    cloth_api.CreateSelfCollisionAttr().Set(True)
-
-    # Stiffness and damping
-    auto_cloth = PhysxSchema.PhysxAutoParticleClothAPI.Apply(prim)
-    auto_cloth.CreateStretchStiffnessAttr().Set(80.0)
-    auto_cloth.CreateShearStiffnessAttr().Set(40.0)
-    auto_cloth.CreateBendStiffnessAttr().Set(5.0)
-    auto_cloth.CreateDampingAttr().Set(0.005)
 
     stage.GetRootLayer().Save()
 
@@ -82,15 +75,36 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
     print(f"  Vertices: {len(vertices)}")
     print(f"  Faces: {len(faces)}")
     print(f"  Up axis: {up_axis}")
-    print("  Kinematic: False")
-    print("  Cloth API: Applied")
 
 
-# Batch convert all MARIA garments
-maria_dir = Path("/path/to/maria_objs")
-output_dir = Path("/path/to/newton_usd")
-output_dir.mkdir(exist_ok=True)
+if __name__ == "__main__":
+    import argparse
+    import sys
 
-for obj_file in sorted(maria_dir.glob("*.obj")):
-    usd_file = output_dir / (obj_file.stem + ".usda")
-    convert_maria_obj_to_cloth_usd(obj_file, usd_file, up_axis="Z")
+    parser = argparse.ArgumentParser(description="Convert Maria OBJ garments to USDA with physics")
+    parser.add_argument("--maria-dir", type=str, required=True, help="Root Maria dataset directory")
+    parser.add_argument("--output-dir", type=str, required=True, help="Output directory for USDA files")
+    parser.add_argument("--pattern", type=str, default="*_sim_prep.obj", help="Glob pattern for OBJ files")
+    parser.add_argument("--limit", type=int, default=0, help="Limit number of conversions (0 = all)")
+    args = parser.parse_args()
+
+    maria_dir = Path(args.maria_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    objs = sorted(maria_dir.rglob(args.pattern))
+    if args.limit > 0:
+        objs = objs[:args.limit]
+
+    print(f"Converting {len(objs)} garments from {maria_dir}")
+    print(f"Output: {output_dir}")
+    print()
+
+    for i, obj_file in enumerate(objs, 1):
+        usd_file = output_dir / (obj_file.stem + ".usda")
+        if usd_file.exists():
+            print(f"[{i}/{len(objs)}] SKIP (exists): {usd_file.name}")
+            continue
+        print(f"[{i}/{len(objs)}] {obj_file.name}")
+        convert_maria_obj_to_cloth_usd(obj_file, usd_file, up_axis="Z")
+        print()
