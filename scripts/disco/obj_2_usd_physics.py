@@ -18,15 +18,15 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
     # Root xform
     world = UsdGeom.Xform.Define(stage, "/World")
 
-    # Physics scene
-    physics_scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+    # Physics scene under world
+    physics_scene = UsdPhysics.Scene.Define(stage, world.GetPath().AppendPath("PhysicsScene"))
     physics_scene.CreateGravityDirectionAttr().Set(
         Gf.Vec3f(0.0, 0.0, -1.0) if up_axis == "Z" else Gf.Vec3f(0.0, -1.0, 0.0)
     )
     physics_scene.CreateGravityMagnitudeAttr().Set(9.81)
 
-    # Garment mesh
-    garment_path = "/World/Garment"
+    # Garment mesh under world
+    garment_path = world.GetPath().AppendPath("Garment")
     garment_mesh = UsdGeom.Mesh.Define(stage, garment_path)
 
     # Geometry
@@ -48,6 +48,7 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
             Vt.Vec3fArray([Gf.Vec3f(*n) for n in mesh.vertex_normals])
         )
 
+    # Get prim for physics APIs
     prim = stage.GetPrimAtPath(garment_path)
 
     # Collision
@@ -55,7 +56,7 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
 
     # Mass — per particle
     mass_api = UsdPhysics.MassAPI.Apply(prim)
-    mass_api.CreateMassAttr().Set(0.03 * len(vertices))  # total mass
+    mass_api.CreateMassAttr().Set(0.03 * len(vertices))
 
     # NOT kinematic — this is the key
     rigid_api = UsdPhysics.RigidBodyAPI.Apply(prim)
@@ -68,7 +69,7 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
     # Cloth properties
     cloth_api.CreateSelfCollisionAttr().Set(True)
 
-    # Stiffness and damping via PhysX auto cloth
+    # Stiffness and damping
     auto_cloth = PhysxSchema.PhysxAutoParticleClothAPI.Apply(prim)
     auto_cloth.CreateStretchStiffnessAttr().Set(80.0)
     auto_cloth.CreateShearStiffnessAttr().Set(40.0)
