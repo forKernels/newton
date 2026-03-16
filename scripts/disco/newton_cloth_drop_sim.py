@@ -34,6 +34,7 @@ from newton_sim_utils import (
     create_viewer,
     discover_dtc_props,
     discover_garments,
+    finalize_cloth_model,
     load_config,
     write_sim_metadata,
 )
@@ -151,27 +152,14 @@ def build_cloth_drop_scene(
 
     # Color for VBD solver
     if solver_type == "vbd":
-        builder.color(include_bending=True)
+        builder.color()
 
-    # Finalize
-    model = builder.finalize()
-    model.soft_contact_ke = 1.0e3
-    model.soft_contact_kd = 1.0e0
-    model.soft_contact_mu = 0.8
+    # Finalize with proven cloth contact parameters + edge_rest_angle fix
+    model = finalize_cloth_model(builder)
 
-    # Build solver
-    if solver_type == "vbd":
-        solver = newton.solvers.SolverVBD(
-            model,
-            iterations=solver_iters,
-            particle_enable_self_contact=True,
-            particle_self_contact_radius=0.01,
-            particle_self_contact_margin=0.02,
-        )
-    elif solver_type == "xpbd":
-        solver = newton.solvers.SolverXPBD(model, iterations=solver_iters)
-    else:
-        raise ValueError(f"Unsupported solver for cloth drop: {solver_type}")
+    # Build solver with validated VBD parameters
+    from newton_sim_utils import build_solver
+    solver = build_solver(model, solver_type=solver_type, iterations=solver_iters)
 
     scene_info = {
         "garment": garment["name"] if garment else f"grid_{grid_res}x{grid_res}",
@@ -201,8 +189,10 @@ def run_cloth_drop(
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
 
+    # Use explicit collision pipeline with margin (matches cloth_dataset_pickup)
+    collision_pipeline = newton.CollisionPipeline(model, soft_contact_margin=0.01)
+    contacts = collision_pipeline.contacts()
 
     sub_dt = dt / substeps
 
@@ -215,7 +205,7 @@ def run_cloth_drop(
     for frame in range(num_frames):
         for _ in range(substeps):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sub_dt)
             state_0, state_1 = state_1, state_0
 
@@ -312,9 +302,16 @@ def main():
             solver_iters=args.solver_iters,
         )
 
-        # Always write USDA (the deliverable)
+        # Create viewer (use CLI choice, fallback to null if USD unavailable)
         usd_path = sim_dir / f"{sim_name}.usda"
-        viewer = create_viewer(output_path=usd_path, viewer_type="usd")
+        viewer_type = args.viewer
+        if viewer_type == "null":
+            viewer_type = "usd"  # default to USD output when not specified
+        try:
+            viewer = create_viewer(output_path=usd_path, viewer_type=viewer_type)
+        except ImportError:
+            print(f"  WARNING: {viewer_type} viewer unavailable, falling back to null")
+            viewer = create_viewer(viewer_type="null")
 
         # Run simulation
         final_state = run_cloth_drop(

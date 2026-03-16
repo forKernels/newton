@@ -27,9 +27,11 @@ from newton_sim_utils import (
     add_dtc_prop_as_rigid_body,
     add_ground_plane,
     add_table,
+    build_solver,
     create_blend_file,
     create_viewer,
     discover_dtc_props,
+    finalize_cloth_model,
     load_config,
     write_sim_metadata,
 )
@@ -120,22 +122,10 @@ def build_cloth_pull_scene(
     )
 
     if solver_type == "vbd":
-        builder.color(include_bending=True)
+        builder.color()
 
-    model = builder.finalize()
-    model.soft_contact_ke = 1.0e3
-    model.soft_contact_kd = 1.0e0
-    model.soft_contact_mu = 0.5
-
-    if solver_type == "vbd":
-        solver = newton.solvers.SolverVBD(
-            model, iterations=solver_iters,
-            particle_enable_self_contact=True,
-            particle_self_contact_radius=0.01,
-            particle_self_contact_margin=0.02,
-        )
-    else:
-        solver = newton.solvers.SolverXPBD(model, iterations=solver_iters)
+    model = finalize_cloth_model(builder)
+    solver = build_solver(model, solver_type=solver_type, iterations=solver_iters)
 
     scene_info = {
         "preset": preset,
@@ -162,7 +152,9 @@ def run_cloth_pull(
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+
+    collision_pipeline = newton.CollisionPipeline(model, soft_contact_margin=0.01)
+    contacts = collision_pipeline.contacts()
 
     sub_dt = dt / substeps
 
@@ -191,7 +183,7 @@ def run_cloth_pull(
                 )
 
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sub_dt)
             state_0, state_1 = state_1, state_0
 

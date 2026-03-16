@@ -85,7 +85,7 @@ BLENDER_PRESET_DIR = Path(
 )
 
 COLLISION_THICKNESS = 0.0001  # object collision distance [m]
-COLLISION_FRICTION = 80.0
+COLLISION_FRICTION = 200.0
 COLLISION_DAMPING = 1.0  # collision damping on furniture
 BBOX_MARGIN = 0.10  # 10% inward margin for XY placement
 
@@ -217,6 +217,7 @@ def add_collision(objects: list[bpy.types.Object]):
         obj.collision.thickness_outer = COLLISION_THICKNESS
         obj.collision.cloth_friction = COLLISION_FRICTION
         obj.collision.damping = COLLISION_DAMPING
+        obj.collision.use_culling = False
         obj.select_set(False)
 
 
@@ -271,20 +272,24 @@ def apply_cloth_preset(garment: bpy.types.Object, preset_name: str):
         s.shear_stiffness = 10.0
         s.bending_stiffness = 0.5
 
-        # Damping
+        # Damping -- high values so cloth settles quickly after landing
         s.tension_damping = 10.0
         s.compression_damping = 10.0
         s.shear_damping = 10.0
         s.bending_damping = 0.5
 
+        s.use_pressure = False
+
         # Object collision
         cloth_mod.collision_settings.use_collision = True
         cloth_mod.collision_settings.distance_min = 0.0001
         cloth_mod.collision_settings.collision_quality = CLOTH_COLLISION_QUALITY
+        cloth_mod.collision_settings.impulse_clamp = 5.0
 
         # Self-collision
         cloth_mod.collision_settings.use_self_collision = True
         cloth_mod.collision_settings.self_distance_min = SELF_COLLISION_DISTANCE
+        cloth_mod.collision_settings.self_impulse_clamp = 5.0
 
         print(
             f"    cloth: quality={s.quality} mass={s.mass}kg "
@@ -293,7 +298,7 @@ def apply_cloth_preset(garment: bpy.types.Object, preset_name: str):
         )
         print(
             f"    cloth damping: T={s.tension_damping} C={s.compression_damping} "
-            f"S={s.shear_damping} B={s.bending_damping}"
+            f"S={s.shear_damping} B={s.bending_damping} air={s.air_damping}"
         )
         print(
             f"    cloth collision: quality={cloth_mod.collision_settings.collision_quality} "
@@ -302,19 +307,25 @@ def apply_cloth_preset(garment: bpy.types.Object, preset_name: str):
         )
 
 
+
+
 # =============================================================================
 # Simulation and export
 # =============================================================================
 
 
-def bake_simulation(frame_count: int):
+def bake_simulation(frame_count: int, fps: int | None = None):
     """Bake all physics caches for the given number of frames.
 
     Sets the frame range on the scene **and** on every individual point cache
-    (cloth, rigid body, soft body, …) so the bake doesn't overshoot or
+    (cloth, rigid body, soft body, ...) so the bake doesn't overshoot or
     fall back to Blender's default 250-frame range.
+
+    If *fps* is given, the scene render fps is set accordingly.
     """
     scene = bpy.context.scene
+    if fps is not None:
+        scene.render.fps = fps
     scene.frame_start = 1
     scene.frame_end = frame_count
 
@@ -408,19 +419,36 @@ def find_prepped_garments(
 
 
 def find_furniture(furniture_dir: str, specific: str | None = None) -> list[Path]:
-    """Find furniture .blend files, excluding non-droppable assets."""
+    """Find furniture .blend files, searching subdirectories recursively.
+
+    Scans top-level .blend files and subdirectories (Chair/, Table/, Sofa/, etc.)
+    for .blend files.  Excludes assets in FURNITURE_EXCLUDE.
+
+    If *specific* is given, searches recursively for a .blend file with that name.
+    """
     root = Path(furniture_dir)
     if not root.is_dir():
         raise FileNotFoundError(f"Furniture directory not found: {furniture_dir}")
 
     if specific:
-        p = root / specific
-        if not p.exists():
-            raise FileNotFoundError(f"Furniture not found: {p}")
-        return [p]
+        # Search recursively for the specific file
+        matches = list(root.rglob(specific))
+        if not matches:
+            # Try as a stem (without .blend extension)
+            matches = list(root.rglob(f"{specific}.blend")) if not specific.endswith(".blend") else []
+        if not matches:
+            raise FileNotFoundError(f"Furniture not found: {specific} in {furniture_dir}")
+        return [matches[0]]
 
-    blends = sorted(root.glob("*.blend"))
-    return [b for b in blends if b.stem not in FURNITURE_EXCLUDE]
+    # Collect all .blend files recursively
+    blends = sorted(root.rglob("*.blend"))
+    # Exclude backup files (.blend1, .blend2) and non-droppable assets
+    return [
+        b for b in blends
+        if b.suffix == ".blend"
+        and b.stem not in FURNITURE_EXCLUDE
+        and not b.name.endswith((".blend1", ".blend2"))
+    ]
 
 
 # =============================================================================

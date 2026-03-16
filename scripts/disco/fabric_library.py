@@ -72,9 +72,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.08, "friction": 0.20, "weight_class": "ultralight",
         "tri_ke": 30.0, "tri_ka": 25.0, "tri_kd": 0.5e-6,
         "newton": {
-            "tri_ke": 5e2,  "tri_ka": 5e2,  "tri_kd": 5e-2,
-            "edge_ke": 1e-4, "edge_kd": 1e-3,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 5e1,  "tri_ka": 5e1,  "tri_kd": 1e-6,
+            "edge_ke": 5e-5, "edge_kd": 5e-4,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.4,
         },
         "marvelous_designer": {
@@ -89,9 +89,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.06, "friction": 0.25, "weight_class": "ultralight",
         "tri_ke": 20.0, "tri_ka": 15.0, "tri_kd": 0.3e-6,
         "newton": {
-            "tri_ke": 3e2,  "tri_ka": 3e2,  "tri_kd": 3e-2,
-            "edge_ke": 5e-5, "edge_kd": 5e-4,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 3e1,  "tri_ka": 3e1,  "tri_kd": 5e-7,
+            "edge_ke": 3e-5, "edge_kd": 3e-4,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.4,
         },
         "marvelous_designer": {
@@ -105,9 +105,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.07, "friction": 0.22, "weight_class": "ultralight",
         "tri_ke": 45.0, "tri_ka": 40.0, "tri_kd": 0.4e-6,
         "newton": {
-            "tri_ke": 6e2,  "tri_ka": 6e2,  "tri_kd": 4e-2,
-            "edge_ke": 5e-4, "edge_kd": 5e-4,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 6e1,  "tri_ka": 6e1,  "tri_kd": 8e-7,
+            "edge_ke": 1e-4, "edge_kd": 5e-4,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.4,
         },
         "marvelous_designer": {
@@ -121,9 +121,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.12, "friction": 0.15, "weight_class": "light",
         "tri_ke": 40.0, "tri_ka": 35.0, "tri_kd": 0.6e-6,
         "newton": {
-            "tri_ke": 6e2,  "tri_ka": 6e2,  "tri_kd": 5e-2,
-            "edge_ke": 2e-4, "edge_kd": 2e-3,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 6e1,  "tri_ka": 6e1,  "tri_kd": 1e-6,
+            "edge_ke": 8e-5, "edge_kd": 8e-4,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.3,
         },
         "marvelous_designer": {
@@ -138,9 +138,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.15, "friction": 0.45, "weight_class": "light",
         "tri_ke": 80.0, "tri_ka": 70.0, "tri_kd": 1.2e-6,
         "newton": {
-            "tri_ke": 1e3,  "tri_ka": 1e3,  "tri_kd": 1e-1,
-            "edge_ke": 1e-2, "edge_kd": 1e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 1e2,  "tri_ka": 1e2,  "tri_kd": 1.5e-6,
+            "edge_ke": 1e-4, "edge_kd": 1e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.6,
         },
         "marvelous_designer": {
@@ -154,9 +154,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.17, "friction": 0.40, "weight_class": "light",
         "tri_ke": 100.0, "tri_ka": 90.0, "tri_kd": 1.5e-6,
         "newton": {
-            "tri_ke": 1.5e3, "tri_ka": 1.5e3, "tri_kd": 1.5e-1,
-            "edge_ke": 2e-2, "edge_kd": 1e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 1.2e2, "tri_ka": 1.2e2, "tri_kd": 2e-6,
+            "edge_ke": 2e-4, "edge_kd": 1e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.5,
         },
         "marvelous_designer": {
@@ -170,9 +170,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.18, "friction": 0.50, "weight_class": "light",
         "tri_ke": 35.0, "tri_ka": 30.0, "tri_kd": 1.0e-6,
         "newton": {
-            "tri_ke": 4e2,  "tri_ka": 4e2,  "tri_kd": 5e-2,
-            "edge_ke": 5e-3, "edge_kd": 5e-3,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 8e1,  "tri_ka": 8e1,  "tri_kd": 1e-6,
+            "edge_ke": 8e-5, "edge_kd": 8e-4,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.6,
         },
         "marvelous_designer": {
@@ -186,9 +186,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.14, "friction": 0.30, "weight_class": "light",
         "tri_ke": 60.0, "tri_ka": 55.0, "tri_kd": 0.8e-6,
         "newton": {
-            "tri_ke": 8e2,  "tri_ka": 8e2,  "tri_kd": 8e-2,
-            "edge_ke": 8e-3, "edge_kd": 8e-3,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 9e1,  "tri_ka": 9e1,  "tri_kd": 1.2e-6,
+            "edge_ke": 1e-4, "edge_kd": 8e-4,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.5,
         },
         "marvelous_designer": {
@@ -203,9 +203,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.25, "friction": 0.40, "weight_class": "medium",
         "tri_ke": 120.0, "tri_ka": 110.0, "tri_kd": 2.0e-6,
         "newton": {
-            "tri_ke": 2e3,  "tri_ka": 2e3,  "tri_kd": 2e-1,
-            "edge_ke": 2e-2, "edge_kd": 2e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 1.5e2, "tri_ka": 1.5e2, "tri_kd": 2.5e-6,
+            "edge_ke": 3e-4, "edge_kd": 2e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.6,
         },
         "marvelous_designer": {
@@ -219,9 +219,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.28, "friction": 0.55, "weight_class": "medium",
         "tri_ke": 100.0, "tri_ka": 90.0, "tri_kd": 2.5e-6,
         "newton": {
-            "tri_ke": 1.5e3, "tri_ka": 1.5e3, "tri_kd": 2e-1,
-            "edge_ke": 2e-2, "edge_kd": 2e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 1.5e2, "tri_ka": 1.5e2, "tri_kd": 3e-6,
+            "edge_ke": 3e-4, "edge_kd": 2e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.7,
         },
         "marvelous_designer": {
@@ -235,9 +235,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.24, "friction": 0.60, "weight_class": "medium",
         "tri_ke": 90.0, "tri_ka": 80.0, "tri_kd": 2.0e-6,
         "newton": {
-            "tri_ke": 1.2e3, "tri_ka": 1.2e3, "tri_kd": 1.5e-1,
-            "edge_ke": 1.5e-2, "edge_kd": 1.5e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 1.2e2, "tri_ka": 1.2e2, "tri_kd": 2.5e-6,
+            "edge_ke": 2e-4, "edge_kd": 1.5e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.7,
         },
         "marvelous_designer": {
@@ -251,9 +251,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.30, "friction": 0.65, "weight_class": "medium",
         "tri_ke": 85.0, "tri_ka": 75.0, "tri_kd": 2.5e-6,
         "newton": {
-            "tri_ke": 1.2e3, "tri_ka": 1.2e3, "tri_kd": 2e-1,
-            "edge_ke": 1.5e-2, "edge_kd": 1.5e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 1.2e2, "tri_ka": 1.2e2, "tri_kd": 3e-6,
+            "edge_ke": 2e-4, "edge_kd": 1.5e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.8,
         },
         "marvelous_designer": {
@@ -267,9 +267,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.32, "friction": 0.55, "weight_class": "medium",
         "tri_ke": 130.0, "tri_ka": 120.0, "tri_kd": 2.5e-6,
         "newton": {
-            "tri_ke": 2e3,  "tri_ka": 2e3,  "tri_kd": 3e-1,
-            "edge_ke": 3e-2, "edge_kd": 3e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 1.8e2, "tri_ka": 1.8e2, "tri_kd": 3e-6,
+            "edge_ke": 4e-4, "edge_kd": 2e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.7,
         },
         "marvelous_designer": {
@@ -284,9 +284,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.40, "friction": 0.45, "weight_class": "heavy",
         "tri_ke": 250.0, "tri_ka": 230.0, "tri_kd": 4.0e-6,
         "newton": {
-            "tri_ke": 5e3,  "tri_ka": 5e3,  "tri_kd": 5e-1,
-            "edge_ke": 5e-2, "edge_kd": 5e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 2e2,  "tri_ka": 2e2,  "tri_kd": 4e-6,
+            "edge_ke": 5e-4, "edge_kd": 3e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.6,
         },
         "marvelous_designer": {
@@ -300,9 +300,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.45, "friction": 0.50, "weight_class": "heavy",
         "tri_ke": 300.0, "tri_ka": 280.0, "tri_kd": 5.0e-6,
         "newton": {
-            "tri_ke": 8e3,  "tri_ka": 8e3,  "tri_kd": 8e-1,
-            "edge_ke": 8e-2, "edge_kd": 8e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 3e2,  "tri_ka": 3e2,  "tri_kd": 5e-6,
+            "edge_ke": 8e-4, "edge_kd": 5e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.6,
         },
         "marvelous_designer": {
@@ -316,9 +316,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.60, "friction": 0.35, "weight_class": "heavy",
         "tri_ke": 400.0, "tri_ka": 380.0, "tri_kd": 6.0e-6,
         "newton": {
-            "tri_ke": 1e4,  "tri_ka": 1e4,  "tri_kd": 1.0,
-            "edge_ke": 1e-1, "edge_kd": 1e-1,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 4e2,  "tri_ka": 4e2,  "tri_kd": 6e-6,
+            "edge_ke": 1e-3, "edge_kd": 5e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.5,
         },
         "marvelous_designer": {
@@ -332,9 +332,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.50, "friction": 0.50, "weight_class": "heavy",
         "tri_ke": 280.0, "tri_ka": 260.0, "tri_kd": 5.0e-6,
         "newton": {
-            "tri_ke": 5e3,  "tri_ka": 5e3,  "tri_kd": 5e-1,
-            "edge_ke": 5e-2, "edge_kd": 5e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 3e2,  "tri_ka": 3e2,  "tri_kd": 5e-6,
+            "edge_ke": 8e-4, "edge_kd": 5e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.6,
         },
         "marvelous_designer": {
@@ -348,9 +348,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.35, "friction": 0.70, "weight_class": "heavy",
         "tri_ke": 60.0, "tri_ka": 50.0, "tri_kd": 3.0e-6,
         "newton": {
-            "tri_ke": 8e2,  "tri_ka": 8e2,  "tri_kd": 2e-1,
-            "edge_ke": 1e-2, "edge_kd": 1e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 1.5e2, "tri_ka": 1.5e2, "tri_kd": 3e-6,
+            "edge_ke": 2e-4, "edge_kd": 2e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.8,
         },
         "marvelous_designer": {
@@ -364,9 +364,9 @@ FABRICS: dict[str, dict] = {
         "density": 0.55, "friction": 0.60, "weight_class": "heavy",
         "tri_ke": 150.0, "tri_ka": 140.0, "tri_kd": 5.0e-6,
         "newton": {
-            "tri_ke": 3e3,  "tri_ka": 3e3,  "tri_kd": 5e-1,
-            "edge_ke": 5e-2, "edge_kd": 5e-2,
-            "particle_radius": 0.005, "self_contact_radius": 0.01,
+            "tri_ke": 3e2,  "tri_ka": 3e2,  "tri_kd": 5e-6,
+            "edge_ke": 5e-4, "edge_kd": 3e-3,
+            "particle_radius": 0.008, "self_contact_radius": 0.002,
             "contact_mu": 0.7,
         },
         "marvelous_designer": {

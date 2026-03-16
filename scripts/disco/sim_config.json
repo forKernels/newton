@@ -1,14 +1,49 @@
 {
-  "dtc_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props/dtc/sim_ready",
-  "scenes_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
-  "scenes_usda_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
-  "furniture_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
-  "props_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props_USDA",
-  "props_usda_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props_USDA",
-  "garment_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_ClothObj_Dataset/MariaDataset",
-  "output_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Output",
-  "lego_model_dir": "D:/_blender/_myBlender/SimulationWork/LegoModels",
+  "_comment": "Set SIM_ENV environment variable to switch machines: disco_machine, work_home, work_office",
+  "_comment2": "Or pass --env disco_machine to any sim script",
+
+  "environments": {
+    "disco_machine": {
+      "dtc_dir": "C:/_git/dtc/sim_ready",
+      "garment_dir": "D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set",
+      "scenes_dir": "C:/_data/SimObj/Scenes_USDA",
+      "scenes_usda_dir": "C:/_data/SimObj/Scenes_USDA",
+      "furniture_dir": "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes",
+      "props_dir": "C:/_data/SimObj/Props_USDA",
+      "props_usda_dir": "C:/_data/SimObj/Props_USDA",
+      "output_dir": "C:/_data/SimObj/Output",
+      "lego_model_dir": "D:/_blender/_myBlender/SimulationWork/LegoModels",
+      "blender_exe": "blender",
+      "md_exe": null
+    },
+    "work_home": {
+      "dtc_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props/dtc/sim_ready",
+      "garment_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_ClothObj_Dataset/MariaDataset",
+      "scenes_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
+      "scenes_usda_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
+      "furniture_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
+      "props_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props_USDA",
+      "props_usda_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props_USDA",
+      "output_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Output",
+      "lego_model_dir": "D:/_blender/_myBlender/SimulationWork/LegoModels",
+      "blender_exe": "blender",
+      "md_exe": null
+    },
+    "work_office": {
+      "dtc_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props/dtc/sim_ready",
+      "garment_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_ClothObj_Dataset/MariaDataset",
+      "scenes_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
+      "scenes_usda_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
+      "furniture_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Scenes_USDA",
+      "props_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props_USDA",
+      "props_usda_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Props_USDA",
+      "output_dir": "C:/Users/davidclabaugh/Documents/Blender/SimObj/_SimObj_Dataset/Output",
+      "lego_model_dir": "D:/_blender/_myBlender/SimulationWork/LegoModels",
+      "blender_exe": "blender",
+      "md_exe": null
+    }
+  },
+
   "blender_preset_dir": "C:/Program Files/Blender Foundation/Blender 4.5/4.5/scripts/presets/cloth",
-  "blender_exe": "blender",
   "dtc_unique_only": true
 }

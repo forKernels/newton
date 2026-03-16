@@ -38,13 +38,58 @@ import newton
 _CONFIG_FILE = Path(__file__).resolve().parent / "sim_config.json"
 
 
-def load_config(config_path: str | Path | None = None) -> dict:
-    """Load sim_config.json. Returns empty dict if not found."""
+def load_config(config_path: str | Path | None = None, env: str | None = None) -> dict:
+    """Load sim_config.json, resolving the active environment.
+
+    Environment resolution order:
+      1. ``env`` argument (e.g. from --env CLI flag)
+      2. ``SIM_ENV`` environment variable
+      3. Auto-detect from machine username
+
+    The ``environments`` dict in the config maps machine names to path overrides.
+    Top-level keys (blender_preset_dir, dtc_unique_only, ...) are shared across
+    all environments.
+    """
     p = Path(config_path) if config_path else _CONFIG_FILE
-    if p.exists():
-        with open(p) as f:
-            return json.load(f)
-    return {}
+    if not p.exists():
+        return {}
+
+    with open(p) as f:
+        raw = json.load(f)
+
+    envs = raw.pop("environments", None)
+    # Strip comment keys
+    raw = {k: v for k, v in raw.items() if not k.startswith("_")}
+
+    if envs is None:
+        return raw  # legacy flat config
+
+    # Resolve which environment to use
+    env_name = env or os.environ.get("SIM_ENV")
+    if not env_name:
+        # Auto-detect from username
+        username = os.environ.get("USERNAME", os.environ.get("USER", "")).lower()
+        if username == "discokid":
+            env_name = "disco_machine"
+        elif username == "davidclabaugh":
+            # Could be either work machine — default to work_home
+            env_name = "work_home"
+        else:
+            env_name = list(envs.keys())[0] if envs else None
+
+    if env_name and env_name in envs:
+        env_paths = envs[env_name]
+        raw.update(env_paths)
+        raw["_active_env"] = env_name
+        print(f"  Config: environment={env_name}")
+    else:
+        available = list(envs.keys())
+        print(f"  WARNING: Unknown environment '{env_name}'. Available: {available}")
+        print(f"  Set SIM_ENV or pass --env. Falling back to first: {available[0]}")
+        raw.update(envs[available[0]])
+        raw["_active_env"] = available[0]
+
+    return raw
 
 
 # =============================================================================
@@ -413,10 +458,10 @@ def add_dtc_prop_as_rigid_body(
     rotation: tuple[float, float, float, float] | None = None,
     static: bool = False,
 ) -> int:
-    """Add a DTC prop to the scene as a rigid body.
+    """Add a DTC prop with separate visual + collision shapes (game-engine style).
 
-    Loads the collision mesh (or visual mesh as convex hull) and applies
-    physics params from DTC metadata.
+    Visual mesh: full-detail, VISIBLE only (no collision).
+    Collision shape: simplified box/hull, COLLIDE only (not visible).
 
     Args:
         builder: Newton ModelBuilder.
@@ -430,11 +475,20 @@ def add_dtc_prop_as_rigid_body(
     """
     meta = prop["metadata"]
 
-    # Physics config from DTC metadata
-    cfg = newton.ModelBuilder.ShapeConfig()
-    cfg.density = meta.get("mass_kg", 0.3) * 1000.0  # rough density estimate
-    cfg.mu = meta.get("friction_static", 0.5)
-    cfg.restitution = meta.get("restitution", 0.15)
+    # Collision config from DTC metadata
+    collision_cfg = newton.ModelBuilder.ShapeConfig()
+    collision_cfg.density = meta.get("mass_kg", 0.3) * 1000.0
+    collision_cfg.mu = meta.get("friction_static", 0.5)
+    collision_cfg.restitution = meta.get("restitution", 0.15)
+    collision_cfg.is_visible = False
+    collision_cfg.has_shape_collision = True
+    collision_cfg.has_particle_collision = True
+
+    # Visual config: visible only, no collision
+    visual_cfg = newton.ModelBuilder.ShapeConfig()
+    visual_cfg.is_visible = True
+    visual_cfg.has_shape_collision = False
+    visual_cfg.has_particle_collision = False
 
     q = wp.quat(*rotation) if rotation else wp.quat_identity()
 
@@ -444,8 +498,6 @@ def add_dtc_prop_as_rigid_body(
 
     xform = wp.transform(p=wp.vec3(*position), q=q)
 
-    # Load mesh
-    collision_strategy = meta.get("collision_strategy", "hull")
     collision_prim = meta.get("collision_primitive")
 
     if static:
@@ -455,7 +507,25 @@ def add_dtc_prop_as_rigid_body(
 
     body_xform = xform if not static else None
 
-    # Use primitive collision if available
+    # --- 1. Add visual mesh (full detail, VISIBLE only) ---
+    visual_mesh_path = prop["path"]  # always the full visual mesh
+    verts = None
+    try:
+        verts, faces = load_mesh_from_file(visual_mesh_path)
+        visual_mesh = newton.Mesh(
+            vertices=verts,
+            indices=faces.flatten().astype(np.int32),
+        )
+        builder.add_shape_mesh(
+            body=body_idx,
+            xform=body_xform if static else None,
+            mesh=visual_mesh,
+            cfg=visual_cfg,
+        )
+    except Exception as e:
+        print(f"    WARNING: Failed to load visual mesh for {prop['name']}: {e}")
+
+    # --- 2. Add collision shape (simplified, COLLIDE only, not visible) ---
     if collision_prim and collision_prim["type"] == "sphere":
         center = collision_prim["center"]
         radius = collision_prim["radius"]
@@ -467,7 +537,7 @@ def add_dtc_prop_as_rigid_body(
             body=body_idx,
             xform=shape_xform,
             radius=radius,
-            cfg=cfg,
+            cfg=collision_cfg,
         )
     elif collision_prim and collision_prim["type"] == "box":
         center = collision_prim["center"]
@@ -480,34 +550,70 @@ def add_dtc_prop_as_rigid_body(
             body=body_idx,
             xform=shape_xform,
             hx=half[0], hy=half[1], hz=half[2],
-            cfg=cfg,
+            cfg=collision_cfg,
         )
     else:
-        # Load mesh for convex hull collision
-        mesh_path = prop["collision_path"] or prop["path"]
+        # Fallback: bounding box collision from mesh extents or metadata
         try:
-            verts, faces = load_mesh_from_file(mesh_path)
-            mesh = newton.Mesh(
-                vertices=wp.array(verts, dtype=wp.vec3),
-                indices=wp.array(faces.flatten(), dtype=wp.int32),
-            )
-            builder.add_shape_mesh(
-                body=body_idx,
-                xform=body_xform if static else None,
-                mesh=mesh,
-                cfg=cfg,
-            )
-        except Exception as e:
-            print(f"    WARNING: Failed to load mesh for {prop['name']}: {e}")
-            # Fallback: bounding box from dimensions
+            if verts is not None:
+                bbox_min = np.min(verts, axis=0)
+                bbox_max = np.max(verts, axis=0)
+                half_extents = (bbox_max - bbox_min) / 2.0
+                center = (bbox_min + bbox_max) / 2.0
+                builder.add_shape_box(
+                    body=body_idx,
+                    xform=wp.transform(
+                        p=wp.vec3(float(center[0]), float(center[1]), float(center[2])),
+                        q=wp.quat_identity(),
+                    ) if not static else None,
+                    hx=float(half_extents[0]),
+                    hy=float(half_extents[1]),
+                    hz=float(half_extents[2]),
+                    cfg=collision_cfg,
+                )
+            else:
+                raise ValueError("No visual mesh loaded")
+        except Exception:
             dims = meta.get("dimensions_m", [0.1, 0.1, 0.1])
             builder.add_shape_box(
                 body=body_idx,
                 hx=dims[0] / 2, hy=dims[1] / 2, hz=dims[2] / 2,
-                cfg=cfg,
+                cfg=collision_cfg,
             )
 
     return body_idx
+
+
+def _detect_y_up_mesh(verts: np.ndarray) -> bool:
+    """Detect if a mesh is Y-up by checking if Y extent > Z extent * 1.5."""
+    extent = np.max(verts, axis=0) - np.min(verts, axis=0)
+    return float(extent[1]) > float(extent[2]) * 1.5 and int(np.argmax(extent)) == 1
+
+
+def _rotate_verts_y_to_z(verts: np.ndarray) -> np.ndarray:
+    """Rotate vertices from Y-up to Z-up: (x, y, z) -> (x, -z, y)."""
+    out = np.empty_like(verts)
+    out[:, 0] = verts[:, 0]
+    out[:, 1] = -verts[:, 2]
+    out[:, 2] = verts[:, 1]
+    return out
+
+
+def _lay_flat(verts: np.ndarray) -> np.ndarray:
+    """Tip garment from standing upright to lying flat on XY plane."""
+    return _rotate_verts_y_to_z(verts)
+
+
+def _center_and_floor(verts: np.ndarray) -> np.ndarray:
+    """Center XY at origin and floor Z at 0."""
+    bbox_min = np.min(verts, axis=0)
+    bbox_max = np.max(verts, axis=0)
+    center = 0.5 * (bbox_min + bbox_max)
+    verts = verts.copy()
+    verts[:, 0] -= center[0]
+    verts[:, 1] -= center[1]
+    verts[:, 2] -= bbox_min[2]
+    return verts
 
 
 def add_garment_as_cloth(
@@ -516,33 +622,52 @@ def add_garment_as_cloth(
     position: tuple[float, float, float] = (0.0, 0.0, 1.0),
     scale: float = 1.0,
     density: float = 0.2,
-    tri_ke: float = 1e3,
-    tri_ka: float = 1e3,
-    tri_kd: float = 1e-1,
-    edge_ke: float = 0.01,
-    edge_kd: float = 1e-2,
-    particle_radius: float = 0.005,
+    tri_ke: float = 1e2,
+    tri_ka: float = 1e2,
+    tri_kd: float = 1.5e-6,
+    edge_ke: float = 1e-4,
+    edge_kd: float = 1e-3,
+    particle_radius: float = 0.008,
+    lay_flat: bool = True,
+    **kwargs,
 ):
     """Add a Maria garment as cloth particles.
+
+    Uses parameters validated against Newton's cloth_dataset_pickup example.
 
     Args:
         builder: Newton ModelBuilder.
         garment: Dict from discover_garments().
         position: Drop position (x, y, z).
-        scale: Mesh scale factor.
+        scale: Mesh scale factor (applied by add_cloth_mesh, not pre-baked).
         density: Cloth area density [kg/m²].
         tri_ke/ka/kd: Stretch stiffness / area / damping.
         edge_ke/kd: Bending stiffness / damping.
         particle_radius: Collision radius per particle.
+        lay_flat: If True, tip standing garment to lie flat.
     """
-    verts, indices = load_garment_mesh(garment, scale=scale)
+    verts, indices = load_garment_mesh(garment, scale=1.0)  # scale via add_cloth_mesh
+
+    # Auto-detect and fix Y-up meshes
+    if _detect_y_up_mesh(verts):
+        verts = _rotate_verts_y_to_z(verts)
+
+    # Lay flat so garment lies on XY plane instead of standing upright
+    if lay_flat:
+        verts = _lay_flat(verts)
+
+    # Center XY, floor Z at 0
+    verts = _center_and_floor(verts)
+
+    # Convert to wp.vec3 list for add_cloth_mesh
+    vertices = [wp.vec3(float(v[0]), float(v[1]), float(v[2])) for v in verts]
 
     builder.add_cloth_mesh(
         pos=wp.vec3(*position),
         rot=wp.quat_identity(),
-        scale=1.0,
+        scale=scale,
         vel=wp.vec3(0.0, 0.0, 0.0),
-        vertices=[wp.vec3(float(v[0]), float(v[1]), float(v[2])) for v in verts],
+        vertices=vertices,
         indices=indices.flatten().tolist(),
         density=density,
         tri_ke=tri_ke,
@@ -610,42 +735,50 @@ try:
         _n = _props.get("newton", {})
         CLOTH_PRESETS[_name] = {
             "density": _n.get("density", _props.get("density", 0.15)),
-            "tri_ke": _n.get("tri_ke", _props.get("tri_ke", 1e3)),
-            "tri_ka": _n.get("tri_ka", _props.get("tri_ka", 1e3)),
-            "tri_kd": _n.get("tri_kd", _props.get("tri_kd", 1e-1)),
-            "edge_ke": _n.get("edge_ke", 0.01),
-            "edge_kd": _n.get("edge_kd", 0.01),
-            "particle_radius": _n.get("particle_radius", 0.005),
-            "self_contact_radius": _n.get("self_contact_radius", 0.01),
+            "tri_ke": _n.get("tri_ke", 1e2),
+            "tri_ka": _n.get("tri_ka", 1e2),
+            "tri_kd": _n.get("tri_kd", 1.5e-6),
+            "edge_ke": _n.get("edge_ke", 1e-4),
+            "edge_kd": _n.get("edge_kd", 1e-3),
+            "particle_radius": _n.get("particle_radius", 0.008),
+            "self_contact_radius": _n.get("self_contact_radius", 0.002),
             "contact_mu": _n.get("contact_mu", 0.6),
         }
 except ImportError:
-    # Fallback: standalone Newton presets (keep in sync with FABRICS)
+    # Fallback: standalone Newton presets calibrated to cloth_dataset_pickup example.
+    # tri_ke/ka ~1e2, tri_kd ~1e-6, edge_ke ~1e-4, edge_kd ~1e-3 are the proven
+    # VBD-stable baseline. Heavier fabrics scale up slightly but stay well below
+    # the previous 1e3+ values that caused mesh-ball collapse.
     CLOTH_PRESETS = {
         "silk": {
             "density": 0.08,
-            "tri_ke": 5e2, "tri_ka": 5e2, "tri_kd": 5e-2,
-            "edge_ke": 1e-4, "edge_kd": 1e-3,
+            "tri_ke": 5e1, "tri_ka": 5e1, "tri_kd": 1e-6,
+            "edge_ke": 5e-5, "edge_kd": 5e-4,
+            "particle_radius": 0.008,
         },
         "cotton": {
             "density": 0.15,
-            "tri_ke": 1e3, "tri_ka": 1e3, "tri_kd": 1e-1,
-            "edge_ke": 1e-2, "edge_kd": 1e-2,
+            "tri_ke": 1e2, "tri_ka": 1e2, "tri_kd": 1.5e-6,
+            "edge_ke": 1e-4, "edge_kd": 1e-3,
+            "particle_radius": 0.008,
         },
         "denim": {
             "density": 0.35,
-            "tri_ke": 5e3, "tri_ka": 5e3, "tri_kd": 5e-1,
-            "edge_ke": 5e-2, "edge_kd": 5e-2,
+            "tri_ke": 2e2, "tri_ka": 2e2, "tri_kd": 3e-6,
+            "edge_ke": 5e-4, "edge_kd": 3e-3,
+            "particle_radius": 0.008,
         },
         "leather": {
             "density": 0.50,
-            "tri_ke": 1e4, "tri_ka": 1e4, "tri_kd": 1.0,
-            "edge_ke": 1e-1, "edge_kd": 1e-1,
+            "tri_ke": 4e2, "tri_ka": 4e2, "tri_kd": 5e-6,
+            "edge_ke": 1e-3, "edge_kd": 5e-3,
+            "particle_radius": 0.008,
         },
         "rubber": {
             "density": 0.80,
-            "tri_ke": 2e4, "tri_ka": 2e4, "tri_kd": 2.0,
-            "edge_ke": 5e-1, "edge_kd": 5e-1,
+            "tri_ke": 8e2, "tri_ka": 8e2, "tri_kd": 1e-5,
+            "edge_ke": 5e-3, "edge_kd": 1e-2,
+            "particle_radius": 0.008,
         },
     }
 
@@ -655,11 +788,36 @@ except ImportError:
 # =============================================================================
 
 
+def finalize_cloth_model(
+    builder: newton.ModelBuilder,
+    soft_contact_ke: float = 100.0,
+    soft_contact_kd: float = 2e-3,
+    soft_contact_mu: float = 0.8,
+) -> newton.Model:
+    """Finalize a cloth model with proven contact parameters.
+
+    Applies the critical edge_rest_angle.zero_() workaround required
+    for VBD solver stability (from Newton's cloth_dataset_pickup example).
+    """
+    model = builder.finalize()
+    model.soft_contact_ke = soft_contact_ke
+    model.soft_contact_kd = soft_contact_kd
+    model.soft_contact_mu = soft_contact_mu
+
+    # CRITICAL: Zero out edge rest angles — workaround for VBD bending instability.
+    # Without this, bending elements fight each other and collapse the mesh into a ball.
+    # See newton/examples/cloth/example_cloth_dataset_pickup.py line ~862.
+    model.edge_rest_angle.zero_()
+
+    return model
+
+
 def build_solver(
     model: newton.Model,
     solver_type: str = "vbd",
     iterations: int = 10,
     self_contact: bool = True,
+    collision_margin: float = 0.01,
 ):
     """Create a solver for the given model.
 
@@ -667,12 +825,19 @@ def build_solver(
         solver_type: "vbd", "xpbd", "style3d", "mujoco"
         iterations: Solver iterations per substep.
         self_contact: Enable particle self-contact (cloth).
+        collision_margin: Soft contact margin for collision pipeline.
     """
     if solver_type == "vbd":
         return newton.solvers.SolverVBD(
             model,
             iterations=iterations,
             particle_enable_self_contact=self_contact,
+            particle_self_contact_radius=0.002,
+            particle_self_contact_margin=0.003,
+            particle_vertex_contact_buffer_size=32,
+            particle_edge_contact_buffer_size=64,
+            particle_collision_detection_interval=-1,
+            rigid_contact_k_start=model.soft_contact_ke,
         )
     elif solver_type == "xpbd":
         return newton.solvers.SolverXPBD(model, iterations=iterations)
@@ -691,6 +856,7 @@ def run_simulation(
     substeps: int = 10,
     dt: float = 1.0 / 60.0,
     viewer=None,
+    collision_margin: float = 0.01,
 ) -> newton.State:
     """Run a simulation loop and return the final state.
 
@@ -699,8 +865,9 @@ def run_simulation(
         solver: Solver instance.
         num_frames: Total frames to simulate.
         substeps: Substeps per frame.
-        dt: Time step per substep.
+        dt: Frame time step (divided by substeps internally).
         viewer: Optional viewer for recording (ViewerUSD, ViewerNull, etc.)
+        collision_margin: Soft contact margin for collision pipeline.
 
     Returns:
         Final simulation state.
@@ -708,9 +875,12 @@ def run_simulation(
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
 
-    # Evaluate initial forward kinematics
+    # Use explicit collision pipeline with margin (matches cloth_dataset_pickup)
+    collision_pipeline = newton.CollisionPipeline(
+        model, soft_contact_margin=collision_margin,
+    )
+    contacts = collision_pipeline.contacts()
 
     if viewer:
         viewer.set_model(model)
@@ -723,7 +893,7 @@ def run_simulation(
     for frame in range(num_frames):
         for sub in range(substeps):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sub_dt)
             state_0, state_1 = state_1, state_0
 
@@ -731,6 +901,9 @@ def run_simulation(
             viewer.begin_frame((frame + 1) * dt)
             viewer.log_state(state_0)
             viewer.end_frame()
+
+        if (frame + 1) % 50 == 0:
+            print(f"  Frame {frame + 1}/{num_frames}")
 
     if viewer:
         viewer.close()

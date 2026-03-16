@@ -75,7 +75,8 @@ from cloth_sim_utils import (
 # Constants
 # =============================================================================
 
-DEFAULT_FRAMES = 50
+DEFAULT_FRAMES = 72
+DEFAULT_FPS = 30
 DROP_GAP_M = 0.05  # metres above furniture top (low drop for natural drape)
 
 
@@ -133,6 +134,7 @@ def run_single_sim(
     sample_idx: int,
     *,
     frame_count: int = DEFAULT_FRAMES,
+    fps: int = DEFAULT_FPS,
 ) -> dict:
     """Execute one cloth drop simulation and export results.
 
@@ -189,9 +191,9 @@ def run_single_sim(
 
     # 8. Bake simulation
     t0 = time.time()
-    bake_simulation(frame_count)
+    bake_simulation(frame_count, fps=fps)
     bake_time = time.time() - t0
-    print(f"    bake: {bake_time:.1f}s ({frame_count} frames)")
+    print(f"    bake: {bake_time:.1f}s ({frame_count} frames @ {fps}fps)")
 
     # 9. Save .blend (preserves baked cloth cache for GUI playback)
     save_blend(str(blend_path))
@@ -294,6 +296,12 @@ def main():
         default=DEFAULT_FRAMES,
         help=f"Simulation frame count (default: {DEFAULT_FRAMES})",
     )
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=DEFAULT_FPS,
+        help=f"Scene frame rate (default: {DEFAULT_FPS})",
+    )
     # Apply config defaults before parsing (CLI args override config)
     config = load_sim_config(extract_config_path(argv))
     apply_config_defaults(parser, config)
@@ -335,6 +343,7 @@ def main():
             seed=seed,
             sample_idx=sample_idx,
             frame_count=args.frames,
+            fps=args.fps,
         )
 
     run_sim_loop(
