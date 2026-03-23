@@ -35,6 +35,7 @@ from .kernels import (
     solve_tetrahedra,
     update_body_velocities,
 )
+from .self_collision import XPBDSelfCollision
 
 
 class SolverXPBD(SolverBase):
@@ -75,6 +76,9 @@ class SolverXPBD(SolverBase):
         rigid_contact_con_weighting: bool = True,
         angular_damping: float = 0.0,
         enable_restitution: bool = False,
+        enable_self_collision: bool = False,
+        self_collision_radius: float = 0.01,
+        self_collision_margin: float = 0.02,
     ):
         super().__init__(model=model)
         self.iterations = iterations
@@ -93,6 +97,15 @@ class SolverXPBD(SolverBase):
         self.angular_damping = angular_damping
 
         self.enable_restitution = enable_restitution
+
+        self.enable_self_collision = enable_self_collision
+        self._self_collision = None
+        if enable_self_collision and model.tri_count > 0 and model.particle_count > 0:
+            self._self_collision = XPBDSelfCollision(
+                model,
+                contact_radius=self_collision_radius,
+                contact_margin=self_collision_margin,
+            )
 
         self.compute_body_velocity_from_position_delta = False
 
@@ -254,6 +267,10 @@ class SolverXPBD(SolverBase):
                     with wp.ScopedDevice(model.device):
                         model.particle_grid.build(state_out.particle_q, radius=search_radius)
 
+                # Run mesh self-collision detection (V-F + E-E) before iteration loop
+                if self._self_collision is not None:
+                    self._self_collision.detect(state_out.particle_q)
+
             if model.body_count:
                 body_q = state_out.body_q
                 body_qd = state_out.body_qd
@@ -373,6 +390,16 @@ class SolverXPBD(SolverBase):
                                 ],
                                 outputs=[particle_deltas],
                                 device=model.device,
+                            )
+
+                        # mesh self-collision constraints (V-F + E-E)
+                        if self._self_collision is not None:
+                            self._self_collision.solve(
+                                particle_q,
+                                model.particle_inv_mass,
+                                model.particle_flags,
+                                self.soft_contact_relaxation,
+                                particle_deltas,
                             )
 
                         # distance constraints

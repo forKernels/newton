@@ -34,6 +34,7 @@ from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_inertia
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
+from .tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
 from .types import (
     GeoType,
     Heightfield,
@@ -51,6 +52,8 @@ __all__ = [
     "Mesh",
     "ParticleFlags",
     "ShapeFlags",
+    "TriMeshCollisionDetector",
+    "TriMeshCollisionInfo",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
