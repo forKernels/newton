@@ -30,6 +30,16 @@ from ._src.geometry import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
+from ._src.geometry.ccd import (
+    ccd_edge_edge,
+    ccd_vertex_triangle,
+    clamp_positions_to_toi,
+    compute_edge_aabbs_swept,
+    compute_tri_aabbs_swept,
+    edge_edge_ccd_kernel,
+    solve_cubic_roots_01,
+    vertex_triangle_ccd_kernel,
+)
 from ._src.geometry.inertia import compute_inertia_shape, transform_inertia
 from ._src.geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_mesh, sdf_plane, sdf_sphere
 from ._src.geometry.narrow_phase import NarrowPhase
@@ -37,12 +47,28 @@ from ._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from ._src.geometry.sdf_utils import create_empty_sdf_data
 from ._src.geometry.utils import remesh_mesh
 
+
+def __getattr__(name):
+    """Lazy imports to avoid circular dependencies."""
+    if name in ("TriMeshCollisionDetector", "TriMeshCollisionInfo"):
+        from ._src.geometry.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
+
+        globals()["TriMeshCollisionDetector"] = TriMeshCollisionDetector
+        globals()["TriMeshCollisionInfo"] = TriMeshCollisionInfo
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
     "HydroelasticSDF",
     "NarrowPhase",
+    "TriMeshCollisionDetector",
+    "TriMeshCollisionInfo",
+    "ccd_edge_edge",
+    "ccd_vertex_triangle",
+    "clamp_positions_to_toi",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
@@ -55,8 +81,11 @@ __all__ = [
     "collide_sphere_capsule",
     "collide_sphere_cylinder",
     "collide_sphere_sphere",
+    "compute_edge_aabbs_swept",
     "compute_inertia_shape",
+    "compute_tri_aabbs_swept",
     "create_empty_sdf_data",
+    "edge_edge_ccd_kernel",
     "remesh_mesh",
     "sdf_box",
     "sdf_capsule",
@@ -65,5 +94,7 @@ __all__ = [
     "sdf_mesh",
     "sdf_plane",
     "sdf_sphere",
+    "solve_cubic_roots_01",
     "transform_inertia",
+    "vertex_triangle_ccd_kernel",
 ]

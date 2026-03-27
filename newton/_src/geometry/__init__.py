@@ -51,6 +51,8 @@ __all__ = [
     "Mesh",
     "ParticleFlags",
     "ShapeFlags",
+    "TriMeshCollisionDetector",
+    "TriMeshCollisionInfo",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
@@ -72,3 +74,14 @@ __all__ = [
     "test_world_and_group_pair",
     "transform_inertia",
 ]
+
+
+def __getattr__(name):
+    """Lazy imports to avoid circular dependencies."""
+    if name in ("TriMeshCollisionDetector", "TriMeshCollisionInfo"):
+        from .tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
+
+        globals()["TriMeshCollisionDetector"] = TriMeshCollisionDetector
+        globals()["TriMeshCollisionInfo"] = TriMeshCollisionInfo
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
