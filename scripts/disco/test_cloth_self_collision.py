@@ -28,6 +28,7 @@ from newton_sim_utils import (
     add_garment_as_cloth,
     add_ground_plane,
     build_solver,
+    create_spring_assist,
     create_viewer,
     discover_garments,
     finalize_cloth_model,
@@ -125,6 +126,11 @@ def main():
     parser.add_argument("--viewer", type=str, default="gl", choices=["gl", "usd", "null"])
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--spring-assist", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable mass-spring force injection for stuck particles (default: True)")
+    parser.add_argument("--spring-ks", type=float, default=500.0, help="Spring stretch stiffness")
+    parser.add_argument("--spring-kb", type=float, default=25.0, help="Spring bend stiffness")
+    parser.add_argument("--spring-boost", type=float, default=1.0, help="Spring force boost factor")
     args = parser.parse_args()
 
     wp.init()
@@ -231,6 +237,16 @@ def main():
 
         solver = build_solver(model, solver_type=args.solver, iterations=args.solver_iters, self_contact=True)
 
+        # Spring force assist — inject mass-spring forces for stuck particles
+        spring_assist = None
+        if args.spring_assist and model.particle_count > 0:
+            spring_assist = create_spring_assist(
+                model,
+                ks=args.spring_ks,
+                kb=args.spring_kb,
+                boost_factor=args.spring_boost,
+            )
+
         print(f"  Solver: {args.solver.upper()}")
         print(f"  Self-contact: ENABLED (radius=0.002, margin=0.003)")
         print(f"  Drop height: {args.drop_height}m above obstacle top")
@@ -259,9 +275,16 @@ def main():
             viewer.log_state(state_0)
             viewer.end_frame()
 
+        # Record initial positions for stuck particle analysis
+        pos_initial = state_0.particle_q.numpy().copy()
+
         for frame in range(args.num_frames):
             for _ in range(args.substeps):
                 state_0.clear_forces()
+
+                if spring_assist is not None:
+                    spring_assist.apply(state_0)
+
                 collision_pipeline.collide(state_0, contacts)
                 solver.step(state_0, state_1, control, contacts, sub_dt)
                 state_0, state_1 = state_1, state_0
@@ -286,6 +309,16 @@ def main():
         print(f"    min = {np.min(pq, axis=0)}")
         print(f"    max = {np.max(pq, axis=0)}")
         print(f"    z_range = {pq[:, 2].max() - pq[:, 2].min():.4f}m")
+
+        # Stuck particle analysis
+        displacement = np.linalg.norm(pq - pos_initial, axis=1)
+        stuck_count = int(np.sum(displacement < 0.001))
+        total = len(displacement)
+        print(f"\n  Stuck particle analysis (threshold=1mm):")
+        print(f"    Stuck: {stuck_count} / {total} ({100 * stuck_count / max(total, 1):.1f}%)")
+        print(f"    Moving: {total - stuck_count} / {total}")
+        if spring_assist is not None:
+            spring_assist.log_stats()
         print("  Done.")
 
 

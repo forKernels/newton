@@ -1148,3 +1148,62 @@ def write_sim_metadata(
 # =============================================================================
 
 TEST_FRAMES = 10  # quick smoke-test: just enough to verify the full pipeline
+
+
+# =============================================================================
+# Spring Force Assist
+# =============================================================================
+
+
+def create_spring_assist(
+    model,
+    ks: float = 500.0,
+    kb: float = 25.0,
+    kd_stretch: float = 5.0,
+    kd_bend: float = 1.0,
+    boost_factor: float = 1.0,
+    stuck_threshold: float = 1e-5,
+    stuck_only: bool = False,
+    verbose: bool = True,
+):
+    """Create a SpringForceAssist from a finalized Newton model.
+
+    Builds a mass-spring network (stretching + bending) from the model's
+    triangle topology and returns an object whose ``apply(state)`` method
+    injects spring forces into ``state.particle_f``.
+
+    Call ``apply()`` between ``state.clear_forces()`` and ``solver.step()``
+    in the simulation loop.
+
+    Args:
+        model: Finalized Newton model (must have particle_q, tri_indices).
+        ks: Stretching spring stiffness (1-ring edges).
+        kb: Bending spring stiffness (2-ring neighbors).
+        kd_stretch: Damping for stretching springs.
+        kd_bend: Damping for bending springs.
+        boost_factor: Multiplier on all spring forces.
+        stuck_threshold: Displacement [m] below which a particle is "stuck".
+        stuck_only: If True, only inject forces for stuck particles.
+        verbose: Print spring network statistics.
+
+    Returns:
+        SpringForceAssist instance (or None if no particles).
+    """
+    from spring_force_assist import SpringForceAssist
+
+    if model.particle_count == 0:
+        if verbose:
+            print("  create_spring_assist: No particles, skipping.")
+        return None
+
+    return SpringForceAssist(
+        model,
+        ks=ks,
+        kb=kb,
+        kd_stretch=kd_stretch,
+        kd_bend=kd_bend,
+        boost_factor=boost_factor,
+        stuck_threshold=stuck_threshold,
+        stuck_only=stuck_only,
+        verbose=verbose,
+    )
