@@ -17,11 +17,7 @@ import math
 import random
 from pathlib import Path
 
-import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -30,6 +26,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 
 def build_pendulum_scene(
@@ -193,21 +191,17 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-links", type=int, default=5)
     parser.add_argument("--link-length", type=float, default=0.2)
-    parser.add_argument("--cradle", action="store_true",
-                        help="Newton's cradle mode")
-    parser.add_argument("--num-pendulums", type=int, default=5,
-                        help="Number of pendulums in cradle mode")
+    parser.add_argument("--cradle", action="store_true", help="Newton's cradle mode")
+    parser.add_argument("--num-pendulums", type=int, default=5, help="Number of pendulums in cradle mode")
     parser.add_argument("--hang-height", type=float, default=1.5)
     parser.add_argument("--num-frames", type=int, default=300)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -245,7 +239,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_pendulum_sim(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

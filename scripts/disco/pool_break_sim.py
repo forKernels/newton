@@ -3,59 +3,54 @@ Pool Break Simulation v6 — Blender 4.5+
 Fixes: rack freeze, shorter kinematic ramp, net toggle
 """
 
-import bpy
 import math
 import os
 import random
-from mathutils import Vector
 
+import bpy
+from mathutils import Vector
 
 # ── Configuration ─────────────────────────────────────────────────────
 
-SIM_FRAMES       = 150
-BREAK_SPEED_MIN  = 3.0
-BREAK_SPEED_MAX  = 6.0
-AIM_RANDOMNESS   = 8          # degrees
-CUE_BALL_NAME    = "PoolTable_02_CueBall"
-KINEMATIC_FRAMES = 3          # DOWN from 4 — less ramp, more room before rack
-ENABLE_NETS      = False       # flip True for final bake
+SIM_FRAMES = 150
+BREAK_SPEED_MIN = 3.0
+BREAK_SPEED_MAX = 6.0
+AIM_RANDOMNESS = 8  # degrees
+CUE_BALL_NAME = "PoolTable_02_CueBall"
+KINEMATIC_FRAMES = 3  # DOWN from 4 — less ramp, more room before rack
+ENABLE_NETS = False  # flip True for final bake
 
 
 # ── Physics values for ~0.88x scale table ─────────────────────────────
 
-BALL_MASS        = 0.8
-BALL_FRICTION    = 0.25
-BALL_RESTITUTION = 0.6        # slightly higher for better energy transfer
-BALL_LIN_DAMP    = 0.25
-BALL_ANG_DAMP    = 0.65
+BALL_MASS = 0.8
+BALL_FRICTION = 0.25
+BALL_RESTITUTION = 0.6  # slightly higher for better energy transfer
+BALL_LIN_DAMP = 0.25
+BALL_ANG_DAMP = 0.65
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
+
 def find_balls(scene):
     cue = bpy.data.objects.get(CUE_BALL_NAME)
-    others = [o for o in scene.objects
-              if o.type == 'MESH'
-              and 'Ball_' in o.name
-              and o.name != CUE_BALL_NAME]
+    others = [o for o in scene.objects if o.type == "MESH" and "Ball_" in o.name and o.name != CUE_BALL_NAME]
     return cue, others
 
 
 def compute_break_direction(cue_ball, target_balls):
     if target_balls:
         center = sum((b.location for b in target_balls), Vector()) / len(target_balls)
-        base = (center - cue_ball.location)
+        base = center - cue_ball.location
         base.z = 0
         base = base.normalized()
     else:
         base = Vector((1, 0, 0))
 
-    angle = random.uniform(
-        -math.radians(AIM_RANDOMNESS),
-        math.radians(AIM_RANDOMNESS)
-    )
+    angle = random.uniform(-math.radians(AIM_RANDOMNESS), math.radians(AIM_RANDOMNESS))
     c, s = math.cos(angle), math.sin(angle)
-    d = Vector((base.x*c - base.y*s, base.x*s + base.y*c, 0.0)).normalized()
+    d = Vector((base.x * c - base.y * s, base.x * s + base.y * c, 0.0)).normalized()
     return d, math.degrees(angle)
 
 
@@ -101,7 +96,7 @@ def freeze_rack(rack_balls, unfreeze_frame):
         if ball.animation_data and ball.animation_data.action:
             for fc in ball.animation_data.action.fcurves:
                 for kp in fc.keyframe_points:
-                    kp.interpolation = 'CONSTANT'
+                    kp.interpolation = "CONSTANT"
 
     print(f"  Froze {len(rack_balls)} rack balls until frame {unfreeze_frame}")
 
@@ -134,10 +129,10 @@ def setup_cue_break(scene, cue_ball, direction, speed):
         for fc in cue_ball.animation_data.action.fcurves:
             if "kinematic" in fc.data_path:
                 for kp in fc.keyframe_points:
-                    kp.interpolation = 'CONSTANT'
+                    kp.interpolation = "CONSTANT"
             if "location" in fc.data_path:
                 for kp in fc.keyframe_points:
-                    kp.interpolation = 'LINEAR'
+                    kp.interpolation = "LINEAR"
 
     travel = step * (KINEMATIC_FRAMES - 1)
     print(f"  Speed: {speed:.1f} m/s ({step:.4f} m/frame)")
@@ -157,17 +152,17 @@ def update_ball_physics(balls):
         rb.restitution = BALL_RESTITUTION
         rb.linear_damping = BALL_LIN_DAMP
         rb.angular_damping = BALL_ANG_DAMP
-        rb.collision_shape = 'SPHERE'
+        rb.collision_shape = "SPHERE"
     print(f"  Updated physics on {len(balls)} balls")
 
 
 def toggle_nets(enable):
     count = 0
     for obj in bpy.context.scene.objects:
-        if 'Net' not in obj.name:
+        if "Net" not in obj.name:
             continue
         for mod in obj.modifiers:
-            if mod.type == 'CLOTH':
+            if mod.type == "CLOTH":
                 mod.show_viewport = enable
                 mod.show_render = enable
                 count += 1
@@ -196,8 +191,7 @@ def export_usda():
         print("  ERROR: Save .blend first!")
         return None
     usd_path = os.path.join(
-        os.path.dirname(blend_path),
-        os.path.splitext(os.path.basename(blend_path))[0] + "_sim.usda"
+        os.path.dirname(blend_path), os.path.splitext(os.path.basename(blend_path))[0] + "_sim.usda"
     )
     print(f"  Exporting: {usd_path}")
     bpy.ops.wm.usd_export(
@@ -208,14 +202,15 @@ def export_usda():
         export_materials=True,
         export_normals=True,
         export_uvmaps=True,
-        evaluation_mode='RENDER',
+        evaluation_mode="RENDER",
     )
-    size = os.path.getsize(usd_path) / (1024*1024)
+    size = os.path.getsize(usd_path) / (1024 * 1024)
     print(f"  Exported: {size:.1f} MB")
     return usd_path
 
 
 # ── Main ──────────────────────────────────────────────────────────────
+
 
 def main():
     scene = bpy.context.scene
@@ -230,19 +225,19 @@ def main():
         center = sum((b.location for b in rack), Vector()) / len(rack)
         rack_dist = (center - cue.location).length
 
-    print(f"\n{'='*55}")
-    print(f"  POOL BREAK v6")
-    print(f"{'='*55}")
+    print(f"\n{'=' * 55}")
+    print("  POOL BREAK v6")
+    print(f"{'=' * 55}")
     print(f"  Balls: {len(all_balls)} (1 cue + {len(rack)} rack)")
     print(f"  Rack distance: {rack_dist:.3f}m")
     print(f"  Nets: {'ON' if ENABLE_NETS else 'OFF'}")
 
     # 1. Clear ALL keyframes from all balls
-    print(f"\n-- Clearing keyframes --")
+    print("\n-- Clearing keyframes --")
     clear_all_keyframes(all_balls)
 
     # 2. Update physics values
-    print(f"\n-- Updating ball physics --")
+    print("\n-- Updating ball physics --")
     update_ball_physics(all_balls)
 
     # 3. Compute break
@@ -251,7 +246,7 @@ def main():
     print(f"  Aim offset: {aim_offset:+.1f}°")
 
     # 4. Set up cue ball kinematic ramp
-    print(f"\n-- Cue ball --")
+    print("\n-- Cue ball --")
     travel = setup_cue_break(scene, cue, direction, speed)
 
     # 5. Freeze rack until cue arrives
@@ -267,29 +262,29 @@ def main():
     # Unfreeze 1 frame before impact so Bullet sees them as dynamic
     unfreeze = max(impact_frame - 1, KINEMATIC_FRAMES + 2)
 
-    print(f"\n-- Rack freeze --")
+    print("\n-- Rack freeze --")
     print(f"  Estimated impact: frame {impact_frame}")
     print(f"  Unfreeze rack at: frame {unfreeze}")
     freeze_rack(rack, unfreeze)
 
     # 6. Nets
-    print(f"\n-- Nets --")
+    print("\n-- Nets --")
     toggle_nets(ENABLE_NETS)
 
     # 7. Bake
-    print(f"\n-- Simulation --")
+    print("\n-- Simulation --")
     bake_sim(scene, SIM_FRAMES)
 
     # 8. Export
-    print(f"\n-- Export --")
+    print("\n-- Export --")
     usd_path = export_usda()
 
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print(f"  Speed: {speed:.1f} m/s | Aim: {aim_offset:+.1f}°")
     print(f"  Nets: {'ON' if ENABLE_NETS else 'OFF'}")
     if usd_path:
         print(f"  USDA: {usd_path}")
-    print(f"{'='*55}\n")
+    print(f"{'=' * 55}\n")
 
 
 if __name__ == "__main__":

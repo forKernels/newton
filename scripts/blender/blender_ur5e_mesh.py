@@ -19,10 +19,10 @@ Scene layout (matches Newton simulation):
   Table center: (0.0, -0.5, 0.1), top at Z=0.20
 """
 
-import json
 import math
 import os
 import sys
+
 
 def _get_script_dir():
     """Resolve the directory containing this script, even inside Blender's text editor."""
@@ -31,6 +31,7 @@ def _get_script_dir():
         return os.path.dirname(os.path.abspath(__file__))
     # Blender text editor fallbacks:
     import bpy
+
     # 2. Text block has a filepath (was opened from disk via Text > Open)
     text = bpy.context.space_data and getattr(bpy.context.space_data, "text", None)
     if text and text.filepath:
@@ -45,14 +46,13 @@ def _get_script_dir():
     # 5. Hardcoded fallback
     return r"C:\_git\newton_zhao\scripts\blender"
 
+
 SCRIPT_DIR = _get_script_dir()
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-import bpy
-from mathutils import Matrix, Quaternion, Vector
-
 import robot_blender_utils as utils
+from mathutils import Matrix, Quaternion, Vector
 
 # =============================================================================
 # CONFIGURATION
@@ -116,7 +116,10 @@ def setup_meshes():
     arm_transforms = utils.compute_mjcf_fk(arm_bodies)
 
     arm_root, arm_imported = utils.import_mjcf_robot_meshes(
-        arm_bodies, arm_mesh_assets, arm_transforms, base_matrix,
+        arm_bodies,
+        arm_mesh_assets,
+        arm_transforms,
+        base_matrix,
         root_name="UR5e_Root",
         material_color=(0.15, 0.15, 0.18, 1.0),
     )

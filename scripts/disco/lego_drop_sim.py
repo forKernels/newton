@@ -60,7 +60,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bpy
 from cloth_sim_utils import (
     BBOX_MARGIN,
-    add_collision,
     append_furniture,
     bake_simulation,
     clear_scene,
@@ -83,7 +82,6 @@ from lego_sim_utils import (
     find_lego_models,
     import_lego_model,
     model_bbox,
-    model_height,
     move_bricks,
     resolve_lego_materials,
     separate_bricks,

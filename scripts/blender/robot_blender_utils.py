@@ -67,7 +67,7 @@ def load_asset_paths(json_path=None):
         json_path = os.path.join(script_dir, "robot_asset_paths.json")
 
     if os.path.isfile(json_path):
-        with open(json_path, "r") as f:
+        with open(json_path) as f:
             return json.load(f)
     return {}
 
@@ -238,11 +238,13 @@ def _parse_mjcf_orientation(elem):
         y_axis = Vector(vals[3:6]).normalized()
         z_axis = x_axis.cross(y_axis).normalized()
         # Build rotation matrix from axes
-        mat = Matrix((
-            (x_axis.x, y_axis.x, z_axis.x),
-            (x_axis.y, y_axis.y, z_axis.y),
-            (x_axis.z, y_axis.z, z_axis.z),
-        ))
+        mat = Matrix(
+            (
+                (x_axis.x, y_axis.x, z_axis.x),
+                (x_axis.y, y_axis.y, z_axis.y),
+                (x_axis.z, y_axis.z, z_axis.z),
+            )
+        )
         return mat.to_quaternion()
 
     return Quaternion()  # Identity
@@ -330,13 +332,15 @@ def _parse_mjcf_body_recursive(elem, parent_name, bodies):
         jpos_str = j.get("pos", "0 0 0")
         jpos = [float(v) for v in jpos_str.split()]
 
-        joints.append({
-            "name": joint_name,
-            "type": joint_type,
-            "axis": axis,
-            "limits": limits,
-            "pos": jpos,
-        })
+        joints.append(
+            {
+                "name": joint_name,
+                "type": joint_type,
+                "axis": axis,
+                "limits": limits,
+                "pos": jpos,
+            }
+        )
 
     # Visual geometries referencing meshes
     visuals = []
@@ -430,17 +434,19 @@ def parse_urdf(urdf_path, asset_dir=None):
         lower = float(lim.get("lower", "0")) if lim is not None else 0
         upper = float(lim.get("upper", "0")) if lim is not None else 0
 
-        joints.append({
-            "name": j.get("name"),
-            "type": j.get("type"),
-            "parent_link": j.find("parent").get("link"),
-            "child_link": j.find("child").get("link"),
-            "xyz": xyz,
-            "rpy": rpy,
-            "axis": axis,
-            "lower": lower,
-            "upper": upper,
-        })
+        joints.append(
+            {
+                "name": j.get("name"),
+                "type": j.get("type"),
+                "parent_link": j.find("parent").get("link"),
+                "child_link": j.find("child").get("link"),
+                "xyz": xyz,
+                "rpy": rpy,
+                "axis": axis,
+                "lower": lower,
+                "upper": upper,
+            }
+        )
 
     # Resolve visual mesh paths
     link_meshes = {}
@@ -462,7 +468,7 @@ def parse_urdf(urdf_path, asset_dir=None):
                             # Try splitting on first /
                             slash_idx = pkg_relative.find("/")
                             if slash_idx >= 0:
-                                rel = pkg_relative[slash_idx + 1:]
+                                rel = pkg_relative[slash_idx + 1 :]
                             else:
                                 rel = pkg_relative
                         else:
@@ -532,12 +538,14 @@ def import_stl(filepath, name, scale=None):
 
     # Apply mesh-level scale if provided
     if scale:
-        scale_matrix = Matrix((
-            (scale[0], 0, 0, 0),
-            (0, scale[1], 0, 0),
-            (0, 0, scale[2], 0),
-            (0, 0, 0, 1),
-        ))
+        scale_matrix = Matrix(
+            (
+                (scale[0], 0, 0, 0),
+                (0, scale[1], 0, 0),
+                (0, 0, scale[2], 0),
+                (0, 0, 0, 1),
+            )
+        )
         obj.data.transform(scale_matrix)
         obj.data.update()
 
@@ -567,12 +575,14 @@ def parse_dae_node_transform(filepath):
             vals = [float(v) for v in text.split()]
             if len(vals) == 16:
                 # COLLADA stores row-major
-                return Matrix((
-                    vals[0:4],
-                    vals[4:8],
-                    vals[8:12],
-                    vals[12:16],
-                ))
+                return Matrix(
+                    (
+                        vals[0:4],
+                        vals[4:8],
+                        vals[8:12],
+                        vals[12:16],
+                    )
+                )
     except Exception as e:
         print(f"  WARNING: could not parse DAE transform: {e}")
     return Matrix.Identity(4)
@@ -723,8 +733,9 @@ def import_garment(obj_path, color=(0.9, 0.5, 0.6, 1.0), cloth_scale=0.01):
 # =============================================================================
 
 
-def import_mjcf_robot_meshes(bodies, mesh_assets, body_transforms, base_matrix,
-                              root_name="RobotRoot", material_color=(0.5, 0.5, 0.5, 1.0)):
+def import_mjcf_robot_meshes(
+    bodies, mesh_assets, body_transforms, base_matrix, root_name="RobotRoot", material_color=(0.5, 0.5, 0.5, 1.0)
+):
     """Import all visual meshes for an MJCF robot at zero-config positions.
 
     Creates a root empty, imports each body's visual meshes, positions them
@@ -798,12 +809,14 @@ def import_mjcf_robot_meshes(bodies, mesh_assets, body_transforms, base_matrix,
 
             # Apply scale if STL didn't handle it already
             if scale and ext != ".stl":
-                scale_matrix = Matrix((
-                    (scale[0], 0, 0, 0),
-                    (0, scale[1], 0, 0),
-                    (0, 0, scale[2], 0),
-                    (0, 0, 0, 1),
-                ))
+                scale_matrix = Matrix(
+                    (
+                        (scale[0], 0, 0, 0),
+                        (0, scale[1], 0, 0),
+                        (0, 0, scale[2], 0),
+                        (0, 0, 0, 1),
+                    )
+                )
                 mesh_obj.data.transform(scale_matrix)
                 mesh_obj.data.update()
 
@@ -907,13 +920,15 @@ def _collect_joint_chain_mjcf(bodies, body_transforms, base_matrix):
             world_axis = (base_matrix @ body_T).to_3x3() @ axis_local
             world_axis.normalize()
 
-            chain.append({
-                "name": joint["name"],
-                "world_pos": world_pos.copy(),
-                "world_axis": world_axis.copy(),
-                "limits": joint["limits"],
-                "parent_body": body_name,
-            })
+            chain.append(
+                {
+                    "name": joint["name"],
+                    "world_pos": world_pos.copy(),
+                    "world_axis": world_axis.copy(),
+                    "limits": joint["limits"],
+                    "parent_body": body_name,
+                }
+            )
 
     return chain
 
@@ -935,13 +950,15 @@ def _collect_joint_chain_urdf(joints, link_transforms, base_matrix):
         world_axis = child_T.to_3x3() @ Vector(j["axis"])
         world_axis.normalize()
 
-        chain.append({
-            "name": j["name"],
-            "world_pos": world_pos.copy(),
-            "world_axis": world_axis.copy(),
-            "limits": [j["lower"], j["upper"]] if (j["lower"] != 0 or j["upper"] != 0) else None,
-            "child_link": j["child_link"],
-        })
+        chain.append(
+            {
+                "name": j["name"],
+                "world_pos": world_pos.copy(),
+                "world_axis": world_axis.copy(),
+                "limits": [j["lower"], j["upper"]] if (j["lower"] != 0 or j["upper"] != 0) else None,
+                "child_link": j["child_link"],
+            }
+        )
 
     return chain
 
@@ -1041,8 +1058,7 @@ def create_armature_from_urdf(name, joints, link_transforms, base_matrix, root_e
     return create_armature(name, chain, root_empty)
 
 
-def create_combined_armature(name, arm_bodies, arm_transforms, hand_bodies, hand_transforms,
-                              base_matrix, root_empty):
+def create_combined_armature(name, arm_bodies, arm_transforms, hand_bodies, hand_transforms, base_matrix, root_empty):
     """Create single armature for arm+hand combos.
 
     Collects joint chains from both arm and hand, concatenates them,

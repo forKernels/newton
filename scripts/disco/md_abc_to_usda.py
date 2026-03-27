@@ -53,7 +53,11 @@ print("CONVERT_OK")
     try:
         result = subprocess.run(
             [blender_exe, "--background", "--python-expr", script],
-            capture_output=True, text=True, errors="replace", timeout=300,
+            check=False,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=300,
         )
         return "CONVERT_OK" in result.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
@@ -63,10 +67,10 @@ print("CONVERT_OK")
 
 def main():
     parser = argparse.ArgumentParser(description="Convert MD Alembic exports to USDA + Blend")
-    parser.add_argument("--input-dir", type=str, required=True,
-                        help="Root directory containing .abc files from MD sims")
-    parser.add_argument("--blender-exe", type=str, default="blender",
-                        help="Path to Blender executable")
+    parser.add_argument(
+        "--input-dir", type=str, required=True, help="Root directory containing .abc files from MD sims"
+    )
+    parser.add_argument("--blender-exe", type=str, default="blender", help="Path to Blender executable")
     args = parser.parse_args()
 
     root = Path(args.input_dir)
@@ -86,7 +90,7 @@ def main():
 
     for i, abc in enumerate(todo):
         rel = abc.relative_to(root)
-        print(f"  [{i+1}/{len(todo)}] {rel} ...", end=" ", flush=True)
+        print(f"  [{i + 1}/{len(todo)}] {rel} ...", end=" ", flush=True)
 
         if convert_abc_to_usda_blend(abc, args.blender_exe):
             ok += 1

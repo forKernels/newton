@@ -11,14 +11,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import random
 from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     CLOTH_PRESETS,
     TEST_FRAMES,
@@ -31,6 +27,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 
 @wp.kernel
@@ -193,8 +191,7 @@ def run_cloth_fold(
 def main():
     parser = argparse.ArgumentParser(description="Newton Cloth Fold Simulation")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--preset", type=str, default="cotton",
-                        choices=list(CLOTH_PRESETS.keys()))
+    parser.add_argument("--preset", type=str, default="cotton", choices=list(CLOTH_PRESETS.keys()))
     parser.add_argument("--grid-res", type=int, default=40)
     parser.add_argument("--cloth-size", type=float, default=0.8)
     parser.add_argument("--fold-axis", type=str, default="x", choices=["x", "y"])
@@ -205,13 +202,11 @@ def main():
     parser.add_argument("--solver", type=str, default="vbd", choices=["vbd", "xpbd"])
     parser.add_argument("--solver-iters", type=int, default=10)
     parser.add_argument("--table-height", type=float, default=0.4)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -251,7 +246,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_cloth_fold(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             fold_speed=args.fold_speed,

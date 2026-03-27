@@ -43,7 +43,6 @@ from pathlib import Path
 # Blender script -- ensure the sibling module is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import bpy
 from cloth_sim_utils import (
     BBOX_MARGIN,
     add_collision,
@@ -128,10 +127,7 @@ def run_stack_sim(
         print(f"  SKIP (exists): {usda_path.relative_to(output_dir)}")
         return {"skipped": True}
 
-    print(
-        f"  SIM [stack]: {furniture_name} / {preset_name} / "
-        f"{stack_count} garments #{sample_idx}"
-    )
+    print(f"  SIM [stack]: {furniture_name} / {preset_name} / {stack_count} garments #{sample_idx}")
 
     # 1. Clean scene
     clear_scene()
@@ -326,10 +322,7 @@ def main():
     garments = find_prepped_garments(args.garment_dir, args.garment_category)
     print(f"Garments pool: {len(garments)} prepped meshes")
     if len(garments) < args.min_stack:
-        print(
-            f"ERROR: Need at least {args.min_stack} garments for stacking, "
-            f"found {len(garments)}"
-        )
+        print(f"ERROR: Need at least {args.min_stack} garments for stacking, found {len(garments)}")
         sys.exit(1)
 
     # Presets
@@ -355,9 +348,7 @@ def main():
     for furn_path in furniture_files:
         for preset in presets:
             for sample_i in range(1, args.num_samples + 1):
-                seed = make_seed(
-                    args.seed, furn_path.stem, preset, "stack", sample_i
-                )
+                seed = make_seed(args.seed, furn_path.stem, preset, "stack", sample_i)
 
                 result = run_stack_sim(
                     furniture_path=furn_path,

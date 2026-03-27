@@ -19,10 +19,6 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-from newton.solvers import SolverImplicitMPM
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -31,6 +27,9 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
+from newton.solvers import SolverImplicitMPM
 
 
 def build_beans_scene(
@@ -68,7 +67,9 @@ def build_beans_scene(
         builder.add_shape_box(
             body=-1,
             xform=wp.transform(p=wp.vec3(cx, cy, cz), q=tilt_q),
-            hx=0.2, hy=0.2, hz=wall_thickness,
+            hx=0.2,
+            hy=0.2,
+            hz=wall_thickness,
             cfg=container_cfg,
         )
         # Side walls (4)
@@ -90,7 +91,9 @@ def build_beans_scene(
             p=wp.vec3(0.5, 0.0, 0.15),
             q=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.15),
         ),
-        hx=0.3, hy=0.3, hz=0.02,
+        hx=0.3,
+        hy=0.3,
+        hz=0.02,
         cfg=ramp_cfg,
     )
 
@@ -199,26 +202,23 @@ def run_beans_sim(
 def main():
     parser = argparse.ArgumentParser(description="Newton Beans Spill Simulation")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--emit-size", type=float, nargs=3, default=[0.3, 0.3, 0.3],
-                        help="Bean volume extents [x, y, z] in meters")
+    parser.add_argument(
+        "--emit-size", type=float, nargs=3, default=[0.3, 0.3, 0.3], help="Bean volume extents [x, y, z] in meters"
+    )
     parser.add_argument("--emit-height", type=float, default=1.0)
-    parser.add_argument("--container-tilt", type=float, default=30.0,
-                        help="Container tilt angle [degrees]")
-    parser.add_argument("--density", type=float, default=1200.0,
-                        help="Bean density [kg/m3]")
+    parser.add_argument("--container-tilt", type=float, default=30.0, help="Container tilt angle [degrees]")
+    parser.add_argument("--density", type=float, default=1200.0, help="Bean density [kg/m3]")
     parser.add_argument("--friction", type=float, default=0.5)
     parser.add_argument("--voxel-size", type=float, default=0.02)
     parser.add_argument("--young-modulus", type=float, default=1.0e6)
     parser.add_argument("--no-container", action="store_true")
     parser.add_argument("--num-frames", type=int, default=200)
     parser.add_argument("--substeps", type=int, default=1)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -258,7 +258,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_beans_sim(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

@@ -15,15 +15,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import math
 import random
 from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -33,10 +29,16 @@ from newton_sim_utils import (
     write_sim_metadata,
 )
 
+import newton
+
 
 def _cloth_strap_verts_and_faces(
-    hx: float, hz: float, width: float, center_y: float,
-    nu: int = 60, nv: int = 4,
+    hx: float,
+    hz: float,
+    width: float,
+    center_y: float,
+    nu: int = 60,
+    nv: int = 4,
 ):
     """Generate a closed cloth loop (strap) around a box in X-Z plane."""
     verts = []
@@ -103,7 +105,9 @@ def build_gift_wrap_scene(
             pos=wp.vec3(px, py, pz),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 0.0, 0.0),
-            dim_x=4, dim_y=4, dim_z=4,
+            dim_x=4,
+            dim_y=4,
+            dim_z=4,
             cell_x=block_size / 4,
             cell_y=block_size / 4,
             cell_z=block_size / 4,
@@ -123,7 +127,10 @@ def build_gift_wrap_scene(
         strap_width = block_size * 0.15
 
         verts, faces = _cloth_strap_verts_and_faces(
-            hx=hx, hz=hz, width=strap_width, center_y=y_pos,
+            hx=hx,
+            hz=hz,
+            width=strap_width,
+            center_y=y_pos,
         )
         # Offset to match stack center height
         verts[:, 2] += drop_height + stack_height / 2
@@ -152,7 +159,8 @@ def build_gift_wrap_scene(
     model.soft_contact_mu = 0.5
 
     solver = newton.solvers.SolverVBD(
-        model, iterations=solver_iters,
+        model,
+        iterations=solver_iters,
         particle_enable_self_contact=True,
         particle_self_contact_radius=0.01,
         particle_self_contact_margin=0.02,
@@ -223,13 +231,11 @@ def main():
     parser.add_argument("--num-frames", type=int, default=200)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -267,7 +273,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_gift_wrap_sim(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

@@ -46,12 +46,19 @@ def parse_urdf(urdf_path):
         lim = j.find("limit")
         lower = float(lim.get("lower", "0")) if lim is not None else 0
         upper = float(lim.get("upper", "0")) if lim is not None else 0
-        joints.append({
-            "name": j.get("name"), "type": j.get("type"),
-            "parent_link": j.find("parent").get("link"),
-            "child_link": j.find("child").get("link"),
-            "xyz": xyz, "rpy": rpy, "axis": axis, "lower": lower, "upper": upper,
-        })
+        joints.append(
+            {
+                "name": j.get("name"),
+                "type": j.get("type"),
+                "parent_link": j.find("parent").get("link"),
+                "child_link": j.find("child").get("link"),
+                "xyz": xyz,
+                "rpy": rpy,
+                "axis": axis,
+                "lower": lower,
+                "upper": upper,
+            }
+        )
     link_meshes = {}
     for link in root.findall("link"):
         name = link.get("name")

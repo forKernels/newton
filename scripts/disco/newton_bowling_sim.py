@@ -15,11 +15,7 @@ import math
 import random
 from pathlib import Path
 
-import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -28,6 +24,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 # Bowling geometry constants
 BALL_RADIUS = 0.109  # ~21.8 cm diameter
@@ -79,7 +77,9 @@ def build_bowling_scene(
     builder.add_shape_box(
         body=-1,
         xform=wp.transform(p=wp.vec3(2.0, 0.0, -0.05), q=wp.quat_identity()),
-        hx=3.0, hy=LANE_WIDTH / 2, hz=0.05,
+        hx=3.0,
+        hy=LANE_WIDTH / 2,
+        hz=0.05,
         cfg=lane_cfg,
     )
 
@@ -199,18 +199,15 @@ def main():
     parser = argparse.ArgumentParser(description="Newton Bowling Simulation")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--speed", type=float, default=3.5)
-    parser.add_argument("--aim-offset", type=float, default=None,
-                        help="Aim offset [degrees]")
+    parser.add_argument("--aim-offset", type=float, default=None, help="Aim offset [degrees]")
     parser.add_argument("--num-frames", type=int, default=200)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -245,7 +242,9 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_bowling_sim(
-            model, solver, initial_state,
+            model,
+            solver,
+            initial_state,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

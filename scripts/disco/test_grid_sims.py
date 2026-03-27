@@ -10,9 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from grid_throw_sim import run_single_sim as throw_sim
 from grid_drag_sim import run_single_sim as drag_sim
 from grid_lay_sim import run_single_sim as lay_sim
+from grid_throw_sim import run_single_sim as throw_sim
 
 FURNITURE = Path("D:/_blender/_myBlender/SimulationWork/seedAssets/scenes/Chair_01.blend")
 OUTPUT = Path("D:/_blender/_myBlender/SimulationWork/ClothDataset/_TestSims")

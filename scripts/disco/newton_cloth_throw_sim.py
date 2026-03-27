@@ -17,14 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     CLOTH_PRESETS,
     TEST_FRAMES,
     add_dtc_prop_as_rigid_body,
-    add_garment_as_cloth,
     add_ground_plane,
     add_table,
     build_solver,
@@ -36,6 +32,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 
 def build_cloth_throw_scene(
@@ -120,6 +118,7 @@ def build_cloth_throw_scene(
         # We need to add cloth with initial velocity
         # Load mesh manually and add with velocity
         from newton_sim_utils import load_garment_mesh
+
         verts, indices = load_garment_mesh(garment, scale=1.0)
         builder.add_cloth_mesh(
             pos=wp.vec3(spawn_x, spawn_y, spawn_z),
@@ -224,28 +223,24 @@ def run_cloth_throw(
 def main():
     parser = argparse.ArgumentParser(description="Newton Cloth Throw Simulation")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--preset", type=str, default="cotton",
-                        choices=list(CLOTH_PRESETS.keys()))
+    parser.add_argument("--preset", type=str, default="cotton", choices=list(CLOTH_PRESETS.keys()))
     parser.add_argument("--num-props", type=int, default=2)
     parser.add_argument("--use-grid", action="store_true")
     parser.add_argument("--grid-res", type=int, default=30)
     parser.add_argument("--garment", type=str, default=None)
     parser.add_argument("--throw-speed", type=float, default=2.0, help="Throw speed [m/s]")
-    parser.add_argument("--throw-angle", type=float, default=None,
-                        help="Throw direction [radians], random if omitted")
+    parser.add_argument("--throw-angle", type=float, default=None, help="Throw direction [radians], random if omitted")
     parser.add_argument("--throw-height", type=float, default=0.8)
     parser.add_argument("--num-frames", type=int, default=200)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver", type=str, default="vbd", choices=["vbd", "xpbd"])
     parser.add_argument("--solver-iters", type=int, default=10)
     parser.add_argument("--table-height", type=float, default=0.4)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -289,7 +284,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_cloth_throw(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

@@ -30,19 +30,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import warp as wp
-
-from fabric_library import FABRICS, get_newton_preset
+from fabric_library import FABRICS
 from newton_sim_utils import (
     CLOTH_PRESETS,
     create_viewer,
-    discover_all_props,
     discover_garments,
     discover_usda_props,
     discover_usda_scenes,
     load_config,
     write_sim_metadata,
 )
-
 
 # =============================================================================
 # Test functions for each sim type
@@ -97,7 +94,12 @@ def test_cloth_drag(config, preset, seed, num_frames, output_dir, viewer_type, *
     viewer = create_viewer(output_path=usd_path, viewer_type=viewer_type)
 
     final = run_cloth_drag(
-        model, solver, num_frames=num_frames, substeps=5, drag_speed=0.3, viewer=viewer,
+        model,
+        solver,
+        num_frames=num_frames,
+        substeps=5,
+        drag_speed=0.3,
+        viewer=viewer,
     )
     return _validate_state(final, sim_name, sim_dir, scene_info)
 
@@ -177,9 +179,13 @@ def test_cloth_fold(config, preset, seed, num_frames, output_dir, viewer_type, *
 
     fold_frames = min(num_frames // 2, 60)
     final = run_cloth_fold(
-        model, solver,
-        num_frames=num_frames, substeps=5,
-        fold_speed=0.2, fold_axis="x", fold_frames=fold_frames,
+        model,
+        solver,
+        num_frames=num_frames,
+        substeps=5,
+        fold_speed=0.2,
+        fold_axis="x",
+        fold_frames=fold_frames,
         viewer=viewer,
     )
     return _validate_state(final, sim_name, sim_dir, scene_info)
@@ -207,8 +213,10 @@ def test_cloth_curtain(config, preset, seed, num_frames, output_dir, viewer_type
     viewer = create_viewer(output_path=usd_path, viewer_type=viewer_type)
 
     final = run_curtain_sim(
-        model, solver,
-        num_frames=num_frames, substeps=5,
+        model,
+        solver,
+        num_frames=num_frames,
+        substeps=5,
         wind_strength=3.0,
         viewer=viewer,
     )
@@ -238,9 +246,12 @@ def test_cloth_pull(config, preset, seed, num_frames, output_dir, viewer_type, *
 
     pull_frames = min(num_frames // 2, 60)
     final = run_cloth_pull(
-        model, solver,
-        num_frames=num_frames, substeps=5,
-        pull_speed=0.4, pull_frames=pull_frames,
+        model,
+        solver,
+        num_frames=num_frames,
+        substeps=5,
+        pull_speed=0.4,
+        pull_frames=pull_frames,
         viewer=viewer,
     )
     return _validate_state(final, sim_name, sim_dir, scene_info)
@@ -353,26 +364,26 @@ SIM_REGISTRY = {
 
 def main():
     parser = argparse.ArgumentParser(description="Newton Cloth Simulation Test Suite")
-    parser.add_argument("--sims", nargs="*", default=None,
-                        choices=list(SIM_REGISTRY.keys()),
-                        help="Sim types to test (default: all)")
-    parser.add_argument("--preset", type=str, default="cotton",
-                        help=f"Cloth preset (available: {', '.join(sorted(CLOTH_PRESETS.keys()))})")
+    parser.add_argument(
+        "--sims", nargs="*", default=None, choices=list(SIM_REGISTRY.keys()), help="Sim types to test (default: all)"
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default="cotton",
+        help=f"Cloth preset (available: {', '.join(sorted(CLOTH_PRESETS.keys()))})",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
-    parser.add_argument("--num-frames", type=int, default=30,
-                        help="Frames per test (default: 30 for quick test)")
-    parser.add_argument("--grid-res", type=int, default=20,
-                        help="Grid cloth resolution (default: 20 for quick test)")
-    parser.add_argument("--viewer", type=str, default="usd",
-                        choices=["null", "usd", "gl"],
-                        help="Viewer type (usd writes .usda files)")
+    parser.add_argument("--num-frames", type=int, default=30, help="Frames per test (default: 30 for quick test)")
+    parser.add_argument("--grid-res", type=int, default=20, help="Grid cloth resolution (default: 20 for quick test)")
+    parser.add_argument(
+        "--viewer", type=str, default="usd", choices=["null", "usd", "gl"], help="Viewer type (usd writes .usda files)"
+    )
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--list-assets", action="store_true",
-                        help="Print discovered assets and exit")
-    parser.add_argument("--list-fabrics", action="store_true",
-                        help="Print all fabric presets and exit")
+    parser.add_argument("--list-assets", action="store_true", help="Print discovered assets and exit")
+    parser.add_argument("--list-fabrics", action="store_true", help="Print all fabric presets and exit")
     args = parser.parse_args()
 
     wp.init()
@@ -460,6 +471,7 @@ def main():
                 result = {"name": sim_name, "passed": False, "error": str(e), "time_s": round(elapsed, 1)}
                 print(f"  [FAIL] {sim_name}: {e}")
                 import traceback
+
                 traceback.print_exc()
 
             results.append(result)

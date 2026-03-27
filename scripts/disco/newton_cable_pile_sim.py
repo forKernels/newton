@@ -21,9 +21,6 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -32,6 +29,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 
 def _add_cable(
@@ -146,7 +145,9 @@ def build_cable_pile_scene(
                 direction = (0.0, 1.0, 0.0)
 
             _add_cable(
-                builder, start, direction,
+                builder,
+                start,
+                direction,
                 num_elements=num_elements,
                 segment_length=segment_length,
                 cable_radius=cable_radius,
@@ -223,13 +224,11 @@ def main():
     parser.add_argument("--num-frames", type=int, default=200)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -266,7 +265,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_cable_pile_sim(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

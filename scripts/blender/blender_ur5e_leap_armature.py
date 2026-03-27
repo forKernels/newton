@@ -11,6 +11,7 @@ import math
 import os
 import sys
 
+
 def _get_script_dir():
     """Resolve the directory containing this script, even inside Blender's text editor."""
     # 1. Normal Python execution (__file__ is defined)
@@ -18,6 +19,7 @@ def _get_script_dir():
         return os.path.dirname(os.path.abspath(__file__))
     # Blender text editor fallbacks:
     import bpy
+
     # 2. Text block has a filepath (was opened from disk via Text > Open)
     text = bpy.context.space_data and getattr(bpy.context.space_data, "text", None)
     if text and text.filepath:
@@ -32,14 +34,14 @@ def _get_script_dir():
     # 5. Hardcoded fallback
     return r"C:\_git\newton_zhao\scripts\blender"
 
+
 SCRIPT_DIR = _get_script_dir()
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 import bpy
-from mathutils import Matrix, Quaternion, Vector
-
 import robot_blender_utils as utils
+from mathutils import Matrix, Quaternion, Vector
 
 _ASSET_PATHS = utils.load_asset_paths()
 UR5E_ASSET_DIR = _ASSET_PATHS.get("universal_robots_ur5e", "")
@@ -47,7 +49,9 @@ LEAP_ASSET_DIR = _ASSET_PATHS.get("leap_hand", "")
 if not UR5E_ASSET_DIR:
     UR5E_ASSET_DIR = r"C:\Users\DiscoKid\AppData\Local\newton-physics\newton\Cache\mujoco_menagerie_universal_robots_ur5e_XXXXXXXX\universal_robots_ur5e"
 if not LEAP_ASSET_DIR:
-    LEAP_ASSET_DIR = r"C:\Users\DiscoKid\AppData\Local\newton-physics\newton\Cache\mujoco_menagerie_leap_hand_XXXXXXXX\leap_hand"
+    LEAP_ASSET_DIR = (
+        r"C:\Users\DiscoKid\AppData\Local\newton-physics\newton\Cache\mujoco_menagerie_leap_hand_XXXXXXXX\leap_hand"
+    )
 UR5E_MJCF = os.path.join(UR5E_ASSET_DIR, "ur5e.xml")
 LEAP_MJCF = os.path.join(LEAP_ASSET_DIR, "left_hand.xml")
 HAND_XFORM_POS = [-0.065, 0.28, 0.10]

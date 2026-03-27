@@ -109,6 +109,7 @@ def _group_by_shape(names: list[str]) -> dict[str, list[str]]:
     Returns dict mapping shape_key -> list of folder names.
     """
     from collections import defaultdict
+
     groups = defaultdict(list)
     for name in sorted(names):
         clean = _re.sub(r"_TU$", "", name)
@@ -139,10 +140,7 @@ def _discover_dtc(dtc_dir: Path, unique_only: bool = True) -> list[dict]:
         return []
 
     # Collect all asset folders that have metadata
-    all_folders = sorted([
-        d for d in dtc_dir.iterdir()
-        if d.is_dir() and (d / "metadata.json").exists()
-    ])
+    all_folders = sorted([d for d in dtc_dir.iterdir() if d.is_dir() and (d / "metadata.json").exists()])
 
     if unique_only:
         groups = _group_by_shape([d.name for d in all_folders])
@@ -166,11 +164,13 @@ def _discover_dtc(dtc_dir: Path, unique_only: bool = True) -> list[dict]:
         with open(meta_path) as f:
             meta = _json.load(f)
 
-        props.append({
-            "path": glb,
-            "name": d.name,
-            "metadata": meta,
-        })
+        props.append(
+            {
+                "path": glb,
+                "name": d.name,
+                "metadata": meta,
+            }
+        )
 
     return props
 
@@ -186,11 +186,13 @@ def _discover_blender_props(props_dir: Path) -> list[dict]:
 
     props = []
     for f in sorted(props_dir.glob("**/*.blend")):
-        props.append({
-            "path": f,
-            "name": f.stem,
-            "metadata": None,
-        })
+        props.append(
+            {
+                "path": f,
+                "name": f.stem,
+                "metadata": None,
+            }
+        )
     return props
 
 
@@ -667,7 +669,11 @@ def run_single_sim(
     # 5. Import and place props ON TOP of the surface
     spread = grid_size * 0.4
     prop_objs, prop_meta = place_props_on_surface(
-        prop_infos, surface_z, surface_center, spread, rng,
+        prop_infos,
+        surface_z,
+        surface_center,
+        spread,
+        rng,
     )
 
     # 6. Physics scatter props if requested
@@ -717,7 +723,7 @@ def run_single_sim(
     if n_pinned == 0:
         vg, n_pinned = create_vertex_group(grid, PIN_GROUP_NAME, grab_point, grab_radius * 3)
         if n_pinned == 0:
-            print(f"    WARNING: No vertices pinned, skipping")
+            print("    WARNING: No vertices pinned, skipping")
             return {"error": "no_pinned_vertices"}
 
     print(f"    grab at ({grab_point.x:.3f}, {grab_point.y:.3f}, {grab_point.z:.3f})")
@@ -756,8 +762,10 @@ def run_single_sim(
     #   rest phase: cloth released, settles freely
     drag_end_frame = settle_frames + int((frame_count - settle_frames) * DRAG_FRAC)
     release_frame = drag_end_frame + 1
-    print(f"    timing: settle=1-{settle_frames} drag={settle_frames}-{drag_end_frame} "
-          f"release={release_frame} rest={release_frame}-{frame_count}")
+    print(
+        f"    timing: settle=1-{settle_frames} drag={settle_frames}-{drag_end_frame} "
+        f"release={release_frame} rest={release_frame}-{frame_count}"
+    )
 
     # 17. Keyframe drag motion (drag ends at drag_end_frame, not total_frames)
     keyframe_drag(empty, grab_point, drag_target, settle_frames, drag_end_frame)
@@ -794,7 +802,7 @@ def run_single_sim(
         scene.frame_set(1)
         print(f"    release: YES (frame {release_frame})")
     else:
-        print(f"    release: NO (cloth stays pinned)")
+        print("    release: NO (cloth stays pinned)")
 
     # 19. Bake simulation
     t0 = time.time()
@@ -863,7 +871,9 @@ def main():
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--dtc-dir", type=str, default=DEFAULT_DTC_DIR, help="DTC sim_ready directory")
     parser.add_argument("--props-dir", type=str, default=DEFAULT_PROPS_DIR, help="Custom Blender props directory")
-    parser.add_argument("--all-variants", action="store_true", help="Include DTC color variants (default: unique shapes only)")
+    parser.add_argument(
+        "--all-variants", action="store_true", help="Include DTC color variants (default: unique shapes only)"
+    )
     parser.add_argument("--scenes-dir", type=str, default=DEFAULT_SCENES_DIR, help="Furniture/scenes .blend directory")
     parser.add_argument("--furniture", type=str, default=None, help="Specific furniture .blend (optional)")
     parser.add_argument("--output-dir", type=str, default=None)
@@ -878,8 +888,12 @@ def main():
     parser.add_argument("--subdiv-level", type=int, default=DEFAULT_SUBDIV)
     parser.add_argument("--grab-radius", type=float, default=GRAB_RADIUS_DEFAULT)
     parser.add_argument("--settle-frames", type=int, default=SETTLE_FRAMES_DEFAULT)
-    parser.add_argument("--scatter-props", action="store_true", help="Drop props with rigid body physics before cloth sim")
-    parser.add_argument("--scatter-scenes", action="store_true", help="Drop furniture with rigid body physics before cloth sim")
+    parser.add_argument(
+        "--scatter-props", action="store_true", help="Drop props with rigid body physics before cloth sim"
+    )
+    parser.add_argument(
+        "--scatter-scenes", action="store_true", help="Drop furniture with rigid body physics before cloth sim"
+    )
     parser.add_argument("--scatter-all", action="store_true", help="Shortcut: scatter both props and scenes")
 
     config = load_sim_config(extract_config_path(argv))
@@ -962,11 +976,13 @@ def main():
     for furn_path in furniture_list:
         for preset in presets:
             for sample_i in range(1, args.num_samples + 1):
-                seed = args.seed + hash((
-                    furn_path.stem if furn_path else "floor",
-                    preset,
-                    sample_i,
-                )) % (2**31)
+                seed = args.seed + hash(
+                    (
+                        furn_path.stem if furn_path else "floor",
+                        preset,
+                        sample_i,
+                    )
+                ) % (2**31)
 
                 # Pick random props for this sim
                 sim_rng = random.Random(seed)

@@ -19,9 +19,6 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_dtc_prop_as_rigid_body,
@@ -33,6 +30,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 
 def build_rope_scene(
@@ -117,7 +116,8 @@ def build_rope_scene(
 
     if solver_type == "vbd":
         solver = newton.solvers.SolverVBD(
-            model, iterations=solver_iters,
+            model,
+            iterations=solver_iters,
             particle_enable_self_contact=True,
             particle_self_contact_radius=cell,
             particle_self_contact_margin=cell * 1.5,
@@ -183,21 +183,18 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rope-length", type=float, default=1.5)
     parser.add_argument("--rope-segments", type=int, default=60)
-    parser.add_argument("--fix-ends", type=str, default="left",
-                        choices=["left", "right", "both", "none"])
+    parser.add_argument("--fix-ends", type=str, default="left", choices=["left", "right", "both", "none"])
     parser.add_argument("--num-props", type=int, default=2)
     parser.add_argument("--num-frames", type=int, default=200)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver", type=str, default="vbd", choices=["vbd", "xpbd"])
     parser.add_argument("--solver-iters", type=int, default=10)
     parser.add_argument("--table-height", type=float, default=0.4)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -237,7 +234,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_rope_sim(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

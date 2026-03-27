@@ -126,21 +126,27 @@ def _throw_swing_up(
     offset = 0.8 + power * 0.6
     arc_height = 0.5 + power * 1.0
 
-    start = Vector((
-        furn_center.x + offset * math.cos(direction_rad),
-        furn_center.y + offset * math.sin(direction_rad),
-        furn_max_z - 0.3,
-    ))
-    mid = Vector((
-        furn_center.x + 0.3 * math.cos(direction_rad),
-        furn_center.y + 0.3 * math.sin(direction_rad),
-        furn_max_z + arc_height,
-    ))
-    end = Vector((
-        furn_center.x - 0.2 * math.cos(direction_rad),
-        furn_center.y - 0.2 * math.sin(direction_rad),
-        furn_max_z + arc_height * 0.5,
-    ))
+    start = Vector(
+        (
+            furn_center.x + offset * math.cos(direction_rad),
+            furn_center.y + offset * math.sin(direction_rad),
+            furn_max_z - 0.3,
+        )
+    )
+    mid = Vector(
+        (
+            furn_center.x + 0.3 * math.cos(direction_rad),
+            furn_center.y + 0.3 * math.sin(direction_rad),
+            furn_max_z + arc_height,
+        )
+    )
+    end = Vector(
+        (
+            furn_center.x - 0.2 * math.cos(direction_rad),
+            furn_center.y - 0.2 * math.sin(direction_rad),
+            furn_max_z + arc_height * 0.5,
+        )
+    )
     return [
         (1, grab_pos),
         (HOLD_END, grab_pos),
@@ -162,16 +168,20 @@ def _throw_swing_side(
     height = furn_max_z + 0.3 + power * 0.3
     perp = direction_rad + math.pi / 2
 
-    start = Vector((
-        furn_center.x + sweep * math.cos(perp),
-        furn_center.y + sweep * math.sin(perp),
-        height,
-    ))
-    end = Vector((
-        furn_center.x - sweep * math.cos(perp),
-        furn_center.y - sweep * math.sin(perp),
-        height + 0.2,
-    ))
+    start = Vector(
+        (
+            furn_center.x + sweep * math.cos(perp),
+            furn_center.y + sweep * math.sin(perp),
+            height,
+        )
+    )
+    end = Vector(
+        (
+            furn_center.x - sweep * math.cos(perp),
+            furn_center.y - sweep * math.sin(perp),
+            height + 0.2,
+        )
+    )
     return [
         (1, grab_pos),
         (HOLD_END, grab_pos),
@@ -192,21 +202,27 @@ def _throw_swing_over(
     overhead_h = 1.0 + power * 1.0
     forward_dist = 0.4 + power * 0.4
 
-    behind = Vector((
-        furn_center.x + behind_dist * math.cos(direction_rad),
-        furn_center.y + behind_dist * math.sin(direction_rad),
-        furn_max_z + 0.2,
-    ))
-    overhead = Vector((
-        furn_center.x,
-        furn_center.y,
-        furn_max_z + overhead_h,
-    ))
-    forward = Vector((
-        furn_center.x - forward_dist * math.cos(direction_rad),
-        furn_center.y - forward_dist * math.sin(direction_rad),
-        furn_max_z + overhead_h * 0.4,
-    ))
+    behind = Vector(
+        (
+            furn_center.x + behind_dist * math.cos(direction_rad),
+            furn_center.y + behind_dist * math.sin(direction_rad),
+            furn_max_z + 0.2,
+        )
+    )
+    overhead = Vector(
+        (
+            furn_center.x,
+            furn_center.y,
+            furn_max_z + overhead_h,
+        )
+    )
+    forward = Vector(
+        (
+            furn_center.x - forward_dist * math.cos(direction_rad),
+            furn_center.y - forward_dist * math.sin(direction_rad),
+            furn_max_z + overhead_h * 0.4,
+        )
+    )
     return [
         (1, grab_pos),
         (HOLD_END, grab_pos),
@@ -227,16 +243,20 @@ def _throw_toss(
     near_dist = 0.3 + power * 0.2
     toss_height = 0.4 + power * 0.6
 
-    near = Vector((
-        furn_center.x + near_dist * math.cos(direction_rad),
-        furn_center.y + near_dist * math.sin(direction_rad),
-        furn_max_z + 0.1,
-    ))
-    up = Vector((
-        furn_center.x + near_dist * 0.5 * math.cos(direction_rad),
-        furn_center.y + near_dist * 0.5 * math.sin(direction_rad),
-        furn_max_z + toss_height,
-    ))
+    near = Vector(
+        (
+            furn_center.x + near_dist * math.cos(direction_rad),
+            furn_center.y + near_dist * math.sin(direction_rad),
+            furn_max_z + 0.1,
+        )
+    )
+    up = Vector(
+        (
+            furn_center.x + near_dist * 0.5 * math.cos(direction_rad),
+            furn_center.y + near_dist * 0.5 * math.sin(direction_rad),
+            furn_max_z + toss_height,
+        )
+    )
     return [
         (1, grab_pos),
         (HOLD_END, grab_pos),
@@ -506,7 +526,9 @@ def run_single_sim(
 def main():
     argv = parse_blender_args(sys.argv)
 
-    parser = argparse.ArgumentParser(description="Cloth throw simulation: grab-and-throw garments at furniture (Blender)")
+    parser = argparse.ArgumentParser(
+        description="Cloth throw simulation: grab-and-throw garments at furniture (Blender)"
+    )
     parser.add_argument(
         "--config",
         type=str,

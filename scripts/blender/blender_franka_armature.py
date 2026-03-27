@@ -55,18 +55,20 @@ def parse_urdf(urdf_path):
         mimic_elem = j.find("mimic")
         mimic = mimic_elem.get("joint") if mimic_elem is not None else None
 
-        joints.append({
-            "name": j.get("name"),
-            "type": j.get("type"),
-            "parent_link": j.find("parent").get("link"),
-            "child_link": j.find("child").get("link"),
-            "xyz": xyz,
-            "rpy": rpy,
-            "axis": axis,
-            "lower": lower,
-            "upper": upper,
-            "mimic": mimic,
-        })
+        joints.append(
+            {
+                "name": j.get("name"),
+                "type": j.get("type"),
+                "parent_link": j.find("parent").get("link"),
+                "child_link": j.find("child").get("link"),
+                "xyz": xyz,
+                "rpy": rpy,
+                "axis": axis,
+                "lower": lower,
+                "upper": upper,
+                "mimic": mimic,
+            }
+        )
     return joints
 
 
@@ -265,8 +267,10 @@ def generate_armature():
             pbone["limit_lower_deg"] = round(math.degrees(lower), 1)
             pbone["limit_upper_deg"] = round(math.degrees(upper), 1)
 
-            print(f"  {j['name']:25s} revolute  axis={constraint_axis}  "
-                  f"[{math.degrees(lower):+.1f}, {math.degrees(upper):+.1f}] deg")
+            print(
+                f"  {j['name']:25s} revolute  axis={constraint_axis}  "
+                f"[{math.degrees(lower):+.1f}, {math.degrees(upper):+.1f}] deg"
+            )
 
         elif j["type"] == "prismatic":
             # Add Limit Location constraint for prismatic joints
@@ -283,8 +287,7 @@ def generate_armature():
             pbone["limit_lower_m"] = round(lower, 4)
             pbone["limit_upper_m"] = round(upper, 4)
 
-            print(f"  {j['name']:25s} prismatic axis={constraint_axis}  "
-                  f"[{lower*1000:+.1f}, {upper*1000:+.1f}] mm")
+            print(f"  {j['name']:25s} prismatic axis={constraint_axis}  [{lower * 1000:+.1f}, {upper * 1000:+.1f}] mm")
 
     bpy.ops.object.mode_set(mode="OBJECT")
 

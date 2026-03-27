@@ -15,11 +15,7 @@ import math
 import random
 from pathlib import Path
 
-import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     create_blend_file,
@@ -27,6 +23,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 # Pool ball constants
 BALL_RADIUS = 0.02625  # 52.5mm diameter (standard)
@@ -74,7 +72,9 @@ def build_pool_scene(
     builder.add_shape_box(
         body=-1,
         xform=wp.transform(p=wp.vec3(0.0, 0.0, table_z - 0.02), q=wp.quat_identity()),
-        hx=TABLE_LENGTH / 2, hy=TABLE_WIDTH / 2, hz=0.02,
+        hx=TABLE_LENGTH / 2,
+        hy=TABLE_WIDTH / 2,
+        hz=0.02,
         cfg=felt_cfg,
     )
 
@@ -205,13 +205,11 @@ def main():
     parser.add_argument("--num-frames", type=int, default=300)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -246,7 +244,9 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_pool_sim(
-            model, solver, initial_state,
+            model,
+            solver,
+            initial_state,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

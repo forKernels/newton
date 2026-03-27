@@ -4,10 +4,11 @@
 # Newton loads these via parse_usd() — cloth properties (stiffness, damping)
 # are applied in the Newton sim script, not baked into the USD.
 
-from pxr import Usd, UsdGeom, UsdPhysics, Sdf, Gf, Vt
-import trimesh
-import numpy as np
 from pathlib import Path
+
+import numpy as np
+import trimesh
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
 
 def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
@@ -41,19 +42,15 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
     garment_mesh.CreateFaceVertexIndicesAttr().Set(Vt.IntArray(faces.flatten().tolist()))
 
     # UVs if present
-    if hasattr(mesh.visual, 'uv') and mesh.visual.uv is not None:
+    if hasattr(mesh.visual, "uv") and mesh.visual.uv is not None:
         uvs = mesh.visual.uv
         primvars_api = UsdGeom.PrimvarsAPI(garment_mesh)
-        uv_primvar = primvars_api.CreatePrimvar(
-            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
-        )
+        uv_primvar = primvars_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying)
         uv_primvar.Set(Vt.Vec2fArray([Gf.Vec2f(*uv) for uv in uvs]))
 
     # Normals
     if mesh.vertex_normals is not None:
-        garment_mesh.CreateNormalsAttr().Set(
-            Vt.Vec3fArray([Gf.Vec3f(*n) for n in mesh.vertex_normals])
-        )
+        garment_mesh.CreateNormalsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*n) for n in mesh.vertex_normals]))
 
     # Get prim for physics APIs
     prim = stage.GetPrimAtPath(garment_path)
@@ -79,7 +76,6 @@ def convert_maria_obj_to_cloth_usd(obj_path, usd_path, up_axis="Z"):
 
 if __name__ == "__main__":
     import argparse
-    import sys
 
     parser = argparse.ArgumentParser(description="Convert Maria OBJ garments to USDA with physics")
     parser.add_argument("--maria-dir", type=str, required=True, help="Root Maria dataset directory")
@@ -94,7 +90,7 @@ if __name__ == "__main__":
 
     objs = sorted(maria_dir.rglob(args.pattern))
     if args.limit > 0:
-        objs = objs[:args.limit]
+        objs = objs[: args.limit]
 
     print(f"Converting {len(objs)} garments from {maria_dir}")
     print(f"Output: {output_dir}")

@@ -16,11 +16,7 @@ import math
 import random
 from pathlib import Path
 
-import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -30,10 +26,12 @@ from newton_sim_utils import (
     write_sim_metadata,
 )
 
+import newton
+
 # Standard domino dimensions
-DOMINO_HX = 0.005   # 1cm thick
-DOMINO_HY = 0.012   # 2.4cm wide
-DOMINO_HZ = 0.024   # 4.8cm tall
+DOMINO_HX = 0.005  # 1cm thick
+DOMINO_HY = 0.012  # 2.4cm wide
+DOMINO_HZ = 0.024  # 4.8cm tall
 DOMINO_DENSITY = 1800.0  # bone/plastic
 
 
@@ -153,19 +151,16 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-dominos", type=int, default=20)
     parser.add_argument("--spacing", type=float, default=0.03)
-    parser.add_argument("--curve", action="store_true",
-                        help="Arrange dominos in a curve")
+    parser.add_argument("--curve", action="store_true", help="Arrange dominos in a curve")
     parser.add_argument("--curve-radius", type=float, default=0.5)
     parser.add_argument("--num-frames", type=int, default=300)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -202,7 +197,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_dominos_sim(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

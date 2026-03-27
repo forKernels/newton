@@ -307,8 +307,6 @@ def apply_cloth_preset(garment: bpy.types.Object, preset_name: str):
         )
 
 
-
-
 # =============================================================================
 # Simulation and export
 # =============================================================================
@@ -444,10 +442,9 @@ def find_furniture(furniture_dir: str, specific: str | None = None) -> list[Path
     blends = sorted(root.rglob("*.blend"))
     # Exclude backup files (.blend1, .blend2) and non-droppable assets
     return [
-        b for b in blends
-        if b.suffix == ".blend"
-        and b.stem not in FURNITURE_EXCLUDE
-        and not b.name.endswith((".blend1", ".blend2"))
+        b
+        for b in blends
+        if b.suffix == ".blend" and b.stem not in FURNITURE_EXCLUDE and not b.name.endswith((".blend1", ".blend2"))
     ]
 
 

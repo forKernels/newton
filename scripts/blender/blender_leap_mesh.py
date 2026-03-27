@@ -9,9 +9,9 @@ standing upright at the scene origin. No arm attached. 16 DOF.
 NO armature is created — run blender_leap_armature.py separately.
 """
 
-import json
 import os
 import sys
+
 
 def _get_script_dir():
     """Resolve the directory containing this script, even inside Blender's text editor."""
@@ -20,6 +20,7 @@ def _get_script_dir():
         return os.path.dirname(os.path.abspath(__file__))
     # Blender text editor fallbacks:
     import bpy
+
     # 2. Text block has a filepath (was opened from disk via Text > Open)
     text = bpy.context.space_data and getattr(bpy.context.space_data, "text", None)
     if text and text.filepath:
@@ -34,19 +35,20 @@ def _get_script_dir():
     # 5. Hardcoded fallback
     return r"C:\_git\newton_zhao\scripts\blender"
 
+
 SCRIPT_DIR = _get_script_dir()
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-import bpy
-from mathutils import Matrix, Vector
-
 import robot_blender_utils as utils
+from mathutils import Matrix, Vector
 
 _ASSET_PATHS = utils.load_asset_paths()
 LEAP_ASSET_DIR = _ASSET_PATHS.get("leap_hand", "")
 if not LEAP_ASSET_DIR:
-    LEAP_ASSET_DIR = r"C:\Users\DiscoKid\AppData\Local\newton-physics\newton\Cache\mujoco_menagerie_leap_hand_XXXXXXXX\leap_hand"
+    LEAP_ASSET_DIR = (
+        r"C:\Users\DiscoKid\AppData\Local\newton-physics\newton\Cache\mujoco_menagerie_leap_hand_XXXXXXXX\leap_hand"
+    )
 LEAP_MJCF = os.path.join(LEAP_ASSET_DIR, "left_hand.xml")
 HAND_BASE_POS = (0.0, 0.0, 0.0)
 
@@ -73,7 +75,10 @@ def setup_meshes():
     base_matrix = Matrix.Translation(Vector(HAND_BASE_POS))
 
     hand_root, hand_imported = utils.import_mjcf_robot_meshes(
-        hand_bodies, hand_mesh_assets, hand_transforms, base_matrix,
+        hand_bodies,
+        hand_mesh_assets,
+        hand_transforms,
+        base_matrix,
         root_name="LEAP_Root",
         material_color=(0.85, 0.75, 0.65, 1.0),
     )

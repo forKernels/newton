@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -80,9 +79,7 @@ def download_all():
             if info["source"] == "newton-assets":
                 asset_path = download_asset(info["asset_name"])
             else:
-                asset_path = download_git_folder(
-                    _MENAGERIE_GIT_URL, info["folder"]
-                )
+                asset_path = download_git_folder(_MENAGERIE_GIT_URL, info["folder"])
 
             paths[key] = str(asset_path)
             print(f"  Cached: {asset_path}")
@@ -112,7 +109,7 @@ def main():
     print(f"\n{'=' * 65}")
     print("DONE — Asset paths saved to:")
     print(f"  {config_path}")
-    print(f"\nBlender scripts will auto-load from this JSON,")
+    print("\nBlender scripts will auto-load from this JSON,")
     print("or you can paste these paths into the ASSET_DIR configs manually:")
     print(f"{'=' * 65}")
     for key, path in paths.items():

@@ -36,14 +36,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import numpy as np
 
 from fabric_library import FABRICS, get_fabric_properties
 from newton_sim_utils import (
     discover_garments,
     load_config,
-    load_garment_mesh,
-    write_sim_metadata,
 )
 
 # =============================================================================
@@ -66,10 +63,9 @@ def find_furniture_blends(furniture_dir: str, specific: str | None = None) -> li
         return [matches[0]] if matches else []
     blends = sorted(root.rglob("*.blend"))
     return [
-        b for b in blends
-        if b.suffix == ".blend"
-        and b.stem not in FURNITURE_EXCLUDE
-        and not b.name.endswith((".blend1", ".blend2"))
+        b
+        for b in blends
+        if b.suffix == ".blend" and b.stem not in FURNITURE_EXCLUDE and not b.name.endswith((".blend1", ".blend2"))
     ]
 
 
@@ -106,6 +102,7 @@ def find_furniture_collision_obj(blend_path: Path) -> str | None:
 # MD Preset Mapping
 # =============================================================================
 
+
 def get_md_preset(fabric_name: str) -> dict:
     """Get Marvelous Designer preset info for a fabric."""
     props = get_fabric_properties(fabric_name)
@@ -125,12 +122,13 @@ def list_md_presets():
         preset = md.get("preset_name", "-")
         gsm = md.get("density_gsm", "-")
         weight = props.get("weight_class", "-")
-        print(f"{name:<16} {str(preset):<24} {str(gsm):>5}  {weight:>10}")
+        print(f"{name:<16} {preset!s:<24} {gsm!s:>5}  {weight:>10}")
 
 
 # =============================================================================
 # MD Script Generation — uses real MD Python API
 # =============================================================================
+
 
 def generate_md_batch_script(
     jobs: list[dict],
@@ -175,82 +173,86 @@ def generate_md_batch_script(
         out_meta = f"{sim_dir}/metadata.json"
         frames = job.get("sim_frames", 300)
 
-        lines.append(f"# --- Job {i+1}/{len(jobs)}: {sim_name} ---")
+        lines.append(f"# --- Job {i + 1}/{len(jobs)}: {sim_name} ---")
         lines.append(f'print(f"[{{len(results)+1}}/{{total}}] {sim_name}")')
         lines.append("t0 = time.time()")
         lines.append("try:")
         lines.append(f'    os.makedirs(r"{sim_dir}", exist_ok=True)')
         lines.append(f'    if os.path.exists(r"{out_meta}"):')
-        lines.append(f'        print("  SKIP (exists)")')
+        lines.append('        print("  SKIP (exists)")')
         lines.append(f'        results.append({{"name": "{sim_name}", "status": "skipped"}})')
         furn_obj = job.get("furniture_collision_obj", "").replace("\\", "/")
 
-        lines.append(f"    else:")
-        lines.append(f"        # Clear scene")
-        lines.append(f"        utility_api.NewProject()")
-        lines.append(f"")
-        lines.append(f"        # Import furniture as collision object (avatar/object type 0)")
-        lines.append(f"        furn_opt = ApiTypes.ImportExportOption()")
-        lines.append(f"        furn_opt.ImportObjectType = 0  # avatar/collision object")
-        lines.append(f"        furn_opt.scale = 1.0")
+        lines.append("    else:")
+        lines.append("        # Clear scene")
+        lines.append("        utility_api.NewProject()")
+        lines.append("")
+        lines.append("        # Import furniture as collision object (avatar/object type 0)")
+        lines.append("        furn_opt = ApiTypes.ImportExportOption()")
+        lines.append("        furn_opt.ImportObjectType = 0  # avatar/collision object")
+        lines.append("        furn_opt.scale = 1.0")
         lines.append(f'        import_api.ImportFile(r"{furn_obj}", furn_opt)')
-        lines.append(f"")
-        lines.append(f"        # Import garment OBJ")
-        lines.append(f"        garment_opt = ApiTypes.ImportExportOption()")
-        lines.append(f"        garment_opt.bAutoTranslate = True")
-        lines.append(f"        garment_opt.translationValueY = 30.0  # cm above origin")
-        lines.append(f"        garment_opt.scale = 1.0")
+        lines.append("")
+        lines.append("        # Import garment OBJ")
+        lines.append("        garment_opt = ApiTypes.ImportExportOption()")
+        lines.append("        garment_opt.bAutoTranslate = True")
+        lines.append("        garment_opt.translationValueY = 30.0  # cm above origin")
+        lines.append("        garment_opt.scale = 1.0")
         lines.append(f'        import_api.ImportOBJ(r"{obj_path}", garment_opt)')
-        lines.append(f"")
-        lines.append(f"        # Simulation settings")
-        lines.append(f"        utility_api.SetSimulationQuality(1, 0)  # Animation(Stable), CPU")
-        lines.append(f"        utility_api.SetSimulationSelfCollisionIterationCount(2)")
-        lines.append(f"")
-        lines.append(f"        # Record animation during simulation")
-        lines.append(f"        utility_api.SetStartAnimationFrame(0)")
+        lines.append("")
+        lines.append("        # Simulation settings")
+        lines.append("        utility_api.SetSimulationQuality(1, 0)  # Animation(Stable), CPU")
+        lines.append("        utility_api.SetSimulationSelfCollisionIterationCount(2)")
+        lines.append("")
+        lines.append("        # Record animation during simulation")
+        lines.append("        utility_api.SetStartAnimationFrame(0)")
         lines.append(f"        utility_api.SetEndAnimationFrame({frames})")
-        lines.append(f"        utility_api.SetAnimationRecording(True)")
+        lines.append("        utility_api.SetAnimationRecording(True)")
         lines.append(f"        utility_api.Simulate({frames})")
-        lines.append(f"        utility_api.SetAnimationRecording(False)")
-        lines.append(f"")
-        lines.append(f"        # Export draped OBJ")
-        lines.append(f"        export_opt = ApiTypes.ImportExportOption()")
-        lines.append(f"        export_opt.bExportGarment = True")
-        lines.append(f"        export_opt.bThin = True")
-        lines.append(f"        export_opt.bSingleObject = True")
-        lines.append(f"        export_opt.scale = 0.01  # cm -> m")
+        lines.append("        utility_api.SetAnimationRecording(False)")
+        lines.append("")
+        lines.append("        # Export draped OBJ")
+        lines.append("        export_opt = ApiTypes.ImportExportOption()")
+        lines.append("        export_opt.bExportGarment = True")
+        lines.append("        export_opt.bThin = True")
+        lines.append("        export_opt.bSingleObject = True")
+        lines.append("        export_opt.scale = 0.01  # cm -> m")
         lines.append(f'        export_api.ExportOBJ(r"{out_obj}", export_opt)')
 
-        lines.append(f"")
-        lines.append(f"        elapsed = time.time() - t0")
-        lines.append(f"        meta = {{")
-        lines.append(f'            "mode": "drop",')
-        lines.append(f'            "engine": "marvelous_designer",')
+        lines.append("")
+        lines.append("        elapsed = time.time() - t0")
+        lines.append("        meta = {")
+        lines.append('            "mode": "drop",')
+        lines.append('            "engine": "marvelous_designer",')
         lines.append(f'            "furniture": "{furn}",')
         lines.append(f'            "garment": "{job.get("garment_name", "")}",')
         lines.append(f'            "category": "{job.get("category", "")}",')
         lines.append(f'            "fabric_preset": "{preset}",')
         lines.append(f'            "sim_frames": {frames},')
-        lines.append(f'            "elapsed_s": round(elapsed, 1),')
-        lines.append(f"        }}")
+        lines.append('            "elapsed_s": round(elapsed, 1),')
+        lines.append("        }")
         lines.append(f'        with open(r"{out_meta}", "w") as f:')
-        lines.append(f"            json.dump(meta, f, indent=2)")
+        lines.append("            json.dump(meta, f, indent=2)")
         lines.append(f'        results.append({{"name": "{sim_name}", "status": "ok", "time": elapsed}})')
-        lines.append(f'        print("  OK (%.1fs)" % elapsed)')
-        lines.append(f"except Exception as e:")
-        lines.append(f"    elapsed = time.time() - t0")
-        lines.append(f'    results.append({{"name": "{sim_name}", "status": "error", "error": str(e), "time": elapsed}})')
-        lines.append(f'    print(f"  FAILED: {{e}}")')
-        lines.append(f"")
+        lines.append('        print("  OK (%.1fs)" % elapsed)')
+        lines.append("except Exception as e:")
+        lines.append("    elapsed = time.time() - t0")
+        lines.append(
+            f'    results.append({{"name": "{sim_name}", "status": "error", "error": str(e), "time": elapsed}})'
+        )
+        lines.append('    print(f"  FAILED: {e}")')
+        lines.append("")
 
     lines.append("# --- Summary ---")
     lines.append("batch_elapsed = time.time() - batch_t0")
     lines.append('ok = sum(1 for r in results if r["status"] == "ok")')
     lines.append('skip = sum(1 for r in results if r.get("status") == "skipped")')
     lines.append('fail = sum(1 for r in results if r["status"] == "error")')
-    lines.append('print(f"\\nBatch complete: {ok} done, {skip} skipped, {fail} failed / {total} total ({batch_elapsed:.0f}s)")')
+    lines.append(
+        'print(f"\\nBatch complete: {ok} done, {skip} skipped, {fail} failed / {total} total ({batch_elapsed:.0f}s)")'
+    )
     lines.append("")
-    lines.append(f'with open(os.path.join(OUTPUT_ROOT, "batch_results.json"), "w") as f:')
+    lines.append('with open(os.path.join(OUTPUT_ROOT, "batch_results.json"), "w") as f:')
     lines.append("    json.dump(results, f, indent=2)")
 
     return "\n".join(lines) + "\n"
@@ -259,6 +261,7 @@ def generate_md_batch_script(
 # =============================================================================
 # Job Builder
 # =============================================================================
+
 
 def build_jobs(
     garments: list[dict],
@@ -294,17 +297,19 @@ def build_jobs(
 
             for g in garments:
                 sim_name = f"{furn_name}/drop/{fabric_name}/{g['name']}"
-                jobs.append({
-                    "obj_path": str(g["path"]),
-                    "garment_name": g["name"],
-                    "category": g["category"],
-                    "furniture_name": furn_name,
-                    "furniture_collision_obj": furn_collision_obj,
-                    "fabric_name": fabric_name,
-                    "fabric_preset": preset_name,
-                    "sim_name": sim_name,
-                    "sim_frames": sim_frames,
-                })
+                jobs.append(
+                    {
+                        "obj_path": str(g["path"]),
+                        "garment_name": g["name"],
+                        "category": g["category"],
+                        "furniture_name": furn_name,
+                        "furniture_collision_obj": furn_collision_obj,
+                        "fabric_name": fabric_name,
+                        "fabric_preset": preset_name,
+                        "sim_name": sim_name,
+                        "sim_frames": sim_frames,
+                    }
+                )
     return jobs
 
 
@@ -312,11 +317,13 @@ def build_jobs(
 # Main
 # =============================================================================
 
+
 def main():
     parser = argparse.ArgumentParser(description="Marvelous Designer Cloth Simulation Pipeline")
     parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--preset", type=str, nargs="+", default=["cotton"],
-                        help="Fabric preset(s): cotton, silk, leather, etc.")
+    parser.add_argument(
+        "--preset", type=str, nargs="+", default=["cotton"], help="Fabric preset(s): cotton, silk, leather, etc."
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-garments", type=int, default=None)
     parser.add_argument("--garment-category", type=str, default=None)
@@ -387,7 +394,8 @@ def main():
     scripts_dir.mkdir(parents=True, exist_ok=True)
 
     batch_script = generate_md_batch_script(
-        jobs, str(output_dir),
+        jobs,
+        str(output_dir),
         export_alembic=not args.no_alembic,
         export_usd=not args.no_usd,
     )
@@ -400,9 +408,16 @@ def main():
         "presets": args.preset,
         "furniture_count": len(furniture_files),
         "total_jobs": len(jobs),
-        "jobs": [{"sim_name": j["sim_name"], "garment": j["garment_name"],
-                  "category": j["category"], "furniture": j["furniture_name"],
-                  "fabric_preset": j["fabric_preset"]} for j in jobs],
+        "jobs": [
+            {
+                "sim_name": j["sim_name"],
+                "garment": j["garment_name"],
+                "category": j["category"],
+                "furniture": j["furniture_name"],
+                "fabric_preset": j["fabric_preset"],
+            }
+            for j in jobs
+        ],
     }
     (output_dir / "job_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 

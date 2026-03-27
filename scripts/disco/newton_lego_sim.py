@@ -14,15 +14,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import math
 import random
 from pathlib import Path
 
-import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -32,6 +27,8 @@ from newton_sim_utils import (
     load_mesh_from_file,
     write_sim_metadata,
 )
+
+import newton
 
 # Standard Lego brick: 31.8mm x 15.8mm x 11.4mm (with studs ~9.6mm without)
 BRICK_HX = 0.016
@@ -98,9 +95,11 @@ def build_lego_scene(
                     verts, faces = load_mesh_from_file(mesh_path)
                     # Scale to brick size
                     extents = verts.max(axis=0) - verts.min(axis=0)
-                    scale = min(BRICK_HX * 2 / max(extents[0], 0.001),
-                                BRICK_HY * 2 / max(extents[1], 0.001),
-                                BRICK_HZ * 2 / max(extents[2], 0.001))
+                    scale = min(
+                        BRICK_HX * 2 / max(extents[0], 0.001),
+                        BRICK_HY * 2 / max(extents[1], 0.001),
+                        BRICK_HZ * 2 / max(extents[2], 0.001),
+                    )
                     verts *= scale
                     mesh = newton.Mesh(
                         vertices=wp.array(verts, dtype=wp.vec3),
@@ -175,13 +174,11 @@ def main():
     parser.add_argument("--num-frames", type=int, default=200)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -218,7 +215,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_lego_sim(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

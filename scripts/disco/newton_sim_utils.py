@@ -19,12 +19,10 @@ from __future__ import annotations
 import json
 import math
 import os
-import random
 import re
 import subprocess
 from collections import defaultdict
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import warp as wp
@@ -132,10 +130,7 @@ def discover_dtc_props(
         print(f"  WARNING: DTC dir not found: {dtc_dir}")
         return []
 
-    all_folders = sorted([
-        d for d in dtc_root.iterdir()
-        if d.is_dir() and (d / "metadata.json").exists()
-    ])
+    all_folders = sorted([d for d in dtc_root.iterdir() if d.is_dir() and (d / "metadata.json").exists()])
 
     if unique_only:
         groups = _group_by_shape([d.name for d in all_folders])
@@ -157,12 +152,14 @@ def discover_dtc_props(
         with open(d / "metadata.json") as f:
             meta = json.load(f)
 
-        props.append({
-            "name": d.name,
-            "path": glb,
-            "collision_path": d / "collision.glb" if (d / "collision.glb").exists() else None,
-            "metadata": meta,
-        })
+        props.append(
+            {
+                "name": d.name,
+                "path": glb,
+                "collision_path": d / "collision.glb" if (d / "collision.glb").exists() else None,
+                "metadata": meta,
+            }
+        )
 
     return props
 
@@ -218,13 +215,15 @@ def discover_usda_props(props_dir: str | Path) -> list[dict]:
             "collision_strategy": "primitive" if phys.get("collision_primitive") else "hull",
         }
 
-        props.append({
-            "name": usda_file.stem,
-            "path": usda_file,
-            "collision_path": None,
-            "metadata": meta,
-            "format": "usda",
-        })
+        props.append(
+            {
+                "name": usda_file.stem,
+                "path": usda_file,
+                "collision_path": None,
+                "metadata": meta,
+                "format": "usda",
+            }
+        )
 
     return props
 
@@ -267,12 +266,14 @@ def discover_usda_scenes(scenes_dir: str | Path) -> list[dict]:
                 if obj_list:
                     meta = obj_list[0].get("physics", {})
 
-            scenes.append({
-                "name": usda_file.stem,
-                "path": usda_file,
-                "category": category or usda_file.stem.split("_")[0],
-                "metadata": meta,
-            })
+            scenes.append(
+                {
+                    "name": usda_file.stem,
+                    "path": usda_file,
+                    "category": category or usda_file.stem.split("_")[0],
+                    "metadata": meta,
+                }
+            )
 
     # Scan top-level files
     _scan_dir(root)
@@ -343,12 +344,14 @@ def discover_garments(garment_dir: str | Path) -> list[dict]:
             obj_path = clean[0] if clean else (sim[0] if sim else None)
 
             if obj_path:
-                garments.append({
-                    "name": item_dir.name,
-                    "category": category,
-                    "path": obj_path,
-                    "is_clean": bool(clean),
-                })
+                garments.append(
+                    {
+                        "name": item_dir.name,
+                        "category": category,
+                        "path": obj_path,
+                        "is_clean": bool(clean),
+                    }
+                )
 
     return garments
 
@@ -359,6 +362,7 @@ def discover_garments(garment_dir: str | Path) -> list[dict]:
 
 try:
     import trimesh as _trimesh
+
     _HAS_TRIMESH = True
 except ImportError:
     _HAS_TRIMESH = False
@@ -529,10 +533,14 @@ def add_dtc_prop_as_rigid_body(
     if collision_prim and collision_prim["type"] == "sphere":
         center = collision_prim["center"]
         radius = collision_prim["radius"]
-        shape_xform = wp.transform(
-            p=wp.vec3(center[0], center[1], center[2]),
-            q=wp.quat_identity(),
-        ) if not static else xform
+        shape_xform = (
+            wp.transform(
+                p=wp.vec3(center[0], center[1], center[2]),
+                q=wp.quat_identity(),
+            )
+            if not static
+            else xform
+        )
         builder.add_shape_sphere(
             body=body_idx,
             xform=shape_xform,
@@ -542,14 +550,20 @@ def add_dtc_prop_as_rigid_body(
     elif collision_prim and collision_prim["type"] == "box":
         center = collision_prim["center"]
         half = collision_prim["half_extents"]
-        shape_xform = wp.transform(
-            p=wp.vec3(center[0], center[1], center[2]),
-            q=wp.quat_identity(),
-        ) if not static else xform
+        shape_xform = (
+            wp.transform(
+                p=wp.vec3(center[0], center[1], center[2]),
+                q=wp.quat_identity(),
+            )
+            if not static
+            else xform
+        )
         builder.add_shape_box(
             body=body_idx,
             xform=shape_xform,
-            hx=half[0], hy=half[1], hz=half[2],
+            hx=half[0],
+            hy=half[1],
+            hz=half[2],
             cfg=collision_cfg,
         )
     else:
@@ -565,7 +579,9 @@ def add_dtc_prop_as_rigid_body(
                     xform=wp.transform(
                         p=wp.vec3(float(center[0]), float(center[1]), float(center[2])),
                         q=wp.quat_identity(),
-                    ) if not static else None,
+                    )
+                    if not static
+                    else None,
                     hx=float(half_extents[0]),
                     hy=float(half_extents[1]),
                     hz=float(half_extents[2]),
@@ -577,7 +593,9 @@ def add_dtc_prop_as_rigid_body(
             dims = meta.get("dimensions_m", [0.1, 0.1, 0.1])
             builder.add_shape_box(
                 body=body_idx,
-                hx=dims[0] / 2, hy=dims[1] / 2, hz=dims[2] / 2,
+                hx=dims[0] / 2,
+                hy=dims[1] / 2,
+                hz=dims[2] / 2,
                 cfg=collision_cfg,
             )
 
@@ -752,32 +770,47 @@ except ImportError:
     CLOTH_PRESETS = {
         "silk": {
             "density": 0.08,
-            "tri_ke": 5e1, "tri_ka": 5e1, "tri_kd": 1e-6,
-            "edge_ke": 5e-5, "edge_kd": 5e-4,
+            "tri_ke": 5e1,
+            "tri_ka": 5e1,
+            "tri_kd": 1e-6,
+            "edge_ke": 5e-5,
+            "edge_kd": 5e-4,
             "particle_radius": 0.008,
         },
         "cotton": {
             "density": 0.15,
-            "tri_ke": 1e2, "tri_ka": 1e2, "tri_kd": 1.5e-6,
-            "edge_ke": 1e-4, "edge_kd": 1e-3,
+            "tri_ke": 1e2,
+            "tri_ka": 1e2,
+            "tri_kd": 1.5e-6,
+            "edge_ke": 1e-4,
+            "edge_kd": 1e-3,
             "particle_radius": 0.008,
         },
         "denim": {
             "density": 0.35,
-            "tri_ke": 2e2, "tri_ka": 2e2, "tri_kd": 3e-6,
-            "edge_ke": 5e-4, "edge_kd": 3e-3,
+            "tri_ke": 2e2,
+            "tri_ka": 2e2,
+            "tri_kd": 3e-6,
+            "edge_ke": 5e-4,
+            "edge_kd": 3e-3,
             "particle_radius": 0.008,
         },
         "leather": {
             "density": 0.50,
-            "tri_ke": 4e2, "tri_ka": 4e2, "tri_kd": 5e-6,
-            "edge_ke": 1e-3, "edge_kd": 5e-3,
+            "tri_ke": 4e2,
+            "tri_ka": 4e2,
+            "tri_kd": 5e-6,
+            "edge_ke": 1e-3,
+            "edge_kd": 5e-3,
             "particle_radius": 0.008,
         },
         "rubber": {
             "density": 0.80,
-            "tri_ke": 8e2, "tri_ka": 8e2, "tri_kd": 1e-5,
-            "edge_ke": 5e-3, "edge_kd": 1e-2,
+            "tri_ke": 8e2,
+            "tri_ka": 8e2,
+            "tri_kd": 1e-5,
+            "edge_ke": 5e-3,
+            "edge_kd": 1e-2,
             "particle_radius": 0.008,
         },
     }
@@ -878,7 +911,8 @@ def run_simulation(
 
     # Use explicit collision pipeline with margin (matches cloth_dataset_pickup)
     collision_pipeline = newton.CollisionPipeline(
-        model, soft_contact_margin=collision_margin,
+        model,
+        soft_contact_margin=collision_margin,
     )
     contacts = collision_pipeline.contacts()
 
@@ -975,7 +1009,11 @@ bpy.ops.wm.save_as_mainfile(filepath=r"{blend_path}")
     try:
         result = subprocess.run(
             [blender_exe, "--background", "--python-expr", import_script],
-            capture_output=True, text=True, errors="replace", timeout=120,
+            check=False,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=120,
         )
         if result.returncode == 0:
             print(f"  Blender file: {blend_path}")

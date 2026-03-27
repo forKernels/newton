@@ -72,9 +72,7 @@ def zip_category(
                 # Filter to sim_prep files unless include_all
                 if not include_all:
                     if not (
-                        fname.endswith("_sim_prep.obj")
-                        or fname.endswith("_sim_prep.mtl")
-                        or fname.endswith(".json")
+                        fname.endswith("_sim_prep.obj") or fname.endswith("_sim_prep.mtl") or fname.endswith(".json")
                     ):
                         continue
 
@@ -97,9 +95,7 @@ def zip_category(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Zip each garment category into its own archive"
-    )
+    parser = argparse.ArgumentParser(description="Zip each garment category into its own archive")
     parser.add_argument(
         "--dataset-dir",
         type=str,
@@ -134,9 +130,7 @@ def main():
     config = load_config(args.config)
     dataset_dir = args.dataset_dir or config.get("garment_dir")
     if not dataset_dir:
-        parser.error(
-            "--dataset-dir is required (or set garment_dir in config)"
-        )
+        parser.error("--dataset-dir is required (or set garment_dir in config)")
 
     dataset_root = Path(dataset_dir)
     if not dataset_root.is_dir():
@@ -150,19 +144,13 @@ def main():
     if args.categories:
         cat_dirs = []
         for cat_name in args.categories:
-            matches = [
-                d
-                for d in dataset_root.iterdir()
-                if d.is_dir() and d.name.startswith(cat_name)
-            ]
+            matches = [d for d in dataset_root.iterdir() if d.is_dir() and d.name.startswith(cat_name)]
             cat_dirs.extend(matches)
     else:
         cat_dirs = sorted(
             d
             for d in dataset_root.iterdir()
-            if d.is_dir()
-            and not d.name.startswith("_")
-            and not d.name.endswith(".zip")
+            if d.is_dir() and not d.name.startswith("_") and not d.name.endswith(".zip")
         )
 
     print("=" * 60)

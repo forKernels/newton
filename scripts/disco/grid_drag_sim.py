@@ -263,7 +263,7 @@ def run_single_sim(
     if n_pinned == 0:
         vg, n_pinned = create_vertex_group(grid, PIN_GROUP_NAME, grab_point, grab_radius * 3)
         if n_pinned == 0:
-            print(f"    WARNING: No vertices pinned, skipping")
+            print("    WARNING: No vertices pinned, skipping")
             return {"error": "no_pinned_vertices"}
 
     print(f"    grab at ({grab_point.x:.3f}, {grab_point.y:.3f}, {grab_point.z:.3f})")

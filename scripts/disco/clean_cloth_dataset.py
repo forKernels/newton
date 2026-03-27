@@ -45,20 +45,17 @@ import time
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
 
 # Import shared fabric library (no bpy dependency)
 from fabric_library import (
     CATEGORY_FABRICS,
     CLOTH_SCALE,
-    DEFAULT_FABRICS,
     FABRICS,
     SOLIDIFY_THICKNESS,
-    build_cloth_properties_json,
     get_fabric_properties,
     get_fabrics_for_category,
 )
-
+from mathutils import Vector
 
 # =============================================================================
 # Blender mesh processing

@@ -156,12 +156,8 @@ def pick_grab_and_drag(
     """
     # Get garment bounding box in world space
     corners = [garment.matrix_world @ Vector(c) for c in garment.bound_box]
-    g_min = Vector(
-        (min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners))
-    )
-    g_max = Vector(
-        (max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners))
-    )
+    g_min = Vector((min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners)))
+    g_max = Vector((max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners)))
     g_cx = (g_min.x + g_max.x) / 2
     g_cy = (g_min.y + g_max.y) / 2
     g_z = (g_min.z + g_max.z) / 2
@@ -197,21 +193,15 @@ def pick_grab_and_drag(
     drag_dx = drag_dir[0] / drag_len * drag_dist
     drag_dy = drag_dir[1] / drag_len * drag_dist
 
-    drag_target = Vector(
-        (grab_x + drag_dx, grab_y + drag_dy, furn_max.z + DRAG_HEIGHT_M)
-    )
+    drag_target = Vector((grab_x + drag_dx, grab_y + drag_dy, furn_max.z + DRAG_HEIGHT_M))
 
     # Clamp target within furniture bounds (with margin)
     x_span = furn_max.x - furn_min.x
     y_span = furn_max.y - furn_min.y
     margin_x = x_span * BBOX_MARGIN
     margin_y = y_span * BBOX_MARGIN
-    drag_target.x = max(
-        furn_min.x + margin_x, min(furn_max.x - margin_x, drag_target.x)
-    )
-    drag_target.y = max(
-        furn_min.y + margin_y, min(furn_max.y - margin_y, drag_target.y)
-    )
+    drag_target.x = max(furn_min.x + margin_x, min(furn_max.x - margin_x, drag_target.x))
+    drag_target.y = max(furn_min.y + margin_y, min(furn_max.y - margin_y, drag_target.y))
 
     return grab_point, drag_target
 
@@ -299,10 +289,7 @@ def run_single_sim(
         print(f"  SKIP (exists): {usda_path.relative_to(output_dir)}")
         return {"skipped": True}
 
-    print(
-        f"  SIM [drag]: {furniture_name} / {preset_name} / "
-        f"{garment_id} #{sample_idx}"
-    )
+    print(f"  SIM [drag]: {furniture_name} / {preset_name} / {garment_id} #{sample_idx}")
 
     # 1. Clean scene
     clear_scene()
@@ -323,9 +310,7 @@ def run_single_sim(
     placement = position_garment_flat(garment, furn_min, furn_max, rng)
 
     # 6. Pick grab point and drag target
-    grab_point, drag_target = pick_grab_and_drag(
-        garment, furn_min, furn_max, rng
-    )
+    grab_point, drag_target = pick_grab_and_drag(garment, furn_min, furn_max, rng)
 
     # 7. Create pin vertex group
     n_pinned = create_pin_group(garment, grab_point, grab_radius)
@@ -336,14 +321,8 @@ def run_single_sim(
             print(f"    WARNING: No vertices pinned for {garment_id}, skipping")
             return {"error": "no_pinned_vertices"}
 
-    print(
-        f"    grab at ({grab_point.x:.3f}, {grab_point.y:.3f}, "
-        f"{grab_point.z:.3f})"
-    )
-    print(
-        f"    drag to ({drag_target.x:.3f}, {drag_target.y:.3f}, "
-        f"{drag_target.z:.3f})"
-    )
+    print(f"    grab at ({grab_point.x:.3f}, {grab_point.y:.3f}, {grab_point.z:.3f})")
+    print(f"    drag to ({drag_target.x:.3f}, {drag_target.y:.3f}, {drag_target.z:.3f})")
     print(f"    pinned vertices: {n_pinned}")
 
     # 8. Add collision to furniture
@@ -356,9 +335,7 @@ def run_single_sim(
         cloth_mod.settings.vertex_group_mass = PIN_GROUP_NAME
 
     # 10. Keyframe drag motion
-    keyframe_drag(
-        garment, grab_point, drag_target, SETTLE_FRAMES, frame_count
-    )
+    keyframe_drag(garment, grab_point, drag_target, SETTLE_FRAMES, frame_count)
 
     # 11. Bake simulation
     t0 = time.time()
@@ -408,9 +385,7 @@ def run_single_sim(
 def main():
     argv = parse_blender_args(sys.argv)
 
-    parser = argparse.ArgumentParser(
-        description="Cloth drag simulation: drag garments across furniture (Blender)"
-    )
+    parser = argparse.ArgumentParser(description="Cloth drag simulation: drag garments across furniture (Blender)")
     parser.add_argument(
         "--config",
         type=str,
@@ -501,10 +476,7 @@ def main():
     garments = find_prepped_garments(args.garment_dir, args.garment_category)
     print(f"Garments: {len(garments)} prepped meshes")
     if not garments:
-        print(
-            "ERROR: No *_sim_prep.obj garments found. "
-            "Run clean_cloth_dataset.py first."
-        )
+        print("ERROR: No *_sim_prep.obj garments found. Run clean_cloth_dataset.py first.")
         sys.exit(1)
 
     # Presets
@@ -512,9 +484,7 @@ def main():
     print(f"Presets: {presets}")
 
     # Build sim_fn with frame_count/grab_radius baked in
-    def sim_fn(
-        furniture_path, garment_info, preset_name, output_dir, seed, sample_idx
-    ):
+    def sim_fn(furniture_path, garment_info, preset_name, output_dir, seed, sample_idx):
         return run_single_sim(
             furniture_path=furniture_path,
             garment_info=garment_info,

@@ -13,16 +13,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import random
-import sys
 from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     CLOTH_PRESETS,
     TEST_FRAMES,
@@ -38,6 +33,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 
 def build_cloth_drop_scene(
@@ -109,15 +106,18 @@ def build_cloth_drop_scene(
         pz = table_top_z + prop_height + 0.01
 
         body_idx = add_dtc_prop_as_rigid_body(
-            builder, prop,
+            builder,
+            prop,
             position=(px, py, pz),
             static=False,
         )
-        prop_info_list.append({
-            "name": prop["name"],
-            "body_idx": body_idx,
-            "position": (px, py, pz),
-        })
+        prop_info_list.append(
+            {
+                "name": prop["name"],
+                "body_idx": body_idx,
+                "position": (px, py, pz),
+            }
+        )
         print(f"  Prop {i}: {prop['name']} at ({px:.2f}, {py:.2f}, {pz:.2f})")
 
     # Add cloth (garment mesh or procedural grid)
@@ -125,7 +125,8 @@ def build_cloth_drop_scene(
     if garment and not use_grid:
         print(f"  Garment: {garment['name']} ({garment['category']}) preset={preset}")
         add_garment_as_cloth(
-            builder, garment,
+            builder,
+            garment,
             position=(0.0, 0.0, cloth_z),
             **cloth_params,
         )
@@ -159,6 +160,7 @@ def build_cloth_drop_scene(
 
     # Build solver with validated VBD parameters
     from newton_sim_utils import build_solver
+
     solver = build_solver(model, solver_type=solver_type, iterations=solver_iters)
 
     scene_info = {
@@ -226,41 +228,24 @@ def run_cloth_drop(
 def main():
     parser = argparse.ArgumentParser(description="Newton Cloth Drop Simulation")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
-    parser.add_argument("--preset", type=str, default="cotton",
-                        choices=list(CLOTH_PRESETS.keys()),
-                        help="Cloth material preset")
-    parser.add_argument("--num-props", type=int, default=2,
-                        help="Number of DTC props on table")
-    parser.add_argument("--use-grid", action="store_true",
-                        help="Use procedural grid cloth instead of garment")
-    parser.add_argument("--grid-res", type=int, default=30,
-                        help="Grid cloth resolution (when --use-grid)")
-    parser.add_argument("--garment", type=str, default=None,
-                        help="Specific garment name to use")
-    parser.add_argument("--num-frames", type=int, default=200,
-                        help="Number of simulation frames")
-    parser.add_argument("--substeps", type=int, default=10,
-                        help="Substeps per frame")
-    parser.add_argument("--solver", type=str, default="vbd",
-                        choices=["vbd", "xpbd"],
-                        help="Solver type")
-    parser.add_argument("--solver-iters", type=int, default=10,
-                        help="Solver iterations")
-    parser.add_argument("--drop-height", type=float, default=0.5,
-                        help="Drop height above table [m]")
-    parser.add_argument("--table-height", type=float, default=0.4,
-                        help="Table height [m]")
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"],
-                        help="Viewer type")
-    parser.add_argument("--output-dir", type=str, default=None,
-                        help="Output directory (defaults to config output_dir)")
-    parser.add_argument("--config", type=str, default=None,
-                        help="Path to sim_config.json")
-    parser.add_argument("--device", type=str, default=None,
-                        help="Warp device (e.g. cuda:0)")
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument(
+        "--preset", type=str, default="cotton", choices=list(CLOTH_PRESETS.keys()), help="Cloth material preset"
+    )
+    parser.add_argument("--num-props", type=int, default=2, help="Number of DTC props on table")
+    parser.add_argument("--use-grid", action="store_true", help="Use procedural grid cloth instead of garment")
+    parser.add_argument("--grid-res", type=int, default=30, help="Grid cloth resolution (when --use-grid)")
+    parser.add_argument("--garment", type=str, default=None, help="Specific garment name to use")
+    parser.add_argument("--num-frames", type=int, default=200, help="Number of simulation frames")
+    parser.add_argument("--substeps", type=int, default=10, help="Substeps per frame")
+    parser.add_argument("--solver", type=str, default="vbd", choices=["vbd", "xpbd"], help="Solver type")
+    parser.add_argument("--solver-iters", type=int, default=10, help="Solver iterations")
+    parser.add_argument("--drop-height", type=float, default=0.5, help="Drop height above table [m]")
+    parser.add_argument("--table-height", type=float, default=0.4, help="Table height [m]")
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"], help="Viewer type")
+    parser.add_argument("--output-dir", type=str, default=None, help="Output directory (defaults to config output_dir)")
+    parser.add_argument("--config", type=str, default=None, help="Path to sim_config.json")
+    parser.add_argument("--device", type=str, default=None, help="Warp device (e.g. cuda:0)")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -315,7 +300,8 @@ def main():
 
         # Run simulation
         final_state = run_cloth_drop(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

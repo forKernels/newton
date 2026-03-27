@@ -47,7 +47,7 @@ for i, style in enumerate(THROW_STYLES, start=1):
         continue
 
     if result.get("skipped"):
-        print(f"  (skipped -- output already exists)")
+        print("  (skipped -- output already exists)")
         continue
 
     # Verify outputs

@@ -37,7 +37,6 @@ from cloth_sim_utils import (
     add_collision,
     add_floor_plane,
     append_furniture,
-    apply_cloth_preset,
     apply_config_defaults,
     bake_simulation,
     clear_scene,
@@ -220,7 +219,10 @@ def main():
     parser.add_argument("--thickness", type=float, default=DEFAULT_THICKNESS, help="Solidify thickness in metres")
     parser.add_argument("--subdiv-level", type=int, default=DEFAULT_SUBDIV, help="Subdivision Surface level")
     parser.add_argument(
-        "--throw-style", type=str, default="random", choices=["random"] + THROW_STYLES,
+        "--throw-style",
+        type=str,
+        default="random",
+        choices=["random"] + THROW_STYLES,
     )
     parser.add_argument("--power", type=float, default=None, help="Throw power 0.3-1.0")
 

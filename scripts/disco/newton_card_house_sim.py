@@ -26,11 +26,7 @@ import math
 import random
 from pathlib import Path
 
-import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -41,10 +37,12 @@ from newton_sim_utils import (
     write_sim_metadata,
 )
 
+import newton
+
 # Card dimensions (rigid box)
-CARD_HX = 0.0004    # ~0.8mm thick (half)
-CARD_HY = 0.0317    # 6.35cm wide (half)
-CARD_HZ = 0.0444    # 8.89cm tall (half)
+CARD_HX = 0.0004  # ~0.8mm thick (half)
+CARD_HY = 0.0317  # 6.35cm wide (half)
+CARD_HZ = 0.0444  # 8.89cm tall (half)
 CARD_DENSITY = 700.0  # cardstock
 
 
@@ -147,7 +145,16 @@ def _build_box(builder, card_cfg, rng, levels, bays_base, base_z, lean, lean_jit
             for bay in range(bays_x):
                 cx = -extent_x + bay * bay_width
                 total += _add_leaning_pair(
-                    builder, cx, wall_y, row_z, lean, lean_jitter, position_jitter, card_cfg, rng, facing=0.0,
+                    builder,
+                    cx,
+                    wall_y,
+                    row_z,
+                    lean,
+                    lean_jitter,
+                    position_jitter,
+                    card_cfg,
+                    rng,
+                    facing=0.0,
                 )
 
         # Y-facing walls (along +X and -X edges)
@@ -155,7 +162,15 @@ def _build_box(builder, card_cfg, rng, levels, bays_base, base_z, lean, lean_jit
             for bay in range(bays_y):
                 cy = -extent_y + bay * bay_width
                 total += _add_leaning_pair(
-                    builder, wall_x, cy, row_z, lean, lean_jitter, position_jitter, card_cfg, rng,
+                    builder,
+                    wall_x,
+                    cy,
+                    row_z,
+                    lean,
+                    lean_jitter,
+                    position_jitter,
+                    card_cfg,
+                    rng,
                     facing=math.pi / 2,
                 )
 
@@ -341,29 +356,28 @@ def count_collapsed(model, state, total_cards: int, base_z: float) -> int:
 def main():
     parser = argparse.ArgumentParser(description="Newton Card House Simulation")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--structure", type=str, default="pyramid",
-                        choices=["pyramid", "box", "tower"],
-                        help="Structure shape: pyramid, box, or tower")
+    parser.add_argument(
+        "--structure",
+        type=str,
+        default="pyramid",
+        choices=["pyramid", "box", "tower"],
+        help="Structure shape: pyramid, box, or tower",
+    )
     parser.add_argument("--levels", type=int, default=3)
     parser.add_argument("--bays", type=int, default=3, help="Number of bays at base level")
-    parser.add_argument("--perturb", action="store_true",
-                        help="Roll a sphere into the house")
+    parser.add_argument("--perturb", action="store_true", help="Roll a sphere into the house")
     parser.add_argument("--perturb-speed", type=float, default=0.3)
-    parser.add_argument("--lean-jitter", type=float, default=0.02,
-                        help="Random lean angle variation [radians]")
-    parser.add_argument("--position-jitter", type=float, default=0.001,
-                        help="Random position offset [m]")
+    parser.add_argument("--lean-jitter", type=float, default=0.02, help="Random lean angle variation [radians]")
+    parser.add_argument("--position-jitter", type=float, default=0.001, help="Random position offset [m]")
     parser.add_argument("--table-height", type=float, default=0.4)
     parser.add_argument("--num-frames", type=int, default=300)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -404,7 +418,9 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_card_house_sim(
-            model, solver, initial_state,
+            model,
+            solver,
+            initial_state,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

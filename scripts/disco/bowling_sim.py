@@ -29,33 +29,33 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
-
 # ── Configuration ────────────────────────────────────────────────────
 
-SIM_FRAMES       = 200
-ROLL_SPEED_MIN   = 2.5   # m/s — gentle roll
-ROLL_SPEED_MAX   = 4.5   # m/s — firm roll
-AIM_RANDOMNESS   = 4     # degrees max random offset
-KINEMATIC_FRAMES = 4     # short ramp so ball picks up velocity
+SIM_FRAMES = 200
+ROLL_SPEED_MIN = 2.5  # m/s — gentle roll
+ROLL_SPEED_MAX = 4.5  # m/s — firm roll
+AIM_RANDOMNESS = 4  # degrees max random offset
+KINEMATIC_FRAMES = 4  # short ramp so ball picks up velocity
 
 BALL_NAME = "BowlingBall"
 PIN_PREFIX = "BowlingPin_"
 
 # Physics tuning (applied on top of existing rigid bodies)
-BALL_MASS        = 6.8    # kg  (real ≈ 6–7 kg)
-BALL_FRICTION    = 0.30
+BALL_MASS = 6.8  # kg  (real ≈ 6–7 kg)
+BALL_FRICTION = 0.30
 BALL_RESTITUTION = 0.05
-BALL_LIN_DAMP    = 0.08   # low — let it roll the full lane
-BALL_ANG_DAMP    = 0.25   # moderate — realistic rolling drag
+BALL_LIN_DAMP = 0.08  # low — let it roll the full lane
+BALL_ANG_DAMP = 0.25  # moderate — realistic rolling drag
 
-PIN_MASS         = 1.5    # kg  (real ≈ 1.5 kg)
-PIN_FRICTION     = 0.35
-PIN_RESTITUTION  = 0.15
-PIN_LIN_DAMP     = 0.40
-PIN_ANG_DAMP     = 0.50
+PIN_MASS = 1.5  # kg  (real ≈ 1.5 kg)
+PIN_FRICTION = 0.35
+PIN_RESTITUTION = 0.15
+PIN_LIN_DAMP = 0.40
+PIN_ANG_DAMP = 0.50
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
 
 def find_objects(scene):
     """Return (ball, [pins], floor, wall)."""
@@ -83,7 +83,7 @@ def compute_roll_direction(ball, pins, aim_offset_deg=None, rng=None):
 
     # Aim at the head pin (closest to ball along Y)
     head_pin = min(pins, key=lambda p: (p.location - ball.location).length)
-    base = (head_pin.location - ball.location)
+    base = head_pin.location - ball.location
     base.z = 0
     base = base.normalized()
 
@@ -236,6 +236,7 @@ def save_blend(blend_path):
 
 # ── Single sim run ───────────────────────────────────────────────────
 
+
 def run_single_sim(
     *,
     seed: int = 42,
@@ -318,10 +319,11 @@ def run_single_sim(
 
 # ── CLI main ─────────────────────────────────────────────────────────
 
+
 def parse_blender_args(argv):
     """Extract args after '--' (Blender convention)."""
     if "--" in argv:
-        return argv[argv.index("--") + 1:]
+        return argv[argv.index("--") + 1 :]
     return []
 
 
@@ -337,7 +339,7 @@ def main():
     args = parser.parse_args(argv)
 
     print(f"\n{'=' * 55}")
-    print(f"  BOWLING SIMULATION")
+    print("  BOWLING SIMULATION")
     print(f"{'=' * 55}")
 
     for i in range(1, args.num_samples + 1):

@@ -11,15 +11,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import math
 import random
 from pathlib import Path
 
-import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -28,6 +23,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 MARBLE_RADIUS = 0.008  # 16mm diameter glass marble
 MARBLE_DENSITY = 2500.0  # glass kg/m3
@@ -56,14 +53,18 @@ def build_marble_scene(
     builder.add_shape_box(
         body=-1,
         xform=wp.transform(p=wp.vec3(0.0, -0.01, drop_height / 2), q=wp.quat_identity()),
-        hx=container_width, hy=0.005, hz=drop_height / 2,
+        hx=container_width,
+        hy=0.005,
+        hz=drop_height / 2,
         cfg=wall_cfg,
     )
     # Front wall (transparent in rendering)
     builder.add_shape_box(
         body=-1,
         xform=wp.transform(p=wp.vec3(0.0, 0.06, drop_height / 2), q=wp.quat_identity()),
-        hx=container_width, hy=0.005, hz=drop_height / 2,
+        hx=container_width,
+        hy=0.005,
+        hz=drop_height / 2,
         cfg=wall_cfg,
     )
 
@@ -84,7 +85,9 @@ def build_marble_scene(
         builder.add_shape_box(
             body=-1,
             xform=wp.transform(p=wp.vec3(x, 0.025, z), q=q),
-            hx=0.12, hy=0.025, hz=0.005,
+            hx=0.12,
+            hy=0.025,
+            hz=0.005,
             cfg=ramp_cfg,
         )
         ramp_info.append({"x": x, "z": z, "angle": angle})
@@ -165,13 +168,11 @@ def main():
     parser.add_argument("--num-frames", type=int, default=300)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -207,7 +208,8 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_marble_sim(
-            model, solver,
+            model,
+            solver,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

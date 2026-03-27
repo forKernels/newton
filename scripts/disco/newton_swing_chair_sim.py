@@ -24,9 +24,6 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_dtc_prop_as_rigid_body,
@@ -37,6 +34,8 @@ from newton_sim_utils import (
     load_config,
     write_sim_metadata,
 )
+
+import newton
 
 
 def _load_usda_meshes(usda_path: str | Path):
@@ -84,7 +83,7 @@ def _load_usda_meshes(usda_path: str | Path):
         idx = 0
         for fc in face_counts:
             if fc == 3:
-                triangles.append(face_indices[idx:idx + 3])
+                triangles.append(face_indices[idx : idx + 3])
             elif fc == 4:
                 triangles.append(face_indices[[idx, idx + 1, idx + 2]])
                 triangles.append(face_indices[[idx, idx + 2, idx + 3]])
@@ -96,12 +95,14 @@ def _load_usda_meshes(usda_path: str | Path):
 
         triangles = np.array(triangles, dtype=np.int32)
 
-        meshes.append({
-            "name": f"{parent_name}/{prim.GetName()}",
-            "flag": flag,
-            "vertices": points,
-            "triangles": triangles,
-        })
+        meshes.append(
+            {
+                "name": f"{parent_name}/{prim.GetName()}",
+                "flag": flag,
+                "vertices": points,
+                "triangles": triangles,
+            }
+        )
         print(f"  Mesh: {parent_name}/{prim.GetName()} -> {flag} ({len(points)} verts, {len(triangles)} tris)")
 
     return meshes
@@ -187,7 +188,8 @@ def build_swing_chair_scene(
             launch_z = rng.uniform(0.4, 1.2)
 
             body_idx = add_dtc_prop_as_rigid_body(
-                builder, prop,
+                builder,
+                prop,
                 position=(launch_x, launch_y, launch_z),
                 static=False,
             )
@@ -201,12 +203,14 @@ def build_swing_chair_scene(
             direction += np.array([rng.uniform(-0.1, 0.1), rng.uniform(-0.1, 0.1), rng.uniform(-0.05, 0.05)])
             vel = direction * throw_speed
 
-            projectile_info.append({
-                "name": prop["name"],
-                "body_idx": body_idx,
-                "position": (launch_x, launch_y, launch_z),
-                "velocity": vel.tolist(),
-            })
+            projectile_info.append(
+                {
+                    "name": prop["name"],
+                    "body_idx": body_idx,
+                    "position": (launch_x, launch_y, launch_z),
+                    "velocity": vel.tolist(),
+                }
+            )
             print(f"  Projectile {i}: {prop['name']} from ({launch_x:.2f}, {launch_y:.2f}, {launch_z:.2f})")
 
     # Color for VBD solver (needed for cloth)
@@ -295,20 +299,18 @@ def run_swing_chair_sim(
 def main():
     parser = argparse.ArgumentParser(description="Newton Swinging Chair Simulation")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--chair-usda", type=str, default=None,
-                        help="Path to chair USDA (default: scenes_dir/HangingChair_01.usda)")
-    parser.add_argument("--num-projectiles", type=int, default=3,
-                        help="Number of DTC props to throw at chair")
-    parser.add_argument("--throw-speed", type=float, default=3.0,
-                        help="Projectile launch speed [m/s]")
+    parser.add_argument(
+        "--chair-usda", type=str, default=None, help="Path to chair USDA (default: scenes_dir/HangingChair_01.usda)"
+    )
+    parser.add_argument("--num-projectiles", type=int, default=3, help="Number of DTC props to throw at chair")
+    parser.add_argument("--throw-speed", type=float, default=3.0, help="Projectile launch speed [m/s]")
     parser.add_argument("--num-frames", type=int, default=300)
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--solver-iters", type=int, default=10)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames")
     args = parser.parse_args()
 
     if args.test:
@@ -344,7 +346,9 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_swing_chair_sim(
-            model, solver, initial_state,
+            model,
+            solver,
+            initial_state,
             num_frames=args.num_frames,
             substeps=args.substeps,
             viewer=viewer,

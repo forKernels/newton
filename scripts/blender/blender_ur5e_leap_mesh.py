@@ -7,10 +7,10 @@ Imports UR5e arm and LEAP dexterous hand (left) meshes at zero-config.
 NO armature — run blender_ur5e_leap_armature.py separately.
 """
 
-import json
 import math
 import os
 import sys
+
 
 def _get_script_dir():
     """Resolve the directory containing this script, even inside Blender's text editor."""
@@ -19,6 +19,7 @@ def _get_script_dir():
         return os.path.dirname(os.path.abspath(__file__))
     # Blender text editor fallbacks:
     import bpy
+
     # 2. Text block has a filepath (was opened from disk via Text > Open)
     text = bpy.context.space_data and getattr(bpy.context.space_data, "text", None)
     if text and text.filepath:
@@ -33,14 +34,13 @@ def _get_script_dir():
     # 5. Hardcoded fallback
     return r"C:\_git\newton_zhao\scripts\blender"
 
+
 SCRIPT_DIR = _get_script_dir()
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-import bpy
-from mathutils import Matrix, Quaternion, Vector
-
 import robot_blender_utils as utils
+from mathutils import Matrix, Quaternion, Vector
 
 DATASET_ROOT = r"D:\_blender\_myBlender\SimulationWork\ClothDataset\_Maria_Set"
 GARMENT_OBJ = "dress_sleeveless_2550/dress_sleeveless_000YCTJ9HS/dress_sleeveless_000YCTJ9HS_sim.obj"
@@ -52,7 +52,9 @@ LEAP_ASSET_DIR = _ASSET_PATHS.get("leap_hand", "")
 if not UR5E_ASSET_DIR:
     UR5E_ASSET_DIR = r"C:\Users\DiscoKid\AppData\Local\newton-physics\newton\Cache\mujoco_menagerie_universal_robots_ur5e_XXXXXXXX\universal_robots_ur5e"
 if not LEAP_ASSET_DIR:
-    LEAP_ASSET_DIR = r"C:\Users\DiscoKid\AppData\Local\newton-physics\newton\Cache\mujoco_menagerie_leap_hand_XXXXXXXX\leap_hand"
+    LEAP_ASSET_DIR = (
+        r"C:\Users\DiscoKid\AppData\Local\newton-physics\newton\Cache\mujoco_menagerie_leap_hand_XXXXXXXX\leap_hand"
+    )
 UR5E_MJCF = os.path.join(UR5E_ASSET_DIR, "ur5e.xml")
 LEAP_MJCF = os.path.join(LEAP_ASSET_DIR, "left_hand.xml")
 
@@ -102,8 +104,12 @@ def setup_meshes():
     arm_bodies, arm_mesh_assets = utils.parse_mjcf(UR5E_MJCF)
     arm_transforms = utils.compute_mjcf_fk(arm_bodies)
     arm_root, arm_imported = utils.import_mjcf_robot_meshes(
-        arm_bodies, arm_mesh_assets, arm_transforms, base_matrix,
-        root_name="UR5e_Root", material_color=(0.15, 0.15, 0.18, 1.0),
+        arm_bodies,
+        arm_mesh_assets,
+        arm_transforms,
+        base_matrix,
+        root_name="UR5e_Root",
+        material_color=(0.15, 0.15, 0.18, 1.0),
     )
     utils.create_mjcf_joint_empties(arm_bodies, arm_transforms, base_matrix, arm_root)
 
@@ -115,8 +121,12 @@ def setup_meshes():
     )
     hand_world_transforms = utils.compute_hand_fk_in_world(hand_bodies, hand_base_world)
     hand_root, hand_imported = utils.import_mjcf_robot_meshes(
-        hand_bodies, hand_mesh_assets, hand_world_transforms, Matrix.Identity(4),
-        root_name="LEAP_Root", material_color=(0.85, 0.75, 0.65, 1.0),
+        hand_bodies,
+        hand_mesh_assets,
+        hand_world_transforms,
+        Matrix.Identity(4),
+        root_name="LEAP_Root",
+        material_color=(0.85, 0.75, 0.65, 1.0),
     )
     hand_root.parent = arm_root
     hand_root.matrix_parent_inverse = arm_root.matrix_world.inverted()

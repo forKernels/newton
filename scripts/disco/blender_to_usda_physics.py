@@ -25,9 +25,10 @@ from pathlib import Path
 
 # Blender imports
 try:
-    import bpy
     import bmesh
+    import bpy
     from mathutils import Vector
+
     HAS_BLENDER = True
 except ImportError:
     HAS_BLENDER = False
@@ -92,9 +93,10 @@ def guess_physics_from_name(name: str) -> dict:
 # Blender Geometry Analysis
 # =============================================================================
 
+
 def get_mesh_volume(obj) -> float:
     """Calculate mesh volume in cubic meters."""
-    if not HAS_BLENDER or obj.type != 'MESH':
+    if not HAS_BLENDER or obj.type != "MESH":
         return 0.001  # default 1 liter
 
     # Apply transforms to get world-space volume
@@ -109,7 +111,7 @@ def get_mesh_volume(obj) -> float:
 
 def get_bounding_box(obj) -> tuple:
     """Get world-space bounding box dimensions and center."""
-    if not HAS_BLENDER or obj.type != 'MESH':
+    if not HAS_BLENDER or obj.type != "MESH":
         return ([0.1, 0.1, 0.1], [0, 0, 0])
 
     # Get world-space bounding box corners
@@ -186,9 +188,9 @@ def estimate_physics(obj, default_density: float = 1000) -> dict:
         collision = {"type": "sphere", "radius": radius, "center": center}
     elif collision_type == "capsule":
         # Use box for now (USD Physics doesn't have capsule as primitive)
-        collision = {"type": "box", "half_extents": [d/2 for d in dims], "center": center}
+        collision = {"type": "box", "half_extents": [d / 2 for d in dims], "center": center}
     else:
-        collision = {"type": "box", "half_extents": [d/2 for d in dims], "center": center}
+        collision = {"type": "box", "half_extents": [d / 2 for d in dims], "center": center}
 
     return {
         "mass_kg": round(mass, 4),
@@ -205,11 +207,12 @@ def estimate_physics(obj, default_density: float = 1000) -> dict:
 # Blender Scene Operations
 # =============================================================================
 
+
 def clear_scene():
     """Remove all objects from the scene."""
     if not HAS_BLENDER:
         return
-    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
     for block in bpy.data.meshes:
         if block.users == 0:
@@ -228,7 +231,7 @@ def load_blend_file(filepath: Path):
     bpy.ops.wm.open_mainfile(filepath=str(filepath))
 
     # Return all mesh objects
-    return [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
+    return [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
 
 
 def export_usda_with_physics(
@@ -251,7 +254,7 @@ def export_usda_with_physics(
         export_normals=True,
         export_materials=True,
         use_instancing=True,
-        evaluation_mode='RENDER',
+        evaluation_mode="RENDER",
     )
 
     # Now read the USDA and inject physics data
@@ -260,7 +263,7 @@ def export_usda_with_physics(
 
 def inject_physics_into_usda(usda_path: Path, objects_physics: list):
     """Inject UsdPhysics schema into existing USDA file."""
-    with open(usda_path, 'r') as f:
+    with open(usda_path) as f:
         content = f.read()
 
     # Build physics material definitions
@@ -272,47 +275,43 @@ def Material "{safe_name}_PhysMat" (
     prepend apiSchemas = ["PhysicsMaterialAPI"]
 )
 {{
-    float physics:staticFriction = {physics['friction_static']}
-    float physics:dynamicFriction = {physics['friction_dynamic']}
-    float physics:restitution = {physics['restitution']}
+    float physics:staticFriction = {physics["friction_static"]}
+    float physics:dynamicFriction = {physics["friction_dynamic"]}
+    float physics:restitution = {physics["restitution"]}
 }}'''
         physics_materials.append(mat_def)
 
     # Add PhysicsMaterials scope before final closing
-    materials_scope = f'''
+    materials_scope = f"""
 def Scope "PhysicsMaterials"
 {{
     {"".join(physics_materials)}
 }}
-'''
+"""
 
     # Find where to inject (before the last closing brace if it's a proper USD)
     # For simplicity, append to end
     content = content.rstrip()
-    if content.endswith('}'):
-        content = content[:-1] + materials_scope + '\n}'
+    if content.endswith("}"):
+        content = content[:-1] + materials_scope + "\n}"
     else:
-        content += '\n' + materials_scope
+        content += "\n" + materials_scope
 
     # Write back
-    with open(usda_path, 'w') as f:
+    with open(usda_path, "w") as f:
         f.write(content)
 
     # Also write a companion JSON with physics data for Newton
-    json_path = usda_path.with_suffix('.physics.json')
-    physics_data = {
-        "objects": [
-            {"name": name, "physics": physics}
-            for name, physics in objects_physics
-        ]
-    }
-    with open(json_path, 'w') as f:
+    json_path = usda_path.with_suffix(".physics.json")
+    physics_data = {"objects": [{"name": name, "physics": physics} for name, physics in objects_physics]}
+    with open(json_path, "w") as f:
         json.dump(physics_data, f, indent=2)
 
 
 # =============================================================================
 # Main Processing
 # =============================================================================
+
 
 def process_blend_file(
     input_path: Path,
@@ -338,9 +337,11 @@ def process_blend_file(
     for obj in mesh_objects:
         physics = estimate_physics(obj, default_density)
         objects_physics.append((obj.name, physics))
-        print(f"  {obj.name}: mass={physics['mass_kg']:.3f}kg, "
-              f"material={physics.get('estimated_material', 'default')}, "
-              f"collision={physics['collision_primitive']['type']}")
+        print(
+            f"  {obj.name}: mass={physics['mass_kg']:.3f}kg, "
+            f"material={physics.get('estimated_material', 'default')}, "
+            f"collision={physics['collision_primitive']['type']}"
+        )
 
     # Export to USDA with physics
     asset_name = input_path.stem.replace("-", "_").replace(" ", "_")
@@ -384,7 +385,7 @@ def process_batch(
         try:
             # Create output path preserving relative structure
             rel_path = blend_file.relative_to(input_dir)
-            out_path = output_dir / rel_path.with_suffix('.usda')
+            out_path = output_dir / rel_path.with_suffix(".usda")
 
             process_blend_file(blend_file, out_path, default_density)
             success += 1
@@ -403,7 +404,7 @@ def process_batch(
 def main():
     argv = sys.argv
     if "--" in argv:
-        argv = argv[argv.index("--") + 1:]
+        argv = argv[argv.index("--") + 1 :]
     else:
         argv = []
 
@@ -413,13 +414,14 @@ def main():
     parser.add_argument("--input-dir", type=str, help="Directory of .blend files")
     parser.add_argument("--output-dir", type=str, help="Output directory for batch")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be processed")
-    parser.add_argument("--density", type=float, default=1000,
-                        help="Default density kg/m³ if material unknown (default: 1000)")
+    parser.add_argument(
+        "--density", type=float, default=1000, help="Default density kg/m³ if material unknown (default: 1000)"
+    )
     args = parser.parse_args(argv)
 
     if args.input:
         if not args.output:
-            args.output = str(Path(args.input).with_suffix('.usda'))
+            args.output = str(Path(args.input).with_suffix(".usda"))
         process_blend_file(
             input_path=Path(args.input),
             output_path=Path(args.output),

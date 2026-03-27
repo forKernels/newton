@@ -14,14 +14,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import random
 from pathlib import Path
 
 import numpy as np
 import warp as wp
-
-import newton
-
 from newton_sim_utils import (
     TEST_FRAMES,
     add_ground_plane,
@@ -31,12 +27,14 @@ from newton_sim_utils import (
     write_sim_metadata,
 )
 
+import newton
+
 # Standard poker card dimensions
-CARD_WIDTH = 0.0635   # 6.35 cm
+CARD_WIDTH = 0.0635  # 6.35 cm
 CARD_HEIGHT = 0.0889  # 8.89 cm
-CARD_MASS = 1.8e-3    # 1.8 grams
-CARD_DIM_X = 4        # cells along width
-CARD_DIM_Y = 6        # cells along height
+CARD_MASS = 1.8e-3  # 1.8 grams
+CARD_DIM_X = 4  # cells along width
+CARD_DIM_Y = 6  # cells along height
 
 
 def build_cards_scene(
@@ -64,7 +62,11 @@ def build_cards_scene(
     cube_cfg.kd = 1.0e-4
     cube_cfg.mu = 0.1
     builder.add_shape_box(
-        body_cube, hx=platform_size, hy=platform_size, hz=platform_size, cfg=cube_cfg,
+        body_cube,
+        hx=platform_size,
+        hy=platform_size,
+        hz=platform_size,
+        cfg=cube_cfg,
     )
 
     # Kinematic sphere for knocking cards
@@ -120,7 +122,8 @@ def build_cards_scene(
     model.soft_contact_mu = 0.3
 
     solver = newton.solvers.SolverVBD(
-        model, iterations=solver_iters,
+        model,
+        iterations=solver_iters,
         particle_enable_self_contact=True,
         particle_self_contact_radius=0.001,
         particle_self_contact_margin=0.0015,
@@ -130,7 +133,9 @@ def build_cards_scene(
 
     # Custom collision pipeline for cards
     collision_pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.005,
+        model,
+        broad_phase="nxn",
+        soft_contact_margin=0.005,
     )
 
     scene_info = {
@@ -202,19 +207,16 @@ def main():
     parser = argparse.ArgumentParser(description="Newton Card Stacking Simulation")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-cards", type=int, default=52)
-    parser.add_argument("--knock", action="store_true",
-                        help="Add kinematic sphere to knock cards off")
+    parser.add_argument("--knock", action="store_true", help="Add kinematic sphere to knock cards off")
     parser.add_argument("--platform-size", type=float, default=0.1)
     parser.add_argument("--num-frames", type=int, default=250)
     parser.add_argument("--substeps", type=int, default=20)
     parser.add_argument("--solver-iters", type=int, default=10)
-    parser.add_argument("--viewer", type=str, default="null",
-                        choices=["null", "usd", "gl"])
+    parser.add_argument("--viewer", type=str, default="null", choices=["null", "usd", "gl"])
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--test", action="store_true",
-                        help="Test run: few frames, GL viewer")
+    parser.add_argument("--test", action="store_true", help="Test run: few frames, GL viewer")
     args = parser.parse_args()
 
     if args.test:
@@ -250,7 +252,10 @@ def main():
         viewer = create_viewer(output_path=usd_path, viewer_type="usd")
 
         final_state = run_cards_sim(
-            model, solver, collision_pipeline, sphere_body_idx,
+            model,
+            solver,
+            collision_pipeline,
+            sphere_body_idx,
             knock=args.knock,
             num_frames=args.num_frames,
             substeps=args.substeps,
