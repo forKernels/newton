@@ -393,8 +393,17 @@ def load_mesh_from_file(filepath: str | Path) -> tuple[np.ndarray, np.ndarray]:
 def load_garment_mesh(
     garment: dict,
     scale: float = 1.0,
+    stitch: bool = True,
+    stitch_threshold: float = 0.0005,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load garment OBJ mesh, applying scale if raw (not clean)."""
+    """Load garment OBJ mesh, applying scale if raw (not clean).
+
+    Args:
+        garment: Dict from discover_garments() with 'path' and 'is_clean' keys.
+        scale: Additional scale factor.
+        stitch: If True, merge near-duplicate vertices to stitch disconnected panels.
+        stitch_threshold: Distance threshold [meters] for vertex merging.
+    """
     verts, indices = load_mesh_from_file(garment["path"])
 
     if not garment["is_clean"]:
@@ -414,7 +423,89 @@ def load_garment_mesh(
     if scale != 1.0:
         verts *= scale
 
+    # Stitch disconnected panels by merging near-duplicate vertices at seams
+    if stitch:
+        verts, indices = _stitch_mesh(verts, indices, stitch_threshold)
+
     return verts, indices
+
+
+def _stitch_mesh(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    merge_threshold: float = 0.0005,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Merge near-duplicate vertices to stitch disconnected garment panels.
+
+    Maria garment _sim.obj meshes are exported with separate panels (front, back,
+    sleeves) that share boundary vertices at the seams but aren't topologically
+    connected. This merges vertices within a threshold distance to create a single
+    connected mesh suitable for cloth simulation.
+    """
+    from scipy.spatial import cKDTree
+
+    n_verts = len(verts)
+    tree = cKDTree(verts)
+    pairs = tree.query_pairs(merge_threshold)
+
+    if not pairs:
+        return verts, faces
+
+    # Union-find for merging
+    parent = list(range(n_verts))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            if ra < rb:
+                parent[rb] = ra
+            else:
+                parent[ra] = rb
+
+    for i, j in pairs:
+        union(i, j)
+
+    # Build old→new vertex mapping
+    roots = {}
+    new_idx = 0
+    old_to_new = np.zeros(n_verts, dtype=np.int32)
+    for v in range(n_verts):
+        root = find(v)
+        if root not in roots:
+            roots[root] = new_idx
+            new_idx += 1
+        old_to_new[v] = roots[root]
+
+    n_merged = n_verts - new_idx
+    if n_merged > 0:
+        print(f"  stitch: Merged {n_merged} vertices ({n_verts} → {new_idx})")
+
+    # Average positions of merged vertices
+    new_verts = np.zeros((new_idx, 3), dtype=np.float32)
+    counts = np.zeros(new_idx, dtype=np.int32)
+    for v in range(n_verts):
+        nv = old_to_new[v]
+        new_verts[nv] += verts[v]
+        counts[nv] += 1
+    new_verts /= counts[:, np.newaxis]
+
+    # Remap face indices and remove degenerate triangles
+    new_faces = old_to_new[faces]
+    valid = (new_faces[:, 0] != new_faces[:, 1]) & \
+            (new_faces[:, 1] != new_faces[:, 2]) & \
+            (new_faces[:, 0] != new_faces[:, 2])
+    n_degenerate = np.sum(~valid)
+    if n_degenerate > 0:
+        print(f"  stitch: Removed {n_degenerate} degenerate triangles")
+        new_faces = new_faces[valid]
+
+    return new_verts, new_faces
 
 
 # =============================================================================
@@ -771,7 +862,7 @@ except ImportError:
         "silk": {
             "density": 0.08,
             "tri_ke": 5e1,
-            "tri_ka": 5e1,
+            "tri_ka": 1e0,
             "tri_kd": 1e-6,
             "edge_ke": 5e-5,
             "edge_kd": 5e-4,
@@ -780,7 +871,7 @@ except ImportError:
         "cotton": {
             "density": 0.15,
             "tri_ke": 1e2,
-            "tri_ka": 1e2,
+            "tri_ka": 2e0,
             "tri_kd": 1.5e-6,
             "edge_ke": 1e-4,
             "edge_kd": 1e-3,
@@ -789,7 +880,7 @@ except ImportError:
         "denim": {
             "density": 0.35,
             "tri_ke": 2e2,
-            "tri_ka": 2e2,
+            "tri_ka": 5e0,
             "tri_kd": 3e-6,
             "edge_ke": 5e-4,
             "edge_kd": 3e-3,
@@ -826,11 +917,13 @@ def finalize_cloth_model(
     soft_contact_ke: float = 100.0,
     soft_contact_kd: float = 2e-3,
     soft_contact_mu: float = 0.8,
+    solver_type: str = "vbd",
 ) -> newton.Model:
     """Finalize a cloth model with proven contact parameters.
 
     Applies the critical edge_rest_angle.zero_() workaround required
     for VBD solver stability (from Newton's cloth_dataset_pickup example).
+    This is ONLY applied for VBD — XPBD handles bending differently.
     """
     model = builder.finalize()
     model.soft_contact_ke = soft_contact_ke
@@ -839,8 +932,9 @@ def finalize_cloth_model(
 
     # CRITICAL: Zero out edge rest angles — workaround for VBD bending instability.
     # Without this, bending elements fight each other and collapse the mesh into a ball.
-    # See newton/examples/cloth/example_cloth_dataset_pickup.py line ~862.
-    model.edge_rest_angle.zero_()
+    # Only for VBD — XPBD handles bending via constraint projection, not energy minimization.
+    if solver_type == "vbd":
+        model.edge_rest_angle.zero_()
 
     return model
 
@@ -870,10 +964,18 @@ def build_solver(
             particle_vertex_contact_buffer_size=32,
             particle_edge_contact_buffer_size=64,
             particle_collision_detection_interval=-1,
+            particle_topological_contact_filter_threshold=5,
+            particle_rest_shape_contact_exclusion_radius=0.01,
             rigid_contact_k_start=model.soft_contact_ke,
         )
     elif solver_type == "xpbd":
-        return newton.solvers.SolverXPBD(model, iterations=iterations)
+        return newton.solvers.SolverXPBD(
+            model,
+            iterations=iterations,
+            enable_self_collision=self_contact,
+            self_collision_radius=0.002,
+            self_collision_margin=0.003,
+        )
     elif solver_type == "style3d":
         return newton.solvers.SolverStyle3D(model, iterations=iterations)
     elif solver_type == "mujoco":
@@ -1046,3 +1148,62 @@ def write_sim_metadata(
 # =============================================================================
 
 TEST_FRAMES = 10  # quick smoke-test: just enough to verify the full pipeline
+
+
+# =============================================================================
+# Spring Force Assist
+# =============================================================================
+
+
+def create_spring_assist(
+    model,
+    ks: float = 500.0,
+    kb: float = 25.0,
+    kd_stretch: float = 5.0,
+    kd_bend: float = 1.0,
+    boost_factor: float = 1.0,
+    stuck_threshold: float = 1e-5,
+    stuck_only: bool = False,
+    verbose: bool = True,
+):
+    """Create a SpringForceAssist from a finalized Newton model.
+
+    Builds a mass-spring network (stretching + bending) from the model's
+    triangle topology and returns an object whose ``apply(state)`` method
+    injects spring forces into ``state.particle_f``.
+
+    Call ``apply()`` between ``state.clear_forces()`` and ``solver.step()``
+    in the simulation loop.
+
+    Args:
+        model: Finalized Newton model (must have particle_q, tri_indices).
+        ks: Stretching spring stiffness (1-ring edges).
+        kb: Bending spring stiffness (2-ring neighbors).
+        kd_stretch: Damping for stretching springs.
+        kd_bend: Damping for bending springs.
+        boost_factor: Multiplier on all spring forces.
+        stuck_threshold: Displacement [m] below which a particle is "stuck".
+        stuck_only: If True, only inject forces for stuck particles.
+        verbose: Print spring network statistics.
+
+    Returns:
+        SpringForceAssist instance (or None if no particles).
+    """
+    from spring_force_assist import SpringForceAssist
+
+    if model.particle_count == 0:
+        if verbose:
+            print("  create_spring_assist: No particles, skipping.")
+        return None
+
+    return SpringForceAssist(
+        model,
+        ks=ks,
+        kb=kb,
+        kd_stretch=kd_stretch,
+        kd_bend=kd_bend,
+        boost_factor=boost_factor,
+        stuck_threshold=stuck_threshold,
+        stuck_only=stuck_only,
+        verbose=verbose,
+    )

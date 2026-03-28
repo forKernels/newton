@@ -296,6 +296,9 @@ class SolverVBD(SolverBase):
             particle_rest_shape_contact_exclusion_radius,
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
+            particle_enable_ccd,
+            particle_ccd_safety_factor,
+            particle_enable_tri_tri_contact,
         )
 
         # Initialize rigid body system and rigid-particle (body-particle) interaction state
@@ -343,6 +346,9 @@ class SolverVBD(SolverBase):
         particle_rest_shape_contact_exclusion_radius: float,
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
+        particle_enable_ccd: bool = False,
+        particle_ccd_safety_factor: float = 0.9,
+        particle_enable_tri_tri_contact: bool = False,
     ):
         """Initialize particle-specific data structures and settings."""
         # Early exit if no particles

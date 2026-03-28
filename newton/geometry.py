@@ -48,6 +48,17 @@ from ._src.geometry.sdf_utils import create_empty_sdf_data
 from ._src.geometry.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
 from ._src.geometry.utils import remesh_mesh
 
+
+def __getattr__(name):
+    """Lazy imports to avoid circular dependencies."""
+    if name in ("TriMeshCollisionDetector", "TriMeshCollisionInfo"):
+        from ._src.geometry.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
+
+        globals()["TriMeshCollisionDetector"] = TriMeshCollisionDetector
+        globals()["TriMeshCollisionInfo"] = TriMeshCollisionInfo
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",

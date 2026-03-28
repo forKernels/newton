@@ -27,10 +27,116 @@ import os
 from mathutils import Vector, Euler, Quaternion
 
 # ---------------------------------------------------------------------------
+# STANDARD NAMING CONVENTION
+# ---------------------------------------------------------------------------
+# All rigs must follow this naming convention for their control bones.
+# When building a control rig, name the controllers using these prefixes:
+#
+#   CTRL_{canonical_name}
+#
+# Example: CTRL_hand_r, CTRL_hand_l, CTRL_foot_r, CTRL_spine, CTRL_head
+#
+# The pipeline will look for controllers first (CTRL_ prefix), then fall
+# back to deform/FK bones if no controller is found.
+#
+# Required canonical names for humanoid rigs:
+#   hand_r, hand_l           — hand IK targets
+#   foot_r, foot_l           — foot IK targets
+#   elbow_r, elbow_l         — elbow pole targets (optional)
+#   knee_r, knee_l           — knee pole targets (optional)
+#   upper_arm_r, upper_arm_l — FK upper arm
+#   forearm_r, forearm_l     — FK forearm
+#   wrist_r, wrist_l         — FK wrist
+#   spine, head              — torso
+#   grip_master_r, grip_master_l — master grip controller (optional)
+#   fingers_r, fingers_l     — list of first-knuckle bones
+
+STANDARD_CTRL_PREFIX = "CTRL_"
+
+
+def resolve_bone_name(armature_obj, canonical_name, bone_map):
+    """Resolve a canonical bone name to an actual bone in the armature.
+
+    Lookup order:
+        1. CTRL_{canonical_name}  (standard controller)
+        2. bone_map[canonical_name]  (rig-specific mapping)
+        3. canonical_name  (direct match)
+
+    Returns the actual bone name string, or None if not found.
+    """
+    bone_names = {b.name for b in armature_obj.data.bones}
+
+    ctrl_name = f"{STANDARD_CTRL_PREFIX}{canonical_name}"
+    if ctrl_name in bone_names:
+        return ctrl_name
+
+    mapped = bone_map.get(canonical_name)
+    if isinstance(mapped, str) and mapped in bone_names:
+        return mapped
+
+    if canonical_name in bone_names:
+        return canonical_name
+
+    return None
+
+
+def resolve_bone_list(armature_obj, canonical_name, bone_map):
+    """Resolve a canonical name that maps to a list of bones.
+
+    Lookup order per entry:
+        1. CTRL_{entry}
+        2. entry as-is
+
+    Returns list of actual bone name strings found in the armature.
+    """
+    bone_names = {b.name for b in armature_obj.data.bones}
+    mapped = bone_map.get(canonical_name, [])
+    if not isinstance(mapped, list):
+        return []
+
+    result = []
+    for entry in mapped:
+        ctrl_name = f"{STANDARD_CTRL_PREFIX}{entry}"
+        if ctrl_name in bone_names:
+            result.append(ctrl_name)
+        elif entry in bone_names:
+            result.append(entry)
+    return result
+
+
+def validate_rig_naming(armature_obj, bone_map):
+    """Check a rig against the standard naming convention.
+
+    Returns a dict with 'valid', 'controllers_found', 'fallbacks_used',
+    and 'missing' lists for debugging.
+    """
+    required = ["hand_r", "hand_l", "foot_r", "foot_l", "spine", "head"]
+    optional = ["elbow_r", "elbow_l", "knee_r", "knee_l",
+                "wrist_r", "wrist_l", "grip_master_r", "grip_master_l"]
+
+    report = {"controllers_found": [], "fallbacks_used": [], "missing": []}
+
+    bone_names = {b.name for b in armature_obj.data.bones}
+
+    for canon in required + optional:
+        ctrl_name = f"{STANDARD_CTRL_PREFIX}{canon}"
+        if ctrl_name in bone_names:
+            report["controllers_found"].append(canon)
+        elif resolve_bone_name(armature_obj, canon, bone_map):
+            report["fallbacks_used"].append(canon)
+        elif canon in required:
+            report["missing"].append(canon)
+
+    report["valid"] = len(report["missing"]) == 0
+    return report
+
+
+# ---------------------------------------------------------------------------
 # BONE MAPS
 # ---------------------------------------------------------------------------
 # Map canonical names -> actual bone names per rig.
-# Only IK-enabled rigs belong here. FK-only rigs won't work with set_loc().
+# The pipeline checks for CTRL_ prefixed controllers first, then falls back
+# to these mappings.
 
 BONE_MAPS = {
     # Rig_HumanMan.blend — armature object "George.rig" (186 bones)
@@ -228,7 +334,13 @@ def import_accurig_fbx(fbx_path: str, rig_name: str = None):
 # ---------------------------------------------------------------------------
 
 class RigController:
-    """Wraps a rig object with its bone map for interaction scripts."""
+    """Wraps a rig object with its bone map for interaction scripts.
+
+    Bone resolution order:
+        1. CTRL_{canonical_name} — standard control rig controller
+        2. bone_map[canonical_name] — rig-specific fallback
+        3. canonical_name — direct match
+    """
 
     def __init__(self, rig_name: str):
         self.rig = bpy.data.objects[rig_name]
@@ -246,22 +358,50 @@ class RigController:
             setup_accurig_ik(self.rig, self.map)
             self.map["needs_ik_setup"] = False
 
+        # Validate naming and log results
+        report = validate_rig_naming(self.rig, self.map)
+        if report["controllers_found"]:
+            print(f"[interaction_gen] CTRL_ controllers found: {report['controllers_found']}")
+        if report["fallbacks_used"]:
+            print(f"[interaction_gen] Fallback bones used: {report['fallbacks_used']}")
+        if report["missing"]:
+            print(f"[interaction_gen] WARNING: missing required bones: {report['missing']}")
+
+    def _resolve(self, canonical_name: str) -> str:
+        """Resolve canonical name to actual bone name via standard lookup order."""
+        actual = resolve_bone_name(self.rig, canonical_name, self.map)
+        if actual is None:
+            raise KeyError(
+                f"Bone '{canonical_name}' not found in rig '{self.rig.name}'. "
+                f"Expected CTRL_{canonical_name} or a bone_map entry."
+            )
+        return actual
+
+    def _resolve_list(self, canonical_name: str) -> list:
+        """Resolve canonical name to a list of actual bone names."""
+        return resolve_bone_list(self.rig, canonical_name, self.map)
+
     def bone(self, canonical_name: str):
         """Get pose bone by canonical name."""
-        actual = self.map.get(canonical_name)
-        if actual is None:
-            raise KeyError(f"Canonical bone '{canonical_name}' not in map for {self.rig.name}")
-        if isinstance(actual, list):
-            return [self.rig.pose.bones[b] for b in actual]
+        mapped = self.map.get(canonical_name)
+        if isinstance(mapped, list):
+            names = self._resolve_list(canonical_name)
+            return [self.rig.pose.bones[n] for n in names]
+        actual = self._resolve(canonical_name)
         return self.rig.pose.bones[actual]
 
+    def bone_name(self, canonical_name: str) -> str:
+        """Get the resolved actual bone name string (not the pose bone object)."""
+        return self._resolve(canonical_name)
+
     def set_loc(self, canonical_name: str, loc: tuple, frame: int):
-        """Set bone location in WORLD space. Auto-converts to bone-local offset."""
+        """Set bone location in WORLD space. Auto-converts to bone-local offset.
+
+        Handles both identity and non-identity armature transforms.
+        """
         b = self.bone(canonical_name)
         world_pos = Vector(loc)
-        # Convert world position -> armature local space
         arm_local = self.rig.matrix_world.inverted() @ world_pos
-        # Subtract bone rest position to get the offset
         b.location = arm_local - b.bone.head_local
         b.keyframe_insert("location", frame=frame)
 
@@ -277,8 +417,10 @@ class RigController:
         return self.rig_type == "humanoid"
 
     def has_bone(self, canonical_name: str):
-        """Check if a canonical bone exists in this rig's map."""
-        return canonical_name in self.map and self.map[canonical_name] is not None
+        """Check if a canonical bone exists (controller or fallback)."""
+        if isinstance(self.map.get(canonical_name), list):
+            return len(self._resolve_list(canonical_name)) > 0
+        return resolve_bone_name(self.rig, canonical_name, self.map) is not None
 
     def close_grip(self, hand: str, amount: float, frame: int):
         """Close grip via master grip bone or per-finger FK rotation.
@@ -290,15 +432,13 @@ class RigController:
         """
         grip_key = f"grip_master_{hand}"
         if self.has_bone(grip_key):
-            # George.rig: master grip drives all fingers via COPY_ROTATION
-            grip_rot = (amount * 1.2, 0, 0)  # ~70 degrees at full close
+            grip_rot = (amount * 1.2, 0, 0)
             self.set_rot(grip_key, grip_rot, frame)
         else:
-            # AccuRig: no master grip — rotate each finger's first knuckle
             finger_key = f"fingers_{hand}"
             if self.has_bone(finger_key):
                 fingers = self.bone(finger_key)
-                curl = amount * 1.2  # ~70 degrees at full close
+                curl = amount * 1.2
                 for fb in fingers:
                     fb.rotation_euler = Euler((curl, 0, 0))
                     fb.keyframe_insert("rotation_euler", frame=frame)
@@ -443,7 +583,17 @@ def grasp_lift(rc: RigController, seed: int, objects: list, **kwargs):
     hand = kwargs.get("hand", "r")
     hand_key = f"hand_{hand}"
     wrist_key = f"wrist_{hand}"
-    wrist_bone = rc.map.get(wrist_key, rc.map.get(hand_key))
+
+    # Resolve the bone name for the child-of constraint (wrist preferred, hand fallback)
+    if rc.has_bone(wrist_key):
+        constraint_bone = rc.bone_name(wrist_key)
+    elif rc.has_bone(hand_key):
+        constraint_bone = rc.bone_name(hand_key)
+    else:
+        raise KeyError(
+            f"Neither '{wrist_key}' nor '{hand_key}' found in rig '{rc.rig.name}'. "
+            f"Cannot create grasp constraint."
+        )
 
     # Approach from above
     pre_grasp = obj_loc + Vector((0, -0.1, 0.15))
@@ -459,7 +609,7 @@ def grasp_lift(rc: RigController, seed: int, objects: list, **kwargs):
     # Constraint-based grasp: object becomes kinematic child of wrist
     set_rigid_body_kinematic(target_obj, False, 1)
     set_rigid_body_kinematic(target_obj, True, grasp_frame)
-    add_child_of_constraint(target_obj, rc.rig, wrist_bone, grasp_frame)
+    add_child_of_constraint(target_obj, rc.rig, constraint_bone, grasp_frame)
 
     # Lift
     lift_loc = obj_loc + Vector((0, -0.1, random.uniform(0.2, 0.4)))
@@ -505,13 +655,9 @@ def cloth_pickup(rc: RigController, seed: int, objects: list, **kwargs):
     cloth_mod = cloth_obj.modifiers.get("Cloth")
     if cloth_mod:
         cloth_mod.settings.pin_stiffness = 0
-        cloth_obj.keyframe_insert(
-            'modifiers["Cloth"].settings.pin_stiffness', frame=contact_frame - 1
-        )
+        cloth_mod.settings.keyframe_insert("pin_stiffness", frame=contact_frame - 1)
         cloth_mod.settings.pin_stiffness = 1
-        cloth_obj.keyframe_insert(
-            'modifiers["Cloth"].settings.pin_stiffness', frame=contact_frame
-        )
+        cloth_mod.settings.keyframe_insert("pin_stiffness", frame=contact_frame)
 
     # Lift
     lift_height = random.uniform(0.3, 0.6)
@@ -566,9 +712,12 @@ def cloth_fold(rc: RigController, seed: int, objects: list, **kwargs):
         rc.close_grip("l", 0.0, settle_frame)
         rc.close_grip("r", 0.0, settle_frame)
     else:
-        # Robotic: single-arm fold with two passes
-        rc.set_loc("hand_r", tuple(cloth_loc + Vector((-half_w, 0, 0.01))), grab_frame)
-        rc.set_loc("hand_r", tuple(cloth_loc + Vector((half_w, 0, 0.05))), fold_frame)
+        # Robotic / single-arm fold
+        fold_hand = "hand_r" if rc.has_bone("hand_r") else "hand_l"
+        rc.set_loc(fold_hand, tuple(cloth_loc + Vector((-half_w, 0, 0.15))), 5)
+        rc.set_loc(fold_hand, tuple(cloth_loc + Vector((-half_w, 0, 0.01))), grab_frame)
+        rc.set_loc(fold_hand, tuple(cloth_loc + Vector((half_w, 0, 0.05))), fold_frame)
+        rc.set_loc(fold_hand, tuple(cloth_loc + Vector((half_w, 0, 0.15))), settle_frame)
 
     bpy.context.scene.frame_end = settle_frame + 20
 
@@ -733,8 +882,9 @@ def run_single(rig_name: str, interaction: str, seed: int,
     fn = INTERACTIONS[interaction]
     fn(rc, seed, objects, **kwargs)
 
-    # Bake physics
-    bpy.ops.ptcache.bake_all(bake=True)
+    # Bake physics (only if rigid body world exists)
+    if bpy.context.scene.rigidbody_world:
+        bpy.ops.ptcache.bake_all(bake=True)
 
     # Export annotations
     abs_output = bpy.path.abspath(output_dir)
