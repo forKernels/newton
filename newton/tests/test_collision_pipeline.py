@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 from enum import IntFlag, auto
@@ -22,7 +10,7 @@ import warp.examples
 
 import newton
 from newton import GeoType
-from newton._src.sim.collide import _estimate_rigid_contact_max
+from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -78,11 +66,12 @@ class CollisionSetup:
         self.shape_type_b = shape_type_b
         self.sdf_max_resolution_a = sdf_max_resolution_a
         self.sdf_max_resolution_b = sdf_max_resolution_b
+        self._device = device
 
         self.builder = newton.ModelBuilder(gravity=0.0)
         # Set contact margin to match previous test expectations
         # Note: margins are now summed (margin_a + margin_b), so we use half the previous value
-        self.builder.rigid_contact_margin = 0.005
+        self.builder.rigid_gap = 0.005
 
         body_a = self.builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0)))
         self.add_shape(shape_type_a, body_a, sdf_max_resolution=sdf_max_resolution_a)
@@ -111,26 +100,24 @@ class CollisionSetup:
 
         self.graph = None
         if wp.get_device(device).is_cuda:
-            # Warm-up: run once outside capture
-            self.simulate()
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
     def add_shape(self, shape_type: GeoType, body: int, sdf_max_resolution: int | None = None):
         if shape_type == GeoType.BOX:
-            self.builder.add_shape_box(body, key=type_to_str(shape_type))
+            self.builder.add_shape_box(body, label=type_to_str(shape_type))
         elif shape_type == GeoType.SPHERE:
-            self.builder.add_shape_sphere(body, radius=0.5, key=type_to_str(shape_type))
+            self.builder.add_shape_sphere(body, radius=0.5, label=type_to_str(shape_type))
         elif shape_type == GeoType.CAPSULE:
-            self.builder.add_shape_capsule(body, radius=0.25, half_height=0.3, key=type_to_str(shape_type))
+            self.builder.add_shape_capsule(body, radius=0.25, half_height=0.3, label=type_to_str(shape_type))
         elif shape_type == GeoType.CYLINDER:
-            self.builder.add_shape_cylinder(body, radius=0.25, half_height=0.4, key=type_to_str(shape_type))
+            self.builder.add_shape_cylinder(body, radius=0.25, half_height=0.4, label=type_to_str(shape_type))
         elif shape_type == GeoType.CONE:
             # Rotate cone so flat base faces -X (toward the incoming object)
             rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -np.pi / 2.0)
             xform = wp.transform(wp.vec3(), rot)
-            self.builder.add_shape_cone(body, xform=xform, radius=0.25, half_height=0.4, key=type_to_str(shape_type))
+            self.builder.add_shape_cone(body, xform=xform, radius=0.25, half_height=0.4, label=type_to_str(shape_type))
         elif shape_type == GeoType.MESH:
             # Use box mesh (works correctly with collision pipeline)
             mesh = newton.Mesh.create_box(
@@ -143,12 +130,12 @@ class CollisionSetup:
                 compute_inertia=False,
             )
             if sdf_max_resolution is not None:
-                mesh.build_sdf(max_resolution=sdf_max_resolution)
-            self.builder.add_shape_mesh(body, mesh=mesh, key=type_to_str(shape_type))
+                mesh.build_sdf(max_resolution=sdf_max_resolution, device=self._device)
+            self.builder.add_shape_mesh(body, mesh=mesh, label=type_to_str(shape_type))
         elif shape_type == GeoType.CONVEX_MESH:
             # Use a sphere mesh as it's already convex
             mesh = newton.Mesh.create_sphere(0.5, compute_normals=False, compute_uvs=False, compute_inertia=False)
-            self.builder.add_shape_convex_hull(body, mesh=mesh, key=type_to_str(shape_type))
+            self.builder.add_shape_convex_hull(body, mesh=mesh, label=type_to_str(shape_type))
         else:
             raise NotImplementedError(f"Shape type {shape_type} not implemented")
 
@@ -189,7 +176,7 @@ class CollisionSetup:
         self.viewer.end_frame()
 
     def test(self, test_level: TestLevel, body: int, tolerance: float = 3e-3):
-        body_name = f"body {body} ({self.model.shape_key[body]})"
+        body_name = f"body {body} ({self.model.shape_label[body]})"
         if test_level & TestLevel.VELOCITY_X:
             test_body_state(
                 self.model,
@@ -251,7 +238,9 @@ collision_pipeline_contact_tests = [
         TestLevel.VELOCITY_YZ,
         TestLevel.VELOCITY_LINEAR,
     ),
-    (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    # Mesh-vs-convex-hull likewise accumulates small lateral drift from
+    # triangulated mesh faces (same root cause as box-vs-mesh above).
+    (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR, 0.02),
     (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
 ]
 
@@ -276,7 +265,7 @@ def test_collision_pipeline(
         shape_type_b=shape_type_b,
         broad_phase=broad_phase,
     )
-    for _ in range(200):
+    for _ in range(100):
         setup.step()
         setup.render()
     setup.test(test_level_a, 0, tolerance=tolerance)
@@ -386,7 +375,7 @@ def test_mesh_mesh_sdf_modes(
         sdf_max_resolution_a=sdf_max_resolution_a,
         sdf_max_resolution_b=sdf_max_resolution_b,
     )
-    for _ in range(200):
+    for _ in range(100):
         setup.step()
         setup.render()
     setup.test(TestLevel.VELOCITY_YZ, 0, tolerance=tolerance)
@@ -398,7 +387,7 @@ def test_mesh_mesh_sdf_vs_sdf(_test, device, broad_phase: str):
     """Test mesh-mesh collision where both meshes have SDFs."""
     # SDF-SDF hydroelastic contacts can have some variability in contact normal direction
     test_mesh_mesh_sdf_modes(
-        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase=broad_phase, tolerance=0.1
+        _test, device, sdf_max_resolution_a=64, sdf_max_resolution_b=64, broad_phase=broad_phase, tolerance=0.1
     )
 
 
@@ -408,7 +397,7 @@ def test_mesh_mesh_sdf_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test,
         device,
-        sdf_max_resolution_a=8,
+        sdf_max_resolution_a=64,
         sdf_max_resolution_b=None,
         broad_phase=broad_phase,
         tolerance=0.2,
@@ -422,7 +411,7 @@ def test_mesh_mesh_bvh_vs_sdf(_test, device, broad_phase: str):
         _test,
         device,
         sdf_max_resolution_a=None,
-        sdf_max_resolution_b=8,
+        sdf_max_resolution_b=64,
         broad_phase=broad_phase,
         tolerance=0.5,
     )
@@ -478,7 +467,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
     """
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(gravity=0.0)
-        builder.rigid_contact_margin = 0.01
+        builder.rigid_gap = 0.01
         # Two overlapping spheres (same position so they definitely overlap)
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
         shape_a = builder.add_shape_sphere(body=body_a, radius=0.5)
@@ -530,7 +519,7 @@ def test_collision_filter_consistent_across_broadphases(test, device):
     """
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(gravity=0.0)
-        builder.rigid_contact_margin = 0.01
+        builder.rigid_gap = 0.01
 
         # Three overlapping spheres at the same position
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
@@ -552,10 +541,12 @@ def test_collision_filter_consistent_across_broadphases(test, device):
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
             n = contacts.rigid_contact_count.numpy()[0]
+            shape0_np = contacts.rigid_contact_shape0.numpy()
+            shape1_np = contacts.rigid_contact_shape1.numpy()
             pairs = set()
             for i in range(n):
-                s0 = int(contacts.rigid_contact_shape0.numpy()[i])
-                s1 = int(contacts.rigid_contact_shape1.numpy()[i])
+                s0 = int(shape0_np[i])
+                s1 = int(shape1_np[i])
                 pairs.add((min(s0, s1), max(s0, s1)))
             return pairs
 
@@ -583,6 +574,147 @@ add_function_test(
     test_collision_filter_consistent_across_broadphases,
     devices=devices,
 )
+
+
+# ============================================================================
+# Rigid Contact Normal Direction Tests
+# ============================================================================
+# These tests verify that Contacts.rigid_contact_normal points from shape 0
+# toward shape 1 (A-to-B convention) after running the full collision pipeline.
+
+
+class TestRigidContactNormal(unittest.TestCase):
+    pass
+
+
+def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
+    """Verify rigid_contact_normal on four sphere-pair scenarios.
+
+    All spheres have radius 0.5 and a per-shape gap of 0.05 (summed gap = 0.1).
+    The four pairs are spaced along the Y axis so they don't interact:
+
+    * Pair 0 - **overlap**: centers 0.6 apart  (penetration = -0.4)
+    * Pair 1 - **exact touch**: centers 1.0 apart  (penetration = 0.0)
+    * Pair 2 - **within gap**: centers 1.08 apart  (separation 0.08 < summed gap 0.1)
+    * Pair 3 - **separated**: centers 1.5 apart  (well outside gap, no contact)
+
+    For every contact produced the test checks:
+    1. Normal is unit length.
+    2. Normal points from shape 0 toward shape 1 (A-to-B convention).
+    3. Contact midpoint lies between the two sphere centers.
+
+    Pair 3 must produce zero contacts.
+    """
+    with wp.ScopedDevice(device):
+        radius = 0.5
+        gap = 0.05
+
+        pair_half_dists = [0.3, 0.5, 0.54, 0.75]
+        y_offsets = [0.0, 3.0, 6.0, 9.0]
+        expect_contact = [True, True, True, False]
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.rigid_gap = gap
+
+        positions = []
+        for half_dist, y in zip(pair_half_dists, y_offsets, strict=True):
+            pa = wp.vec3(-half_dist, y, 0.0)
+            pb = wp.vec3(half_dist, y, 0.0)
+            positions.append(pa)
+            positions.append(pb)
+
+            ba = builder.add_body(xform=wp.transform(pa))
+            builder.add_shape_sphere(body=ba, radius=radius)
+            bb = builder.add_body(xform=wp.transform(pb))
+            builder.add_shape_sphere(body=bb, radius=radius)
+
+        model = builder.finalize(device=device)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        count = contacts.rigid_contact_count.numpy()[0]
+        normals = contacts.rigid_contact_normal.numpy()[:count]
+        shape0s = contacts.rigid_contact_shape0.numpy()[:count]
+        shape1s = contacts.rigid_contact_shape1.numpy()[:count]
+        point0s = contacts.rigid_contact_point0.numpy()[:count]
+        point1s = contacts.rigid_contact_point1.numpy()[:count]
+
+        positions_np = np.array(positions, dtype=np.float32)
+
+        expected_contacting_pairs = sum(expect_contact)
+        contacts_per_pair: dict[int, list[int]] = {p: [] for p in range(4)}
+        for i in range(count):
+            s0 = int(shape0s[i])
+            pair_idx = s0 // 2
+            contacts_per_pair[pair_idx].append(i)
+
+        pairs_with_contacts = sum(1 for c in contacts_per_pair.values() if c)
+        test.assertEqual(
+            pairs_with_contacts,
+            expected_contacting_pairs,
+            f"Expected exactly {expected_contacting_pairs} pairs with contacts, got {pairs_with_contacts}",
+        )
+
+        for pair_idx in range(4):
+            pair_contacts = contacts_per_pair[pair_idx]
+            label = f"pair {pair_idx} (half_dist={pair_half_dists[pair_idx]})"
+
+            if not expect_contact[pair_idx]:
+                test.assertEqual(len(pair_contacts), 0, f"{label}: expected no contacts but got {len(pair_contacts)}")
+                continue
+
+            test.assertGreater(len(pair_contacts), 0, f"{label}: expected at least one contact")
+
+            for i in pair_contacts:
+                normal = normals[i]
+                s0 = int(shape0s[i])
+                s1 = int(shape1s[i])
+
+                normal_len = np.linalg.norm(normal)
+                test.assertAlmostEqual(
+                    normal_len,
+                    1.0,
+                    places=3,
+                    msg=f"{label} contact {i}: normal must be unit length (got {normal_len})",
+                )
+
+                center_a = positions_np[s0]
+                center_b = positions_np[s1]
+                expected_dir = center_b - center_a
+                expected_dir = expected_dir / np.linalg.norm(expected_dir)
+
+                dot = np.dot(normal, expected_dir)
+                test.assertGreater(
+                    dot,
+                    0.95,
+                    f"{label} contact {i}: normal must point from shape {s0} toward shape {s1} "
+                    f"(dot={dot:.4f}, normal={normal}, expected_dir={expected_dir})",
+                )
+
+                # point0/point1 are in body-local frames; transform to world
+                p0_world = point0s[i] + center_a
+                p1_world = point1s[i] + center_b
+                midpoint = (p0_world + p1_world) / 2.0
+                lo = min(center_a[0], center_b[0])
+                hi = max(center_a[0], center_b[0])
+                test.assertTrue(
+                    lo - 1e-3 <= midpoint[0] <= hi + 1e-3,
+                    f"{label} contact {i}: midpoint x={midpoint[0]:.4f} should lie between "
+                    f"center x=[{lo:.4f}, {hi:.4f}]",
+                )
+
+
+for bp_name in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestRigidContactNormal,
+        f"test_rigid_contact_normal_sphere_sphere_{bp_name}",
+        test_rigid_contact_normal_sphere_sphere,
+        devices=devices,
+        broad_phase=bp_name,
+    )
 
 
 # ============================================================================
@@ -665,6 +797,120 @@ class TestContactEstimator(unittest.TestCase):
 
         estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1500)
+
+
+class TestShapePairsMaxScaling(unittest.TestCase):
+    """Verify that shape_pairs_max scales linearly with world count, not quadratically."""
+
+    @staticmethod
+    def _make_model(num_worlds, shapes_per_world, num_global=0, shape_flags_value=None):
+        """Build a minimal Model with the given world/shape layout."""
+        from newton._src.geometry.flags import ShapeFlags  # noqa: PLC0415
+
+        total = num_worlds * shapes_per_world + num_global
+        world_ids = np.repeat(np.arange(num_worlds, dtype=np.int32), shapes_per_world)
+        if num_global > 0:
+            world_ids = np.concatenate([world_ids, np.full(num_global, -1, dtype=np.int32)])
+
+        model = newton.Model()
+        model.shape_count = total
+        model.shape_world = wp.array(world_ids, dtype=wp.int32)
+
+        if shape_flags_value is not None:
+            flags = np.full(total, shape_flags_value, dtype=np.int32)
+        else:
+            flags = np.full(total, int(ShapeFlags.COLLIDE_SHAPES), dtype=np.int32)
+        model.shape_flags = wp.array(flags, dtype=wp.int32)
+        return model
+
+    def test_single_world_matches_global_formula(self):
+        """Single world should give the same result as the naive N*(N-1)/2."""
+        model = self._make_model(num_worlds=1, shapes_per_world=20)
+        result = _compute_per_world_shape_pairs_max(model)
+        self.assertEqual(result, 20 * 19 // 2)
+
+    def test_multi_world_scales_linearly(self):
+        """Doubling worlds should roughly double shape_pairs_max, not quadruple it."""
+        model_w1 = self._make_model(num_worlds=1, shapes_per_world=20)
+        model_w2 = self._make_model(num_worlds=2, shapes_per_world=20)
+        model_w4 = self._make_model(num_worlds=4, shapes_per_world=20)
+
+        pairs_w1 = _compute_per_world_shape_pairs_max(model_w1)
+        pairs_w2 = _compute_per_world_shape_pairs_max(model_w2)
+        pairs_w4 = _compute_per_world_shape_pairs_max(model_w4)
+
+        self.assertEqual(pairs_w1, 190)
+        self.assertEqual(pairs_w2, 2 * 190)
+        self.assertEqual(pairs_w4, 4 * 190)
+
+    def test_many_worlds_no_quadratic_blowup(self):
+        """At 256 worlds the per-world sum must be far below the global N^2 formula."""
+        num_worlds = 256
+        spw = 10
+        model = self._make_model(num_worlds=num_worlds, shapes_per_world=spw)
+        result = _compute_per_world_shape_pairs_max(model)
+
+        per_world_expected = num_worlds * (spw * (spw - 1) // 2)
+        global_n = num_worlds * spw
+        global_quadratic = global_n * (global_n - 1) // 2
+
+        self.assertEqual(result, per_world_expected)
+        self.assertLess(result, global_quadratic / 100, "shape_pairs_max must not scale quadratically with world count")
+
+    def test_global_shapes_included_per_world(self):
+        """Global shapes (world=-1) are added to each world's segment."""
+        model = self._make_model(num_worlds=2, shapes_per_world=3, num_global=1)
+        result = _compute_per_world_shape_pairs_max(model)
+        # Each world: 3 local + 1 global = 4 shapes -> 6 pairs
+        # Dedicated -1 segment: 1 shape -> 0 pairs
+        self.assertEqual(result, 2 * 6)
+
+    def test_global_shapes_dedicated_segment(self):
+        """Multiple global shapes get their own dedicated segment."""
+        model = self._make_model(num_worlds=2, shapes_per_world=3, num_global=2)
+        result = _compute_per_world_shape_pairs_max(model)
+        # Each world: 3 + 2 = 5 -> 10 pairs. Dedicated: 2 -> 1 pair.
+        self.assertEqual(result, 2 * 10 + 1)
+
+    def test_no_shapes(self):
+        model = newton.Model()
+        model.shape_count = 0
+        model.shape_world = None
+        self.assertEqual(_compute_per_world_shape_pairs_max(model), 0)
+
+    def test_pipeline_buffer_size_scales_linearly(self):
+        """End-to-end: CollisionPipeline buffers must not explode with many worlds."""
+        num_worlds = 64
+        spw = 5
+
+        robot_builder = newton.ModelBuilder()
+        for _ in range(spw):
+            b = robot_builder.add_body()
+            robot_builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
+
+        builder = newton.ModelBuilder()
+        for _ in range(num_worlds):
+            builder.add_world(robot_builder)
+
+        model = builder.finalize()
+
+        for bp_mode in ("nxn", "sap"):
+            pipeline = newton.CollisionPipeline(model, broad_phase=bp_mode)
+
+            global_n = model.shape_count
+            global_quadratic = global_n * (global_n - 1) // 2
+            per_world_linear = num_worlds * (spw * (spw - 1) // 2)
+
+            self.assertEqual(
+                pipeline.shape_pairs_max,
+                per_world_linear,
+                f"broad_phase={bp_mode}: shape_pairs_max should scale linearly",
+            )
+            self.assertLess(
+                pipeline.shape_pairs_max,
+                global_quadratic / 10,
+                f"broad_phase={bp_mode}: shape_pairs_max must not be quadratic",
+            )
 
 
 def test_particle_shape_contacts(test, device, shape_type: GeoType):

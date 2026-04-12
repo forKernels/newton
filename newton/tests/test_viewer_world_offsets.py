@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -31,7 +19,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             (1, (0.0, 0.0, 0.0), [[0.0, 0.0, 0.0]]),
             (1, (5.0, 5.0, 0.0), [[0.0, 0.0, 0.0]]),  # Single world always at origin
             (2, (10.0, 0.0, 0.0), [[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0]]),
-            (4, (5.0, 5.0, 0.0), [[-2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, -2.5, 0.0], [2.5, 2.5, 0.0]]),
+            (4, (5.0, 5.0, 0.0), [[-2.5, -2.5, 0.0], [2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, 2.5, 0.0]]),
         ]
 
         for world_count, spacing, expected in test_cases:
@@ -55,7 +43,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
         world.add_shape_box(
             body=0,
@@ -119,7 +107,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
         world_z.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
         builder_z.replicate(world_z, world_count)
@@ -142,7 +130,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
         world_y.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
         builder_y.replicate(world_y, world_count)
@@ -171,7 +159,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="box_body",
+            label="box_body",
         )
         world.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
 
@@ -209,7 +197,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(body_pos, wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="offset_body",
+            label="offset_body",
         )
         # Add shape with local offset
         world.add_shape_box(
@@ -256,7 +244,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
 
         # Replicate with zero spacing (new default)
@@ -281,7 +269,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             (1, (0.0, 0.0, 0.0), [[0.0, 0.0, 0.0]]),
             (1, (5.0, 5.0, 0.0), [[0.0, 0.0, 0.0]]),  # Single world always at origin
             (2, (10.0, 0.0, 0.0), [[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0]]),
-            (4, (5.0, 5.0, 0.0), [[-2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, -2.5, 0.0], [2.5, 2.5, 0.0]]),
+            (4, (5.0, 5.0, 0.0), [[-2.5, -2.5, 0.0], [2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, 2.5, 0.0]]),
             # 3D grid case - 8 worlds in a 2x2x2 grid
             # Note: Z-axis correction is 0 to keep worlds above ground
             (
@@ -289,12 +277,12 @@ class TestViewerWorldOffsets(unittest.TestCase):
                 (4.0, 4.0, 4.0),
                 [
                     [-2.0, -2.0, 0.0],
-                    [-2.0, -2.0, 4.0],
-                    [-2.0, 2.0, 0.0],
-                    [-2.0, 2.0, 4.0],
                     [2.0, -2.0, 0.0],
-                    [2.0, -2.0, 4.0],
+                    [-2.0, 2.0, 0.0],
                     [2.0, 2.0, 0.0],
+                    [-2.0, -2.0, 4.0],
+                    [2.0, -2.0, 4.0],
+                    [-2.0, 2.0, 4.0],
                     [2.0, 2.0, 4.0],
                 ],
             ),
@@ -305,31 +293,31 @@ class TestViewerWorldOffsets(unittest.TestCase):
                 (2.0, 2.0, 2.0),
                 [
                     [-2.0, -2.0, 0.0],
-                    [-2.0, -2.0, 2.0],
-                    [-2.0, -2.0, 4.0],
-                    [-2.0, 0.0, 0.0],
-                    [-2.0, 0.0, 2.0],
-                    [-2.0, 0.0, 4.0],
-                    [-2.0, 2.0, 0.0],
-                    [-2.0, 2.0, 2.0],
-                    [-2.0, 2.0, 4.0],
                     [0.0, -2.0, 0.0],
-                    [0.0, -2.0, 2.0],
-                    [0.0, -2.0, 4.0],
-                    [0.0, 0.0, 0.0],
-                    [0.0, 0.0, 2.0],
-                    [0.0, 0.0, 4.0],
-                    [0.0, 2.0, 0.0],
-                    [0.0, 2.0, 2.0],
-                    [0.0, 2.0, 4.0],
                     [2.0, -2.0, 0.0],
-                    [2.0, -2.0, 2.0],
-                    [2.0, -2.0, 4.0],
+                    [-2.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
                     [2.0, 0.0, 0.0],
-                    [2.0, 0.0, 2.0],
-                    [2.0, 0.0, 4.0],
+                    [-2.0, 2.0, 0.0],
+                    [0.0, 2.0, 0.0],
                     [2.0, 2.0, 0.0],
+                    [-2.0, -2.0, 2.0],
+                    [0.0, -2.0, 2.0],
+                    [2.0, -2.0, 2.0],
+                    [-2.0, 0.0, 2.0],
+                    [0.0, 0.0, 2.0],
+                    [2.0, 0.0, 2.0],
+                    [-2.0, 2.0, 2.0],
+                    [0.0, 2.0, 2.0],
                     [2.0, 2.0, 2.0],
+                    [-2.0, -2.0, 4.0],
+                    [0.0, -2.0, 4.0],
+                    [2.0, -2.0, 4.0],
+                    [-2.0, 0.0, 4.0],
+                    [0.0, 0.0, 4.0],
+                    [2.0, 0.0, 4.0],
+                    [-2.0, 2.0, 4.0],
+                    [0.0, 2.0, 4.0],
                     [2.0, 2.0, 4.0],
                 ],
             ),
@@ -347,7 +335,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
                     xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
                     mass=1.0,
                     inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                    key="test_body",
+                    label="test_body",
                 )
                 builder.replicate(world, world_count)
 
@@ -372,7 +360,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
     def test_set_world_offsets_input_formats(self):
         """Test that set_world_offsets accepts various input formats."""
         world_count = 4
-        expected_offsets = np.array([[-2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, -2.5, 0.0], [2.5, 2.5, 0.0]])
+        expected_offsets = np.array([[-2.5, -2.5, 0.0], [2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, 2.5, 0.0]])
 
         # Create a simple model with worlds
         builder = newton.ModelBuilder()
@@ -381,7 +369,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
         builder.replicate(world, world_count)
         model = builder.finalize()
@@ -421,7 +409,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="world_body",
+            label="world_body",
         )
         cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
         world.add_shape(
@@ -482,7 +470,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
         xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
         mass=1.0,
         inertia=wp.mat33(np.eye(3)),
-        key="test_body",
+        label="test_body",
     )
     cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
     world.add_shape(
@@ -515,8 +503,8 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
     expected_offsets = np.array(
         [
             [-2.5, -2.5, 0.0],  # env 0
-            [-2.5, 2.5, 0.0],  # env 1
-            [2.5, -2.5, 0.0],  # env 2
+            [2.5, -2.5, 0.0],  # env 1
+            [-2.5, 2.5, 0.0],  # env 2
             [2.5, 2.5, 0.0],  # env 3
         ]
     )

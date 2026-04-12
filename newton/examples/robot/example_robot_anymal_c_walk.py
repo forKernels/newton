@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot ANYmal C Walk
@@ -23,10 +11,10 @@
 #
 ###########################################################################
 
+import warnings
+
 import torch
 import warp as wp
-
-wp.config.enable_backward = False
 
 import newton
 import newton.examples
@@ -37,7 +25,6 @@ lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
 
 
-@torch.jit.script
 def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     """Rotate a vector by the inverse of a quaternion along the last dimension of q and v.    Args:
     q: The quaternion in (x, y, z, w). Shape is (..., 4).
@@ -54,6 +41,15 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     else:
         c = q_vec * torch.einsum("...i,...i->...", q_vec, v).unsqueeze(-1) * 2.0
     return a - b + c
+
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"`torch\.jit\.script` is deprecated\. Please switch to `torch\.compile` or `torch\.export`\.",
+        category=DeprecationWarning,
+    )
+    quat_rotate_inverse = torch.jit.script(quat_rotate_inverse)
 
 
 def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravity_vec, command):
@@ -74,7 +70,7 @@ def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravi
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer, args):
         self.viewer = viewer
         self.device = wp.get_device()
         self.torch_device = wp.device_to_torch(self.device)
@@ -158,16 +154,21 @@ class Example:
             "LF_KFE": -0.8,
         }
         # Set initial joint positions (skip first 7 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
-        for key, value in initial_q.items():
-            builder.joint_q[builder.joint_key.index(key) + 6] = value
+        for name, value in initial_q.items():
+            idx = next(
+                (i for i, lbl in enumerate(builder.joint_label) if lbl.endswith(f"/{name}")),
+                None,
+            )
+            if idx is None:
+                raise ValueError(f"Joint '{name}' not found in builder.joint_label")
+            builder.joint_q[idx + 6] = value
 
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-
-        use_mujoco_contacts = args.use_mujoco_contacts if args else False
+        use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
@@ -209,7 +210,13 @@ class Example:
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
         policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
 
-        self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"`torch\.jit\.load` is deprecated\. Please switch to `torch\.export`\.",
+                category=DeprecationWarning,
+            )
+            self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
         self.joint_pos_initial = torch.tensor(
             self.state_0.joint_q[7:], device=self.torch_device, dtype=torch.float32
         ).unsqueeze(0)
@@ -287,7 +294,8 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        assert self.model.body_key == [
+        body_names = [lbl.split("/")[-1] for lbl in self.model.body_label]
+        assert body_names == [
             "base",
             "LF_HIP",
             "LF_THIGH",
@@ -302,7 +310,8 @@ class Example:
             "RH_THIGH",
             "RH_SHANK",
         ]
-        assert self.model.joint_key == [
+        joint_names = [lbl.split("/")[-1] for lbl in self.model.joint_label]
+        assert joint_names == [
             "floating_base",
             "LF_HAA",
             "LF_HFE",
@@ -342,10 +351,16 @@ class Example:
             indices=[0],
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_mujoco_contacts_arg(parser)
+        return parser
+
 
 if __name__ == "__main__":
-    # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
 
     example = Example(viewer, args)
 

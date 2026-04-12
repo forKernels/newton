@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import math
 import warnings
@@ -24,7 +12,7 @@ from ..sim import Model, State
 
 
 @wp.kernel
-def clamp_no_hits_kernel(depth_image: wp.array(dtype=float), max_dist: float):
+def clamp_no_hits_kernel(depth_image: wp.array[float], max_dist: float):
     """Kernel to replace max_distance values with -1.0 to indicate no intersection."""
     tid = wp.tid()
     if depth_image[tid] >= max_dist:
@@ -81,6 +69,7 @@ class SensorRaycast:
         fov_radians: float,
         width: int,
         height: int,
+        *,
         max_distance: float = 1000.0,
     ):
         """Initialize a SensorRaycast.
@@ -151,13 +140,14 @@ class SensorRaycast:
         self.camera_up = np.cross(self.camera_right, self.camera_direction)
         self.camera_up = self.camera_up / np.linalg.norm(self.camera_up)
 
-    def eval(
+    def update(
         self,
         state: State,
+        *,
         include_particles: bool = False,
         particle_march_step: float | None = None,
     ):
-        """Evaluate the raycast sensor to generate a depth image.
+        """Update the raycast sensor to generate a depth image.
 
         Casts rays from the camera through each pixel and records the distance to the closest
         intersection with the scene geometry. When ``include_particles`` is enabled (not enabled by default),

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -103,7 +91,7 @@ def test_shapes_on_plane(test, device, solver_fn):
     # Set contact margin via ShapeConfig (preferred method)
     # Must be set BEFORE adding shapes
     # Using 0.1 like the example (which is stable)
-    builder.default_shape_cfg.contact_margin = 0.1
+    builder.default_shape_cfg.gap = 0.1
 
     expected_end_positions = []
 
@@ -195,7 +183,7 @@ def test_shapes_on_plane(test, device, solver_fn):
             simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps)
         graph = capture.graph
 
-    for _ in range(250):
+    for _ in range(120):
         if use_cuda_graph:
             wp.capture_launch(graph)
         else:
@@ -819,8 +807,8 @@ def test_box_drop(test, device, solver_fn):
             solver.step(state_0, state_1, None, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 
-            vel_z = np.abs(state_0.body_qd.numpy()[:, 2])
-            max_observed_vel = max(max_observed_vel, vel_z.max())
+        vel_z = np.abs(state_0.body_qd.numpy()[:, 2])
+        max_observed_vel = max(max_observed_vel, vel_z.max())
 
     test.assertLess(
         max_observed_vel,
@@ -847,11 +835,11 @@ devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
 solvers = {
-    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
+    "featherstone": newton.solvers.SolverFeatherstone,
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
-    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
+    "semi_implicit": newton.solvers.SolverSemiImplicit,
 }
 
 

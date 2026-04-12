@@ -1,18 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 
 import unittest
 
@@ -26,6 +13,22 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
 
+def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
+    """Recover body-origin velocity from COM-referenced `body_qd`."""
+    rot = wp.quat(
+        float(body_q[body_idx, 3]),
+        float(body_q[body_idx, 4]),
+        float(body_q[body_idx, 5]),
+        float(body_q[body_idx, 6]),
+    )
+    com_local = model.body_com.numpy()[body_idx]
+    com_world = np.array(
+        wp.quat_rotate(rot, wp.vec3(float(com_local[0]), float(com_local[1]), float(com_local[2]))),
+        dtype=np.float32,
+    )
+    return body_qd[body_idx, :3] - np.cross(body_qd[body_idx, 3:6], com_world)
+
+
 class TestSelection(unittest.TestCase):
     def test_no_match(self):
         builder = newton.ModelBuilder()
@@ -37,7 +40,7 @@ class TestSelection(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_link()
         joint = builder.add_joint_free(child=body)
-        builder.add_articulation([joint], key="my_articulation")
+        builder.add_articulation([joint], label="my_articulation")
         model = builder.finalize()
         control = model.control()
         selection = ArticulationView(model, pattern="my_articulation", exclude_joint_types=[newton.JointType.FREE])
@@ -46,6 +49,26 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(selection.get_dof_positions(model).shape, (1, 1, 0))
         self.assertEqual(selection.get_dof_velocities(model).shape, (1, 1, 0))
         self.assertEqual(selection.get_dof_forces(control).shape, (1, 1, 0))
+
+    def test_fixed_joint_only_articulation(self):
+        """Regression test for issue #920: ArticulationView with only fixed joints."""
+        builder = newton.ModelBuilder()
+        parent = builder.add_link()
+        child = builder.add_link()
+        j0 = builder.add_joint_fixed(parent=-1, child=parent)
+        j1 = builder.add_joint_fixed(parent=parent, child=child)
+        builder.add_articulation([j0, j1], label="fixed_only")
+        model = builder.finalize()
+        state = model.state()
+        control = model.control()
+        view = ArticulationView(model, pattern="fixed_only")
+        self.assertEqual(view.count, 1)
+        self.assertEqual(view.joint_dof_count, 0)
+        self.assertEqual(view.joint_coord_count, 0)
+        self.assertEqual(view.get_root_transforms(model).shape, (1, 1))
+        self.assertEqual(view.get_dof_positions(state).shape, (1, 1, 0))
+        self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
+        self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
     def _test_selection_shapes(self, floating: bool):
         # load articulation
@@ -87,7 +110,7 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(single_ant_view.get_attribute("joint_type", single_ant_model).shape, (1, 1, J))
         self.assertEqual(single_ant_view.get_attribute("joint_dof_dim", single_ant_model).shape, (1, 1, J, 2))
         self.assertEqual(single_ant_view.get_attribute("joint_limit_ke", single_ant_model).shape, (1, 1, D))
-        self.assertEqual(single_ant_view.get_attribute("shape_thickness", single_ant_model).shape, (1, 1, S))
+        self.assertEqual(single_ant_view.get_attribute("shape_margin", single_ant_model).shape, (1, 1, S))
 
         W = 10  # num worlds
 
@@ -122,7 +145,7 @@ class TestSelection(unittest.TestCase):
             single_ant_per_world_view.get_attribute("joint_limit_ke", single_ant_per_world_model).shape, (W, 1, D)
         )
         self.assertEqual(
-            single_ant_per_world_view.get_attribute("shape_thickness", single_ant_per_world_model).shape, (W, 1, S)
+            single_ant_per_world_view.get_attribute("shape_margin", single_ant_per_world_model).shape, (W, 1, S)
         )
 
         A = 3  # num articulations per world
@@ -161,7 +184,7 @@ class TestSelection(unittest.TestCase):
             multi_ant_per_world_view.get_attribute("joint_limit_ke", multi_ant_per_world_model).shape, (W, A, D)
         )
         self.assertEqual(
-            multi_ant_per_world_view.get_attribute("shape_thickness", multi_ant_per_world_model).shape, (W, A, S)
+            multi_ant_per_world_view.get_attribute("shape_margin", multi_ant_per_world_model).shape, (W, A, S)
         )
 
     def test_selection_shapes_floating_base(self):
@@ -173,42 +196,42 @@ class TestSelection(unittest.TestCase):
     def test_selection_shape_values_noncontiguous(self):
         """Test that shape attribute values are correct when shape selection is non-contiguous."""
         # Build a 3-link chain: base -> link1 -> link2
-        # Each link has one shape with a distinct thickness value
+        # Each link has one shape with a distinct margin value
         robot = newton.ModelBuilder()
 
-        thicknesses = [0.001, 0.002, 0.003]
+        margins = [0.001, 0.002, 0.003]
 
-        base = robot.add_link(xform=wp.transform([0, 0, 0], wp.quat_identity()), mass=1.0, key="base")
+        base = robot.add_link(xform=wp.transform([0, 0, 0], wp.quat_identity()), mass=1.0, label="base")
         robot.add_shape_box(
             base,
             hx=0.1,
             hy=0.1,
             hz=0.1,
-            cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[0]),
-            key="shape_base",
+            cfg=newton.ModelBuilder.ShapeConfig(margin=margins[0]),
+            label="shape_base",
         )
 
-        link1 = robot.add_link(xform=wp.transform([0, 0, 0.5], wp.quat_identity()), mass=0.5, key="link1")
+        link1 = robot.add_link(xform=wp.transform([0, 0, 0.5], wp.quat_identity()), mass=0.5, label="link1")
         robot.add_shape_capsule(
             link1,
             radius=0.05,
             half_height=0.2,
-            cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[1]),
-            key="shape_link1",
+            cfg=newton.ModelBuilder.ShapeConfig(margin=margins[1]),
+            label="shape_link1",
         )
 
-        link2 = robot.add_link(xform=wp.transform([0, 0, 1.0], wp.quat_identity()), mass=0.3, key="link2")
+        link2 = robot.add_link(xform=wp.transform([0, 0, 1.0], wp.quat_identity()), mass=0.3, label="link2")
         robot.add_shape_sphere(
             link2,
             radius=0.05,
-            cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[2]),
-            key="shape_link2",
+            cfg=newton.ModelBuilder.ShapeConfig(margin=margins[2]),
+            label="shape_link2",
         )
 
         j0 = robot.add_joint_free(child=base)
         j1 = robot.add_joint_revolute(parent=base, child=link1, axis=[0, 1, 0])
         j2 = robot.add_joint_revolute(parent=link1, child=link2, axis=[0, 1, 0])
-        robot.add_articulation([j0, j1, j2], key="robot")
+        robot.add_articulation([j0, j1, j2], label="robot")
 
         W = 3
         scene = newton.ModelBuilder()
@@ -222,20 +245,110 @@ class TestSelection(unittest.TestCase):
         self.assertFalse(view.shapes_contiguous, "Expected non-contiguous shape selection")
         self.assertEqual(view.shape_count, 2)
 
-        # read shape_thickness through ArticulationView and check values
-        vals = view.get_attribute("shape_thickness", model)
+        # read shape_margin through ArticulationView and check values
+        vals = view.get_attribute("shape_margin", model)
         self.assertEqual(vals.shape, (W, 1, 2))
         vals_np = vals.numpy()
 
-        expected = [thicknesses[0], thicknesses[2]]  # base and link2 (link1 excluded)
+        expected = [margins[0], margins[2]]  # base and link2 (link1 excluded)
         for w in range(W):
-            for s, expected_thickness in enumerate(expected):
+            for s, expected_margin in enumerate(expected):
                 self.assertAlmostEqual(
                     float(vals_np[w, 0, s]),
-                    expected_thickness,
+                    expected_margin,
                     places=6,
                     msg=f"world={w}, shape={s}",
                 )
+
+    def test_eval_fk_translated_joint_chain_uses_view_mask(self):
+        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+        def add_translated_chain(label: str, x_offset: float):
+            base = builder.add_link()
+            slider = builder.add_link()
+
+            builder.body_com[base] = wp.vec3(0.2, 0.0, 0.0)
+            builder.body_com[slider] = wp.vec3(0.35, 0.0, -0.1)
+
+            j0 = builder.add_joint_revolute(
+                parent=-1,
+                child=base,
+                axis=newton.Axis.Z,
+                parent_xform=wp.transform(wp.vec3(x_offset, 0.0, 0.0), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            )
+            j1 = builder.add_joint_prismatic(
+                parent=base,
+                child=slider,
+                axis=newton.Axis.X,
+                parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.4), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.2, 0.0, -0.15), wp.quat_identity()),
+            )
+            builder.add_articulation([j0, j1], label=label)
+            return base, slider, j0, j1
+
+        target_base, target_slider, target_j0, target_j1 = add_translated_chain("translated_target", 0.0)
+        other_base, other_slider, other_j0, other_j1 = add_translated_chain("translated_other", 5.0)
+
+        model = builder.finalize()
+        view = ArticulationView(model, "translated_target")
+
+        q_start = model.joint_q_start.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        q = model.joint_q.numpy().copy()
+        qd = model.joint_qd.numpy().copy()
+
+        q[q_start[target_j0]] = 0.55
+        q[q_start[target_j1]] = 0.8
+        qd[qd_start[target_j0]] = 1.1
+        qd[qd_start[target_j1]] = -0.35
+
+        q[q_start[other_j0]] = -0.3
+        q[q_start[other_j1]] = 0.25
+        qd[qd_start[other_j0]] = -0.7
+        qd[qd_start[other_j1]] = 0.45
+
+        dt = 1.0e-4
+        q_next = q.copy()
+        q_next[q_start[target_j0]] += qd[qd_start[target_j0]] * dt
+        q_next[q_start[target_j1]] += qd[qd_start[target_j1]] * dt
+        q_next[q_start[other_j0]] += qd[qd_start[other_j0]] * dt
+        q_next[q_start[other_j1]] += qd[qd_start[other_j1]] * dt
+
+        state = model.state()
+        state_next = model.state()
+
+        sentinel_q = state.body_q.numpy().copy()
+        sentinel_q[:, :3] = -99.0
+        sentinel_q[:, 3:7] = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        sentinel_qd = np.full_like(state.body_qd.numpy(), -77.0)
+
+        state.body_q.assign(sentinel_q)
+        state.body_qd.assign(sentinel_qd)
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        view.eval_fk(state)
+
+        state_next.body_q.assign(sentinel_q)
+        state_next.body_qd.assign(sentinel_qd)
+        state_next.joint_q.assign(q_next)
+        state_next.joint_qd.assign(qd)
+        view.eval_fk(state_next)
+
+        body_q = state.body_q.numpy().reshape(-1, 7)
+        body_q_next = state_next.body_q.numpy().reshape(-1, 7)
+        body_qd = state.body_qd.numpy().reshape(-1, 6)
+
+        origin_vel_fd = (body_q_next[target_slider, :3] - body_q[target_slider, :3]) / dt
+        origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, target_slider)
+
+        assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
+        self.assertFalse(np.array_equal(body_q[target_base], sentinel_q[target_base]))
+        assert_np_equal(body_q[other_base], sentinel_q[other_base], tol=0.0)
+        assert_np_equal(body_q[other_slider], sentinel_q[other_slider], tol=0.0)
+        assert_np_equal(body_qd[other_base], sentinel_qd[other_base], tol=0.0)
+        assert_np_equal(body_qd[other_slider], sentinel_qd[other_slider], tol=0.0)
 
     def test_selection_mask(self):
         # load articulation
@@ -329,11 +442,11 @@ class TestSelection(unittest.TestCase):
             single_world_builder.add_builder(single_articuation_builder)
 
         # Customise the articulation keys in single_world_builder
-        single_world_builder.articulation_key[1] = "art1"
+        single_world_builder.articulation_label[1] = "art1"
         if use_multiple_artics_per_view:
-            single_world_builder.articulation_key[0] = "art1"
+            single_world_builder.articulation_label[0] = "art1"
         else:
-            single_world_builder.articulation_key[0] = "art0"
+            single_world_builder.articulation_label[0] = "art0"
 
         # Create 3 worlds with two articulations per world and 3 joints per articulation.
         builder = newton.ModelBuilder()
@@ -732,11 +845,11 @@ class TestSelection(unittest.TestCase):
             single_world_builder.add_builder(single_articulation_builder)
 
         # Customise the articulation keys in single_world_builder
-        single_world_builder.articulation_key[0] = "art0"
+        single_world_builder.articulation_label[0] = "art0"
         if use_multiple_artics_per_view:
-            single_world_builder.articulation_key[1] = "art0"
+            single_world_builder.articulation_label[1] = "art0"
         else:
-            single_world_builder.articulation_key[1] = "art1"
+            single_world_builder.articulation_label[1] = "art1"
 
         # Create 3 worlds with 2 articulations per world and 4 links per articulation.
         builder = newton.ModelBuilder()
@@ -1053,6 +1166,36 @@ class TestSelection(unittest.TestCase):
 
     def test_link_selection_two_per_view_with_mask(self):
         self.run_test_link_selection(use_mask=True, use_multiple_artics_per_view=True)
+
+    def test_get_attribute_extended_state(self):
+        """Test that get_attribute works for extended state attributes."""
+        builder = newton.ModelBuilder(gravity=-9.81)
+        builder.request_state_attributes("body_qdd", "body_parent_f", "mujoco:qfrc_actuator")
+
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_revolute(
+            -1,
+            link,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()),
+            axis=wp.vec3(0, 1, 0),
+        )
+        builder.add_articulation([joint], label="art")
+        model = builder.finalize()
+        state = model.state()
+
+        view = ArticulationView(model, "art")
+
+        # body_qdd and body_parent_f should be retrievable via get_attribute on state
+        body_qdd = view.get_attribute("body_qdd", state)
+        self.assertEqual(body_qdd.shape[2], 1)  # 1 link
+
+        body_parent_f = view.get_attribute("body_parent_f", state)
+        self.assertEqual(body_parent_f.shape[2], 1)  # 1 link
+
+        qfrc_actuator = view.get_attribute("mujoco.qfrc_actuator", state)
+        self.assertEqual(qfrc_actuator.shape[2], 1)  # 1 revolute DOF
 
 
 class TestSelectionFixedTendons(unittest.TestCase):

@@ -1,22 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Test examples in the newton.examples package.
 
-Currently, this script mainly checks that the examples can run. There are no
-correctness checks.
+Currently, this script mainly checks that the examples can run. It also treats
+deprecation warnings as failures by default so examples do not regress onto
+deprecated APIs.
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -81,9 +70,9 @@ def add_example_test(
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
 
-    # verify the module exists
-    file_exists = os.path.exists(f"newton/examples/{name.replace('.', '/')}.py")
-    if not file_exists:
+    # verify the module exists (use package-relative path so this works from any CWD)
+    _examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
+    if not os.path.exists(os.path.join(_examples_dir, f"{name.replace('.', '/')}.py")):
         raise ValueError(f"Example {name} does not exist")
 
     if test_options is None:
@@ -117,12 +106,20 @@ def add_example_test(
         if usd_required and not USD_AVAILABLE:
             test.skipTest("Requires usd-core")
 
+        # Deprecations should fail example tests by default. Opt out only for
+        # a known third-party or asset issue that still needs follow-up.
+        allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
+
         # Find the current Warp cache
         warp_cache_path = wp.config.kernel_cache_dir
 
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = warp_cache_path
+        if not allow_deprecation_warnings:
+            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
+        else:
+            env_vars.pop("PYTHONWARNINGS", None)
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -218,6 +215,17 @@ add_example_test(
     test_options_cpu={"world_count": 16},
     test_options_cuda={"world_count": 64},
     use_viewer=True,
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_urdf",
+    devices=test_devices,
+    test_options={"num-frames": 200, "solver": "vbd"},
+    test_options_cpu={"world_count": 16},
+    test_options_cuda={"world_count": 64},
+    use_viewer=True,
+    test_suffix="vbd",
 )
 
 add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
@@ -239,20 +247,6 @@ class TestCableExamples(unittest.TestCase):
 
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_bend",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_bend_damping",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-add_example_test(
-    TestCableExamples,
     name="cable.example_cable_twist",
     devices=test_devices,
     use_viewer=True,
@@ -260,7 +254,14 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_helix",
+    name="cable.example_cable_y_junction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
@@ -268,14 +269,6 @@ add_example_test(
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_pile",
-    devices=test_devices,
-    use_viewer=True,
-    test_options={"num-frames": 20},
-)
-
-add_example_test(
-    TestCableExamples,
-    name="cable.example_cable_y_junction",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
@@ -343,7 +336,7 @@ add_example_test(
 )
 add_example_test(
     TestClothExamples,
-    name="cloth.example_rolling_cloth",
+    name="cloth.example_cloth_rollers",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
@@ -393,14 +386,6 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_robot_humanoid",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 500},
-    test_options_cpu={"num-frames": 10},
-    use_viewer=True,
-)
-add_example_test(
-    TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
@@ -418,7 +403,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 600},
+    test_options={"usd_required": True, "num-frames": 720},
     use_viewer=True,
 )
 
@@ -513,16 +498,8 @@ add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_
 
 add_example_test(
     TestIKExamples,
-    name="ik.example_ik_benchmark",
-    devices=test_devices,
-    test_options_cpu={"batch_sizes": [1, 10]},
-    use_viewer=True,
-)
-
-add_example_test(
-    TestIKExamples,
     name="ik.example_ik_cube_stacking",
-    test_options_cuda={"world-count": 16, "cube-count": 2, "num-frames": 1400},  # "cube-count": 3, "num-frames": 2000
+    test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
     use_viewer=True,
 )
@@ -690,6 +667,39 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_beam_twist",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 100},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_snow_ball",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30, "voxel-size": 0.2},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_viscous",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30, "voxel-size": 0.01},
+    use_viewer=True,
+)
+
+
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_plotting",
+    devices=test_devices,
+    test_options={"num-frames": 200},
+    use_viewer=True,
+)
+
 
 class TestContactsExamples(unittest.TestCase):
     pass
@@ -697,9 +707,30 @@ class TestContactsExamples(unittest.TestCase):
 
 add_example_test(
     TestContactsExamples,
-    name="contacts.example_sdf",
+    name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120, "world-count": 1, "scene": "nut_bolt"},
+    test_options={"num-frames": 120, "world-count": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_nut_bolt_hydro",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "world-count": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_brick_stacking",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 1200},
+    use_viewer=True,
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_pyramid",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
     use_viewer=True,
 )
 
@@ -710,14 +741,14 @@ class TestMultiphysicsExamples(unittest.TestCase):
 
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_falling_gift",
+    name="multiphysics.example_softbody_gift",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_poker_cards_stacking",
+    name="cloth.example_cloth_poker_cards",
     devices=cuda_test_devices,
     test_options={"num-frames": 30},
     use_viewer=True,

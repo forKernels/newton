@@ -1,6 +1,10 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 newton
 ======
 
+.. py:module:: newton
 .. currentmodule:: newton
 
 .. toctree::
@@ -12,6 +16,7 @@ newton
    newton_selection
    newton_sensors
    newton_solvers
+   newton_usd
    newton_utils
    newton_viewer
 
@@ -23,6 +28,7 @@ newton
 - :doc:`newton.selection <newton_selection>`
 - :doc:`newton.sensors <newton_sensors>`
 - :doc:`newton.solvers <newton_solvers>`
+- :doc:`newton.usd <newton_usd>`
 - :doc:`newton.utils <newton_utils>`
 - :doc:`newton.viewer <newton_viewer>`
 
@@ -32,14 +38,16 @@ newton
    :toctree: _generated
    :nosignatures:
 
-   ActuatorMode
    Axis
+   BodyFlags
    CollisionPipeline
    Contacts
    Control
    EqType
+   Gaussian
    GeoType
    Heightfield
+   JointTargetMode
    JointType
    Mesh
    Model
@@ -48,6 +56,7 @@ newton
    SDF
    ShapeFlags
    State
+   TetMesh
 
 .. rubric:: Functions
 
@@ -56,8 +65,6 @@ newton
    :signatures: long
 
    AxisType
-   BroadPhaseInstance
-   BroadPhaseMode
    eval_fk
    eval_ik
    eval_jacobian
@@ -70,7 +77,7 @@ newton
 
    * - Name
      - Value
-   * - MAXVAL
-     - 10000000000.0
-   * - __version__
-     - 0.2.0
+   * - ``MAXVAL``
+     - ``10000000000.0``
+   * - ``__version__``
+     - ``1.2.0.dev0``

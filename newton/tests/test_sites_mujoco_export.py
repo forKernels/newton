@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Tests for site export to MuJoCo."""
 
@@ -33,7 +21,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_site(
-            body, type=GeoType.SPHERE, key="test_site", xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity())
+            body, type=GeoType.SPHERE, label="test_site", xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity())
         )
 
         model = builder.finalize()
@@ -56,9 +44,9 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
-        builder.add_site(body, type=GeoType.SPHERE, key="site_1")
-        builder.add_site(body, type=GeoType.SPHERE, key="site_2")
-        builder.add_site(body, type=GeoType.SPHERE, key="site_3")
+        builder.add_site(body, type=GeoType.SPHERE, label="site_1")
+        builder.add_site(body, type=GeoType.SPHERE, label="site_2")
+        builder.add_site(body, type=GeoType.SPHERE, label="site_3")
 
         model = builder.finalize()
 
@@ -73,7 +61,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         # Add site
-        builder.add_site(body, type=GeoType.SPHERE, key="my_site")
+        builder.add_site(body, type=GeoType.SPHERE, label="my_site")
         # Add regular collision shape
         builder.add_shape_sphere(body, radius=0.1)
 
@@ -92,7 +80,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         site_xform = wp.transform(wp.vec3(0.5, 0.3, 0.1), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 1.57))
-        builder.add_site(body, type=GeoType.SPHERE, xform=site_xform, key="positioned_site")
+        builder.add_site(body, type=GeoType.SPHERE, xform=site_xform, label="positioned_site")
 
         model = builder.finalize()
 
@@ -109,8 +97,8 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
-        builder.add_site(body, type=GeoType.SPHERE, scale=(0.05, 0.05, 0.05), key="sphere")
-        builder.add_site(body, type=GeoType.BOX, scale=(0.1, 0.2, 0.3), key="box")
+        builder.add_site(body, type=GeoType.SPHERE, scale=(0.05, 0.05, 0.05), label="sphere")
+        builder.add_site(body, type=GeoType.BOX, scale=(0.1, 0.2, 0.3), label="box")
 
         model = builder.finalize()
 
@@ -132,7 +120,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
-        builder.add_site(body, type=GeoType.SPHERE, key="my_site")
+        builder.add_site(body, type=GeoType.SPHERE, label="my_site")
 
         model = builder.finalize()
 

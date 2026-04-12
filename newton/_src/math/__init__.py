@@ -1,21 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from typing import Any
 
 import warp as wp
+
+from .spatial import (
+    quat_between_axes,
+    quat_between_vectors_robust,
+    quat_decompose,
+    quat_velocity,
+    transform_twist,
+    transform_wrench,
+    velocity_at_point,
+)
 
 
 @wp.func
@@ -28,9 +26,9 @@ def boltzmann(a: float, b: float, alpha: float):
     as `alpha` decreases, the result approaches the mean of `a` and `b`.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
-        alpha (float): The sharpness parameter. Higher values make the function more "max-like".
+        a: The first value.
+        b: The second value.
+        alpha: The sharpness parameter. Higher values make the function more "max-like".
 
     Returns:
         float: The Boltzmann-weighted average of `a` and `b`.
@@ -49,9 +47,9 @@ def smooth_max(a: float, b: float, eps: float):
     The `eps` parameter controls the smoothness: larger values make the transition smoother.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
-        eps (float): Smoothing parameter (should be small and positive).
+        a: The first value.
+        b: The second value.
+        eps: Smoothing parameter (should be small and positive).
 
     Returns:
         float: A smooth approximation of `max(a, b)`.
@@ -69,9 +67,9 @@ def smooth_min(a: float, b: float, eps: float):
     The `eps` parameter controls the smoothness: larger values make the transition smoother.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
-        eps (float): Smoothing parameter (should be small and positive).
+        a: The first value.
+        b: The second value.
+        eps: Smoothing parameter (should be small and positive).
 
     Returns:
         float: A smooth approximation of `min(a, b)`.
@@ -88,8 +86,8 @@ def leaky_max(a: float, b: float):
     This is equivalent to `smooth_max(a, b, 1e-5)`.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
+        a: The first value.
+        b: The second value.
 
     Returns:
         float: A smooth, "leaky" maximum of `a` and `b`.
@@ -105,8 +103,8 @@ def leaky_min(a: float, b: float):
     This is equivalent to `smooth_min(a, b, 1e-5)`.
 
     Args:
-        a (float): The first value.
-        b (float): The second value.
+        a: The first value.
+        b: The second value.
 
     Returns:
         float: A smooth, "leaky" minimum of `a` and `b`.
@@ -120,8 +118,8 @@ def vec_min(a: wp.vec3, b: wp.vec3):
     Compute the elementwise minimum of two 3D vectors.
 
     Args:
-        a (wp.vec3): The first vector.
-        b (wp.vec3): The second vector.
+        a: The first vector.
+        b: The second vector.
 
     Returns:
         wp.vec3: The elementwise minimum.
@@ -135,8 +133,8 @@ def vec_max(a: wp.vec3, b: wp.vec3):
     Compute the elementwise maximum of two 3D vectors.
 
     Args:
-        a (wp.vec3): The first vector.
-        b (wp.vec3): The second vector.
+        a: The first vector.
+        b: The second vector.
 
     Returns:
         wp.vec3: The elementwise maximum.
@@ -152,8 +150,8 @@ def vec_leaky_min(a: wp.vec3, b: wp.vec3):
     This uses `leaky_min` for each component.
 
     Args:
-        a (wp.vec3): The first vector.
-        b (wp.vec3): The second vector.
+        a: The first vector.
+        b: The second vector.
 
     Returns:
         wp.vec3: The elementwise leaky minimum.
@@ -169,8 +167,8 @@ def vec_leaky_max(a: wp.vec3, b: wp.vec3):
     This uses `leaky_max` for each component.
 
     Args:
-        a (wp.vec3): The first vector.
-        b (wp.vec3): The second vector.
+        a: The first vector.
+        b: The second vector.
 
     Returns:
         wp.vec3: The elementwise leaky maximum.
@@ -184,7 +182,7 @@ def vec_abs(a: wp.vec3):
     Compute the elementwise absolute value of a 3D vector.
 
     Args:
-        a (wp.vec3): The input vector.
+        a: The input vector.
 
     Returns:
         wp.vec3: The elementwise absolute value.
@@ -194,8 +192,19 @@ def vec_abs(a: wp.vec3):
 
 @wp.func
 def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool:
-    """
-    Check if two Warp vectors are all close.
+    """Check whether two Warp vectors are element-wise equal within a tolerance.
+
+    Uses the same criterion as NumPy's ``allclose``:
+    ``abs(a[i] - b[i]) <= atol + rtol * abs(b[i])`` for every element.
+
+    Args:
+        a: First vector.
+        b: Second vector.
+        rtol: Relative tolerance.
+        atol: Absolute tolerance.
+
+    Returns:
+        bool: ``True`` if all elements satisfy the tolerance, ``False`` otherwise.
     """
     for i in range(wp.static(len(a))):
         if wp.abs(a[i] - b[i]) > atol + rtol * wp.abs(b[i]):
@@ -205,8 +214,17 @@ def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool
 
 @wp.func
 def vec_inside_limits(a: Any, lower: Any, upper: Any) -> bool:
-    """
-    Check if a Warp vector is inside the given limits.
+    """Check whether every element of a vector lies within the given bounds.
+
+    Returns ``True`` when ``lower[i] <= a[i] <= upper[i]`` for all elements.
+
+    Args:
+        a: Vector to test.
+        lower: Element-wise lower bounds (inclusive).
+        upper: Element-wise upper bounds (inclusive).
+
+    Returns:
+        bool: ``True`` if all elements are within bounds, ``False`` otherwise.
     """
     for i in range(wp.static(len(a))):
         if a[i] < lower[i] or a[i] > upper[i]:
@@ -262,13 +280,32 @@ EPSILON = 1e-15
 
 @wp.func
 def safe_div(x: Any, y: Any, eps: float = EPSILON) -> Any:
-    """Safe division that avoids division-by-zero."""
+    """Safe division that returns ``x / y``, falling back to ``x / eps`` when ``y`` is zero.
+
+    Args:
+        x: Numerator.
+        y: Denominator.
+        eps: Small positive fallback used in place of ``y`` when ``y == 0``.
+
+    Returns:
+        The quotient ``x / y``, or ``x / eps`` if ``y`` is zero.
+    """
     return x / wp.where(y != 0.0, y, eps)
 
 
 @wp.func
 def normalize_with_norm(x: Any):
-    """Normalize a vector and return both the normalized vector and the original norm."""
+    """Normalize a vector and return both the unit vector and the original norm.
+
+    If the input has zero length it is returned unchanged with a norm of ``0.0``.
+
+    Args:
+        x: Input vector.
+
+    Returns:
+        Tuple[vector, float]: ``(normalized_x, norm)`` where ``normalized_x`` is the
+        unit-length direction and ``norm`` is ``wp.length(x)``.
+    """
     norm = wp.length(x)
     if norm == 0.0:
         return x, 0.0
@@ -281,9 +318,15 @@ __all__ = [
     "leaky_min",
     "normalize_with_norm",
     "orthonormal_basis",
+    "quat_between_axes",
+    "quat_between_vectors_robust",
+    "quat_decompose",
+    "quat_velocity",
     "safe_div",
     "smooth_max",
     "smooth_min",
+    "transform_twist",
+    "transform_wrench",
     "vec_abs",
     "vec_allclose",
     "vec_inside_limits",
@@ -291,4 +334,5 @@ __all__ = [
     "vec_leaky_min",
     "vec_max",
     "vec_min",
+    "velocity_at_point",
 ]

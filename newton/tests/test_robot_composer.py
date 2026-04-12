@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -20,8 +8,8 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton import ActuatorMode
-from newton._src.utils.download_assets import download_git_folder
+from newton import JointTargetMode
+from newton._src.utils.download_assets import MENAGERIE_REF, MENAGERIE_URL, download_git_folder
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import add_function_test, find_nan_members, get_cuda_test_devices
 
@@ -120,8 +108,9 @@ class RobotComposerSim:
         # Download from MuJoCo Menagerie
         try:
             ur5e_folder = download_git_folder(
-                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                git_url=MENAGERIE_URL,
                 folder_path="universal_robots_ur5e",
+                ref=MENAGERIE_REF,
             )
             self.ur5e_path = ur5e_folder / "ur5e.xml"
             print(f"  UR5e: {self.ur5e_path.exists()}")
@@ -131,8 +120,9 @@ class RobotComposerSim:
 
         try:
             leap_folder = download_git_folder(
-                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                git_url=MENAGERIE_URL,
                 folder_path="leap_hand",
+                ref=MENAGERIE_REF,
             )
             self.leap_path = leap_folder / "left_hand.xml"
             print(f"  LEAP hand left: {self.leap_path.exists()}")
@@ -142,8 +132,9 @@ class RobotComposerSim:
 
         try:
             allegro_folder = download_git_folder(
-                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                git_url=MENAGERIE_URL,
                 folder_path="wonik_allegro",
+                ref=MENAGERIE_REF,
             )
             self.allegro_path = allegro_folder / "left_hand.xml"
             print(f"  Allegro hand: {self.allegro_path.exists()}")
@@ -163,8 +154,9 @@ class RobotComposerSim:
         # Download Robotiq 2F85 gripper
         try:
             robotiq_2f85_folder = download_git_folder(
-                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                git_url=MENAGERIE_URL,
                 folder_path="robotiq_2f85",
+                ref=MENAGERIE_REF,
             )
             self.robotiq_2f85_path = robotiq_2f85_folder / "2f85.xml"
             print(f"  Robotiq 2F85 gripper: {self.robotiq_2f85_path.exists()}")
@@ -208,7 +200,7 @@ class RobotComposerSim:
         ur5e_with_robotiq_gripper.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur5e_with_robotiq_gripper.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_robotiq_gripper.joint_target_kd[:3] = [50.0] * 3
-        ur5e_with_robotiq_gripper.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur5e_with_robotiq_gripper.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_robotiq_gripper.joint_q[-6:] = init_q[:6]
@@ -217,11 +209,12 @@ class RobotComposerSim:
         ur5e_with_robotiq_gripper.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_robotiq_gripper.joint_effort_limit[-6:] = [100.0] * 6
         ur5e_with_robotiq_gripper.joint_armature[-6:] = [0.2] * 6
-        ur5e_with_robotiq_gripper.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur5e_with_robotiq_gripper.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         # Find end effector body by searching body names
-        ee_name = "wrist_3_link"
-        ee_body_idx = ur5e_with_robotiq_gripper.body_key.index(ee_name)
+        ee_body_idx = next(
+            i for i, lbl in enumerate(ur5e_with_robotiq_gripper.body_label) if lbl.endswith("/wrist_3_link")
+        )
 
         # Attach Robotiq 2F85 gripper to end effector
         gripper_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2)
@@ -248,7 +241,7 @@ class RobotComposerSim:
             ur5e_with_robotiq_gripper.joint_target_ke[idx] = 20.0
             ur5e_with_robotiq_gripper.joint_target_kd[idx] = 1.0
             ur5e_with_robotiq_gripper.joint_target_pos[idx] = self.gripper_target_pos
-            ur5e_with_robotiq_gripper.joint_act_mode[idx] = int(ActuatorMode.POSITION)
+            ur5e_with_robotiq_gripper.joint_target_mode[idx] = int(JointTargetMode.POSITION)
 
         builder.add_builder(ur5e_with_robotiq_gripper)
 
@@ -274,7 +267,7 @@ class RobotComposerSim:
         ur5e_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur5e_with_hand.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_hand.joint_target_kd[:3] = [50.0] * 3
-        ur5e_with_hand.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur5e_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_hand.joint_q[-6:] = init_q[:6]
@@ -283,11 +276,10 @@ class RobotComposerSim:
         ur5e_with_hand.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_hand.joint_effort_limit[-6:] = [100.0] * 6
         ur5e_with_hand.joint_armature[-6:] = [0.2] * 6
-        ur5e_with_hand.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur5e_with_hand.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         # Find end effector body by searching body names
-        ee_name = "wrist_3_link"
-        ee_body_idx = ur5e_with_hand.body_key.index(ee_name)
+        ee_body_idx = next(i for i, lbl in enumerate(ur5e_with_hand.body_label) if lbl.endswith("/wrist_3_link"))
 
         # Attach LEAP hand left to end effector
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 2)
@@ -328,7 +320,7 @@ class RobotComposerSim:
         franka_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         franka_with_hand.joint_target_ke[:3] = [500.0] * 3
         franka_with_hand.joint_target_kd[:3] = [50.0] * 3
-        franka_with_hand.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        franka_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         # Set panda joint positions and joint targets
         init_q = [
@@ -347,11 +339,10 @@ class RobotComposerSim:
         franka_with_hand.joint_target_kd[-7:] = [450, 450, 350, 350, 200, 200, 200]
         franka_with_hand.joint_effort_limit[-7:] = [87, 87, 87, 87, 12, 12, 12]
         franka_with_hand.joint_armature[-7:] = [0.195] * 4 + [0.074] * 3
-        franka_with_hand.joint_act_mode[-7:] = [int(ActuatorMode.POSITION)] * 7
+        franka_with_hand.joint_target_mode[-7:] = [int(JointTargetMode.POSITION)] * 7
 
         # Find end effector body by searching body names
-        franka_ee_name = "fr3_link8"
-        franka_ee_idx = franka_with_hand.body_key.index(franka_ee_name)
+        franka_ee_idx = next(i for i, lbl in enumerate(franka_with_hand.body_label) if lbl.endswith("/fr3_link8"))
 
         # Attach Allegro hand with custom base joint
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -init_q[-1])
@@ -397,7 +388,7 @@ class RobotComposerSim:
         ur10_builder.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur10_builder.joint_target_ke[:3] = [500.0] * 3
         ur10_builder.joint_target_kd[:3] = [50.0] * 3
-        ur10_builder.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur10_builder.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         # Initialize arm joints to elbow down configuration (same as UR5e)
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
@@ -409,7 +400,7 @@ class RobotComposerSim:
         ur10_builder.joint_target_kd[-6:] = [450.0] * 6
         ur10_builder.joint_effort_limit[-6:] = [100.0] * 6
         ur10_builder.joint_armature[-6:] = [0.2] * 6
-        ur10_builder.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur10_builder.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         builder.add_builder(ur10_builder)
 
@@ -471,7 +462,7 @@ class RobotComposerSim:
     def run(self):
         if self.do_rendering:
             if hasattr(self.viewer, "register_ui_callback"):
-                self.viewer.register_ui_callback(lambda ui: self.gui(ui), position="side")
+                self.viewer.register_ui_callback(self.gui, position="side")
             while self.viewer.is_running():
                 if not self.viewer.is_paused():
                     self.step()

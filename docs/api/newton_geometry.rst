@@ -1,6 +1,10 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 newton.geometry
 ===============
 
+.. py:module:: newton.geometry
 .. currentmodule:: newton.geometry
 
 .. rubric:: Classes
@@ -33,7 +37,14 @@ newton.geometry
    collide_sphere_capsule
    collide_sphere_cylinder
    collide_sphere_sphere
-   compute_shape_inertia
+   compute_inertia_shape
+   compute_offset_mesh
    create_empty_sdf_data
-   remesh_mesh
+   sdf_box
+   sdf_capsule
+   sdf_cone
+   sdf_cylinder
+   sdf_mesh
+   sdf_plane
+   sdf_sphere
    transform_inertia

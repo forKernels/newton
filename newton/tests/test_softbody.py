@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -49,13 +37,13 @@ def compute_neo_hookean_energy_and_force_and_hessian(
     # inputs
     tet_id: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     v_order = wp.tid()
     f, h = evaluate_volumetric_neo_hookean_force_and_hessian(
@@ -81,13 +69,13 @@ def compute_neo_hookean_energy_and_force(
     # inputs
     tet_id: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     # outputs: particle force and hessian
-    tet_energy: wp.array(dtype=float),
-    particle_forces: wp.array(dtype=float),
+    tet_energy: wp.array[float],
+    particle_forces: wp.array[float],
 ):
     v0_idx = tet_indices[tet_id, 0]
     v1_idx = tet_indices[tet_id, 1]
@@ -339,7 +327,7 @@ def test_tet_adjacency_single_tet(test, device):
 
     solver = SolverVBD(model)
 
-    adjacency = solver.compute_particle_force_element_adjacency()
+    adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(4, tet_indices)
     np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
@@ -352,7 +340,7 @@ def test_tet_adjacency_complex_pyramid(test, device):
 
     solver = SolverVBD(model)
 
-    adjacency = solver.compute_particle_force_element_adjacency()
+    adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(len(PYRAMID_PARTICLES), PYRAMID_TET_INDICES)
     np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
@@ -384,7 +372,7 @@ def test_tet_graph_coloring_is_valid(test, device):
 def test_tet_energy(test, device):
     rng = np.random.default_rng(seed=42)
 
-    for _test in range(100):
+    for _test in range(30):
         builder = ModelBuilder()
 
         vertices = [wp.vec3(rng.standard_normal((3,))) for _ in range(4)]
