@@ -201,7 +201,9 @@ def ccd_vertex_triangle(
     roots = solve_cubic_roots_01(coeff_a, coeff_b, coeff_c, coeff_d)
     num_roots = int(roots[3])
 
-    min_toi = CCD_NO_COLLISION
+    # float(): reassigned inside a loop below, so warp needs it declared as a
+    # dynamic variable rather than bound to the wp.constant.
+    min_toi = float(CCD_NO_COLLISION)
 
     for i in range(3):
         if i >= num_roots:
@@ -291,7 +293,9 @@ def ccd_edge_edge(
     roots = solve_cubic_roots_01(coeff_a, coeff_b, coeff_c, coeff_d)
     num_roots = int(roots[3])
 
-    min_toi = CCD_NO_COLLISION
+    # float(): reassigned inside a loop below, so warp needs it declared as a
+    # dynamic variable rather than bound to the wp.constant.
+    min_toi = float(CCD_NO_COLLISION)
 
     for i in range(3):
         if i >= num_roots:
@@ -425,8 +429,10 @@ def vertex_triangle_ccd_kernel(
     lo = wp.min(v0, v1) - wp.vec3(thickness, thickness, thickness)
     hi = wp.max(v0, v1) + wp.vec3(thickness, thickness, thickness)
 
-    min_toi = CCD_NO_COLLISION
-    min_tri = -1
+    # float(): reassigned inside a loop below, so warp needs it declared as a
+    # dynamic variable rather than bound to the wp.constant.
+    min_toi = float(CCD_NO_COLLISION)
+    min_tri = int(-1)
 
     query = wp.bvh_query_aabb(bvh_id, lo, hi)
     tri_index = int(0)
@@ -438,11 +444,23 @@ def vertex_triangle_ccd_kernel(
         if ti == v_index or tj == v_index or tk == v_index:
             continue
 
-        # Topological filtering
-        if filtering_list_offsets is not None:
+        # Topological filtering.
+        #
+        # Test the array's length, not its identity: warp's codegen has no
+        # None inside a kernel and rejects the comparison outright
+        # ("None type unsupported"), which is how this failed under
+        # warp 1.16 having compiled fine under 1.11. A caller that passes
+        # None gets a null array here, whose shape[0] is 0, so this covers
+        # both the "no filtering list" and "real list" cases the original
+        # identity test was distinguishing.
+        if filtering_list_offsets.shape[0] > 0:
             filter_start = filtering_list_offsets[v_index]
             filter_end = filtering_list_offsets[v_index + 1]
-            skip = False
+            # bool(False), not False: a bare literal is a compile-time
+            # constant to warp, and mutating one inside the dynamic loop
+            # below is a codegen error from warp 1.16 on. The explicit
+            # constructor declares it as a dynamic variable instead.
+            skip = bool(False)
             for f_idx in range(filter_start, filter_end):
                 if filtering_list[f_idx] == tri_index:
                     skip = True
@@ -497,8 +515,10 @@ def edge_edge_ccd_kernel(
     lo = wp.min(wp.min(wp.min(a0, a1), b0), b1) - wp.vec3(thickness, thickness, thickness)
     hi = wp.max(wp.max(wp.max(a0, a1), b0), b1) + wp.vec3(thickness, thickness, thickness)
 
-    min_toi = CCD_NO_COLLISION
-    min_edge = -1
+    # float(): reassigned inside a loop below, so warp needs it declared as a
+    # dynamic variable rather than bound to the wp.constant.
+    min_toi = float(CCD_NO_COLLISION)
+    min_edge = int(-1)
 
     query = wp.bvh_query_aabb(bvh_id, lo, hi)
     e2_index = int(0)
@@ -513,11 +533,23 @@ def edge_edge_ccd_kernel(
         if e1_i == e2_i or e1_i == e2_j or e1_j == e2_i or e1_j == e2_j:
             continue
 
-        # Topological filtering
-        if filtering_list_offsets is not None:
+        # Topological filtering.
+        #
+        # Test the array's length, not its identity: warp's codegen has no
+        # None inside a kernel and rejects the comparison outright
+        # ("None type unsupported"), which is how this failed under
+        # warp 1.16 having compiled fine under 1.11. A caller that passes
+        # None gets a null array here, whose shape[0] is 0, so this covers
+        # both the "no filtering list" and "real list" cases the original
+        # identity test was distinguishing.
+        if filtering_list_offsets.shape[0] > 0:
             filter_start = filtering_list_offsets[e_index]
             filter_end = filtering_list_offsets[e_index + 1]
-            skip = False
+            # bool(False), not False: a bare literal is a compile-time
+            # constant to warp, and mutating one inside the dynamic loop
+            # below is a codegen error from warp 1.16 on. The explicit
+            # constructor declares it as a dynamic variable instead.
+            skip = bool(False)
             for f_idx in range(filter_start, filter_end):
                 if filtering_list[f_idx] == e2_index:
                     skip = True
