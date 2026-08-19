@@ -1,6 +1,10 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 newton.viewer
 =============
 
+.. py:module:: newton.viewer
 .. currentmodule:: newton.viewer
 
 .. rubric:: Classes
@@ -9,9 +13,12 @@ newton.viewer
    :toctree: _generated
    :nosignatures:
 
+   Layer
+   ViewerBase
    ViewerFile
    ViewerGL
    ViewerNull
+   ViewerRTX
    ViewerRerun
    ViewerUSD
    ViewerViser

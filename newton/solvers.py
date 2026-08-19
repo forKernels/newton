@@ -1,140 +1,68 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
+# Source for the detailed solver guide: docs/solvers/index.rst
 """
-Solvers are used to integrate the dynamics of a Newton model.
-The typical workflow is to construct a :class:`~newton.Model` and a :class:`~newton.State` object, then use a solver to advance the state forward in time
-via the :meth:`~newton.solvers.SolverBase.step` method:
+Solvers integrate the dynamics of a :class:`~newton.Model` through the common
+:class:`~newton.solvers.SolverBase` interface. Newton provides backends for
+rigid articulated systems, maximal-coordinate constraints, particles, and
+deformable simulation.
 
-.. mermaid::
-  :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
-
-  flowchart LR
-      subgraph Input["Input Data"]
-          M[newton.Model]
-          S[newton.State]
-          C[newton.Control]
-          K[newton.Contacts]
-          DT[Time step dt]
-      end
-
-      STEP["solver.step()"]
-
-      subgraph Output["Output Data"]
-          SO["newton.State (updated)"]
-      end
-
-      %% Connections
-      M --> STEP
-      S --> STEP
-      C --> STEP
-      K --> STEP
-      DT --> STEP
-      STEP --> SO
-
-Supported Features
-------------------
-
-.. list-table::
-   :header-rows: 1
-   :widths: auto
-   :stub-columns: 0
-
-   * - Solver
-     - :abbr:`Integration (Available methods for integrating the dynamics)`
-     - Rigid bodies
-     - :ref:`Articulations <Articulations>`
-     - Particles
-     - Cloth
-     - Soft bodies
-   * - :class:`~newton.solvers.SolverFeatherstone`
-     - Explicit
-     - ✅
-     - ✅ generalized coordinates
-     - ✅
-     - 🟨 no self-collision
-     - ✅
-   * - :class:`~newton.solvers.SolverImplicitMPM`
-     - Implicit
-     - ❌
-     - ❌
-     - ✅
-     - ❌
-     - ❌
-   * - :class:`~newton.solvers.SolverMuJoCo`
-     - Explicit, Semi-implicit, Implicit
-     - ✅ (uses its own collision pipeline from MuJoCo/mujoco_warp by default, unless ``use_mujoco_contacts`` is set to False)
-     - ✅ generalized coordinates
-     - ❌
-     - ❌
-     - ❌
-   * - :class:`~newton.solvers.SolverSemiImplicit`
-     - Semi-implicit
-     - ✅
-     - ✅ maximal coordinates
-     - ✅
-     - 🟨 no self-collision
-     - ✅
-   * - :class:`~newton.solvers.SolverStyle3D`
-     - Implicit
-     - ❌
-     - ❌
-     - ✅
-     - ✅
-     - ❌
-   * - :class:`~newton.solvers.SolverVBD`
-     - Implicit
-     - ✅
-     - ❌
-     - ✅
-     - ✅
-     - ❌
-   * - :class:`~newton.solvers.SolverXPBD`
-     - Implicit
-     - ✅
-     - ✅ maximal coordinates
-     - ✅
-     - 🟨 no self-collision
-     - 🟨 experimental
+For solver-selection guidance and the feature, contact-material, joint-support,
+and differentiability comparisons, see the :doc:`Solvers guide </solvers/index>`.
+Installed-wheel users can use the stable hosted guide at
+https://newton-physics.github.io/newton/stable/solvers/index.html.
 """
 
-# solver types
-from ._src.solvers import (
-    SolverBase,
-    SolverFeatherstone,
-    SolverImplicitMPM,
-    SolverMuJoCo,
-    SolverSemiImplicit,
-    SolverStyle3D,
-    SolverVBD,
-    SolverXPBD,
-    style3d,
-)
+import importlib
+import sys
+from types import ModuleType
+from typing import TYPE_CHECKING
 
-# solver flags
-from ._src.solvers.flags import SolverNotifyFlags
+from ._src import solvers as _solvers
 
-__all__ = [
-    "SolverBase",
-    "SolverFeatherstone",
-    "SolverImplicitMPM",
-    "SolverMuJoCo",
-    "SolverNotifyFlags",
-    "SolverSemiImplicit",
-    "SolverStyle3D",
-    "SolverVBD",
-    "SolverXPBD",
-    "style3d",
-]
+if TYPE_CHECKING:
+    from ._src.solvers import *  # noqa: F403
+
+__all__ = [*_solvers.__all__, "experimental"]  # noqa: PLE0604
+
+
+def __getattr__(name: str):
+    if name not in __all__:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
+    value = getattr(_solvers, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
+
+class _LazyCoupledModule(ModuleType):
+    def _load(self) -> ModuleType:
+        module = importlib.import_module("._src.solvers.coupled", __package__)
+        experimental.coupled = module
+        sys.modules[self.__name__] = module
+        return module
+
+    def __getattr__(self, name: str):
+        module = self._load()
+        return getattr(module, name)
+
+    def __dir__(self) -> list[str]:
+        return dir(self._load())
+
+
+experimental = ModuleType(f"{__name__}.experimental")
+experimental.__doc__ = """Experimental solver namespaces.
+
+.. experimental::
+"""
+experimental.__all__ = ["coupled"]
+experimental.__path__ = []
+experimental.coupled = _LazyCoupledModule(f"{__name__}.experimental.coupled")
+
+sys.modules[f"{__name__}.experimental"] = experimental
+sys.modules[f"{__name__}.experimental.coupled"] = experimental.coupled

@@ -1,12 +1,15 @@
 """Diagnose which particles are stuck and WHY by running a few frames and comparing positions."""
+
 import sys
+
 sys.path.insert(0, "scripts/disco")
 
-import warp as wp
-import newton
 import numpy as np
+import warp as wp
 from newton_sim_utils import *
-from test_cloth_self_collision import discover_original_garments, ORIGINAL_GARMENT_DIR
+from test_cloth_self_collision import ORIGINAL_GARMENT_DIR, discover_original_garments
+
+import newton
 
 wp.init()
 
@@ -23,7 +26,9 @@ with wp.ScopedDevice(wp.get_preferred_device()):
     builder.add_shape_cone(
         body=-1,
         xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.3), q=wp.quat_identity()),
-        radius=0.12, half_height=0.3, cfg=cfg,
+        radius=0.12,
+        half_height=0.3,
+        cfg=cfg,
     )
 
     garments = discover_original_garments(ORIGINAL_GARMENT_DIR, "dress")
@@ -80,18 +85,18 @@ with wp.ScopedDevice(wp.get_preferred_device()):
     stuck = displacement < threshold
     moving = ~stuck
 
-    print(f"\n{'='*60}")
-    print(f"PARTICLE MOVEMENT ANALYSIS (50 frames)")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("PARTICLE MOVEMENT ANALYSIS (50 frames)")
+    print(f"{'=' * 60}")
     print(f"Total particles: {len(displacement)}")
-    print(f"Moving (>1mm): {np.sum(moving)} ({100*np.sum(moving)/len(displacement):.1f}%)")
-    print(f"Stuck (<1mm):  {np.sum(stuck)} ({100*np.sum(stuck)/len(displacement):.1f}%)")
-    print(f"")
-    print(f"Moving particles:")
+    print(f"Moving (>1mm): {np.sum(moving)} ({100 * np.sum(moving) / len(displacement):.1f}%)")
+    print(f"Stuck (<1mm):  {np.sum(stuck)} ({100 * np.sum(stuck) / len(displacement):.1f}%)")
+    print("")
+    print("Moving particles:")
     print(f"  Mean displacement: {displacement[moving].mean():.4f}m")
     print(f"  Mean z-drop: {z_drop[moving].mean():.4f}m")
-    print(f"")
-    print(f"Stuck particles:")
+    print("")
+    print("Stuck particles:")
     if np.any(stuck):
         print(f"  Count: {np.sum(stuck)}")
         print(f"  Mean displacement: {displacement[stuck].mean():.6f}m")
@@ -117,13 +122,13 @@ with wp.ScopedDevice(wp.get_preferred_device()):
 
         # Show spatial distribution
         stuck_pos = pos_initial[stuck]
-        print(f"  Position range:")
-        print(f"    x: [{stuck_pos[:,0].min():.3f}, {stuck_pos[:,0].max():.3f}]")
-        print(f"    y: [{stuck_pos[:,1].min():.3f}, {stuck_pos[:,1].max():.3f}]")
-        print(f"    z: [{stuck_pos[:,2].min():.3f}, {stuck_pos[:,2].max():.3f}]")
+        print("  Position range:")
+        print(f"    x: [{stuck_pos[:, 0].min():.3f}, {stuck_pos[:, 0].max():.3f}]")
+        print(f"    y: [{stuck_pos[:, 1].min():.3f}, {stuck_pos[:, 1].max():.3f}]")
+        print(f"    z: [{stuck_pos[:, 2].min():.3f}, {stuck_pos[:, 2].max():.3f}]")
 
         # Compare to color groups
-        print(f"\n  Color group membership:")
+        print("\n  Color group membership:")
         all_colored = set()
         for cg in model.particle_color_groups:
             cg_np = cg.numpy()
@@ -132,4 +137,4 @@ with wp.ScopedDevice(wp.get_preferred_device()):
         print(f"    Stuck but NOT in any color group: {len(stuck_not_colored)}")
         print(f"    Total particles in color groups: {len(all_colored)} / {len(displacement)}")
 
-    print(f"\nDone.")
+    print("\nDone.")

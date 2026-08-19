@@ -9,10 +9,7 @@ simulation-ready Models from the command line.
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
-
 
 _real_newton = None
 
@@ -39,8 +36,9 @@ def _ensure_newton():
     # The bare "import newton" may resolve to cli_anything.newton (our package).
     # Use newton._src as a fingerprint to find the real one.
     try:
-        import newton._src.sim.builder as _builder_mod
         import newton as _n
+        import newton._src.sim.builder as _builder_mod
+
         if hasattr(_n, "ModelBuilder"):
             _real_newton = _n
             return _n
@@ -49,8 +47,8 @@ def _ensure_newton():
 
     # Last resort: find the real newton package directory on sys.path
     # and patch sys.modules so relative imports (from ._src) work.
-    import os
     import importlib.util
+    import os
 
     for entry in sys.path:
         if not entry or not os.path.isdir(entry):
@@ -59,7 +57,8 @@ def _ensure_newton():
         if os.path.isfile(candidate) and "cli_anything" not in candidate:
             newton_dir = os.path.join(entry, "newton")
             spec = importlib.util.spec_from_file_location(
-                "newton", candidate,
+                "newton",
+                candidate,
                 submodule_search_locations=[newton_dir],
             )
             if spec and spec.loader:
@@ -117,7 +116,6 @@ def load_scene(
         raise ValueError(f"Unsupported scene format: {ext}. Use .urdf, .xml, .usd, or .usda")
 
     newton = _ensure_newton()
-    import warp as wp
 
     builder = newton.ModelBuilder()
 
@@ -162,14 +160,16 @@ def load_scene(
 
     model = builder.finalize(device=device)
 
-    scene_info.update({
-        "body_count": model.body_count,
-        "joint_count": model.joint_count,
-        "shape_count": model.shape_count,
-        "particle_count": model.particle_count,
-        "spring_count": model.spring_count,
-        "tri_count": model.tri_count,
-    })
+    scene_info.update(
+        {
+            "body_count": model.body_count,
+            "joint_count": model.joint_count,
+            "shape_count": model.shape_count,
+            "particle_count": model.particle_count,
+            "spring_count": model.spring_count,
+            "tri_count": model.tri_count,
+        }
+    )
 
     return {
         "model": model,
@@ -187,7 +187,6 @@ def get_model_info(model) -> dict:
     Returns:
         Dict with model statistics and structure.
     """
-    import numpy as np
 
     info = {
         "body_count": model.body_count,
@@ -206,8 +205,17 @@ def get_model_info(model) -> dict:
     if model.shape_count > 0:
         try:
             shape_types = model.shape_type.numpy()
-            type_names = {0: "sphere", 1: "box", 2: "capsule", 3: "cylinder",
-                          4: "cone", 5: "mesh", 6: "heightfield", 7: "plane", 8: "sdf"}
+            type_names = {
+                0: "sphere",
+                1: "box",
+                2: "capsule",
+                3: "cylinder",
+                4: "cone",
+                5: "mesh",
+                6: "heightfield",
+                7: "plane",
+                8: "sdf",
+            }
             counts = {}
             for t in shape_types:
                 name = type_names.get(int(t), f"unknown({t})")
@@ -312,12 +320,14 @@ def build_procedural_scene(
 
     model = builder.finalize(device=device)
 
-    scene_info.update({
-        "body_count": model.body_count,
-        "joint_count": model.joint_count,
-        "shape_count": model.shape_count,
-        "particle_count": model.particle_count,
-    })
+    scene_info.update(
+        {
+            "body_count": model.body_count,
+            "joint_count": model.joint_count,
+            "shape_count": model.shape_count,
+            "particle_count": model.particle_count,
+        }
+    )
 
     return {
         "model": model,

@@ -6,13 +6,14 @@ Usage:
     blender --factory-startup -P scripts/disco/test_knockover.py -- --seed 42
 """
 
-import bpy
 import json
 import math
 import os
 import random
 import sys
-from mathutils import Vector, Euler
+
+import bpy
+from mathutils import Euler, Vector
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "sim_config.json")
@@ -44,18 +45,23 @@ def find_tabletop_objects(dtc_dir, max_dim=0.20):
             if not os.path.exists(glb):
                 glb = os.path.join(dtc_dir, name, "visual.glb")
             if os.path.exists(glb):
-                results.append({
-                    "name": name, "glb": glb, "dims": dims,
-                    "mass": meta.get("mass_kg", 0.1),
-                    "friction": meta.get("friction_static", 0.5),
-                    "restitution": meta.get("restitution", 0.3),
-                })
+                results.append(
+                    {
+                        "name": name,
+                        "glb": glb,
+                        "dims": dims,
+                        "mass": meta.get("mass_kg", 0.1),
+                        "friction": meta.get("friction_static", 0.5),
+                        "restitution": meta.get("restitution", 0.3),
+                    }
+                )
     return results
 
 
 # ---------------------------------------------------------------------------
 # SCENE
 # ---------------------------------------------------------------------------
+
 
 def add_rigid_body(obj, rb_type, shape, friction=0.6, mass=1.0):
     """Add rigid body with margin=0 to any object."""
@@ -94,10 +100,14 @@ def create_table(cx, cy):
     leg_h = TABLE_HEIGHT - 0.0125
     ix = TABLE_W / 2 - 0.04
     iy = TABLE_D / 2 - 0.04
-    for i, (lx, ly) in enumerate([
-        (cx - ix, cy - iy), (cx + ix, cy - iy),
-        (cx - ix, cy + iy), (cx + ix, cy + iy),
-    ]):
+    for i, (lx, ly) in enumerate(
+        [
+            (cx - ix, cy - iy),
+            (cx + ix, cy - iy),
+            (cx - ix, cy + iy),
+            (cx + ix, cy + iy),
+        ]
+    ):
         bpy.ops.mesh.primitive_cube_add(size=1, location=(lx, ly, leg_h / 2))
         leg = bpy.context.active_object
         leg.name = f"Table_Leg_{i}"
@@ -122,6 +132,7 @@ def create_table(cx, cy):
 def import_rig(fbx_path):
     sys.path.insert(0, SCRIPT_DIR)
     from interaction_gen import import_accurig_fbx
+
     rig_name = import_accurig_fbx(fbx_path)
     return rig_name, bpy.data.objects[rig_name]
 
@@ -154,8 +165,7 @@ def create_ik_controller(rig, bone_name, label, color=(1, 0.2, 0.2), size=0.06):
     bone_con.name = f"Follow_{label}"
 
     # 3. Collision sphere follows the controller
-    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.05, segments=8, ring_count=6,
-                                          location=bone_world)
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.05, segments=8, ring_count=6, location=bone_world)
     col = bpy.context.active_object
     col.name = f"COL_{label}"
     col.display_type = "WIRE"
@@ -229,6 +239,7 @@ def setup_scene(frame_end):
 # ANIMATION — direct keyframing, no matrix conversion needed
 # ---------------------------------------------------------------------------
 
+
 def animate_knockover(rig, ik_bone_name, table_cy, table_z, seed):
     """Keyframe the IK hand target to sweep across the table.
 
@@ -248,10 +259,10 @@ def animate_knockover(rig, ik_bone_name, table_cy, table_z, seed):
         pb.keyframe_insert("location", frame=frame)
 
     # Timing at 60fps
-    settle_end = 60        # 1s for objects to settle
-    approach_end = 120     # 1s to reach sweep start
-    sweep_end = 240        # 2s sweep across table
-    lift_end = 270         # 0.5s lift away
+    settle_end = 60  # 1s for objects to settle
+    approach_end = 120  # 1s to reach sweep start
+    sweep_end = 240  # 2s sweep across table
+    lift_end = 270  # 0.5s lift away
 
     sweep_z = table_z + 0.06  # just above table surface
     start_x = random.uniform(-0.30, -0.20)
@@ -284,14 +295,16 @@ def animate_knockover(rig, ik_bone_name, table_cy, table_z, seed):
 # MAIN
 # ---------------------------------------------------------------------------
 
+
 def main():
     argv = sys.argv
     if "--" in argv:
-        argv = argv[argv.index("--") + 1:]
+        argv = argv[argv.index("--") + 1 :]
     else:
         argv = []
 
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-objects", type=int, default=2)
@@ -324,6 +337,7 @@ def main():
     print("[test_knockover] Adding IK controllers...", flush=True)
     sys.path.insert(0, SCRIPT_DIR)
     from interaction_gen import BONE_MAPS
+
     bone_map = BONE_MAPS[rig_name]
 
     create_ik_controller(rig, bone_map["hand_r"], "Hand_R", color=(1, 0.2, 0.2))

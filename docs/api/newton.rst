@@ -1,28 +1,23 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
 newton
 ======
 
+.. py:module:: newton
 .. currentmodule:: newton
-
-.. toctree::
-   :hidden:
-
-   newton_geometry
-   newton_ik
-   newton_math
-   newton_selection
-   newton_sensors
-   newton_solvers
-   newton_utils
-   newton_viewer
 
 .. rubric:: Submodules
 
+- :doc:`newton.actuators <newton_actuators>`
+- :doc:`newton.controllers <newton_controllers>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
 - :doc:`newton.selection <newton_selection>`
 - :doc:`newton.sensors <newton_sensors>`
 - :doc:`newton.solvers <newton_solvers>`
+- :doc:`newton.usd <newton_usd>`
 - :doc:`newton.utils <newton_utils>`
 - :doc:`newton.viewer <newton_viewer>`
 
@@ -32,22 +27,27 @@ newton
    :toctree: _generated
    :nosignatures:
 
-   ActuatorMode
    Axis
+   BodyFlags
    CollisionPipeline
    Contacts
    Control
    EqType
+   Gaussian
    GeoType
    Heightfield
+   JointTargetMode
    JointType
    Mesh
    Model
    ModelBuilder
+   ModelFlags
    ParticleFlags
    SDF
    ShapeFlags
    State
+   StateFlags
+   TetMesh
 
 .. rubric:: Functions
 
@@ -56,12 +56,14 @@ newton
    :signatures: long
 
    AxisType
-   BroadPhaseInstance
-   BroadPhaseMode
    eval_fk
    eval_ik
+   eval_inverse_dynamics_force
+   eval_inverse_dynamics_passive
    eval_jacobian
    eval_mass_matrix
+   eval_rigid_contact_kinematics
+   intersect_ray
 
 .. rubric:: Constants
 
@@ -70,7 +72,9 @@ newton
 
    * - Name
      - Value
-   * - MAXVAL
-     - 10000000000.0
-   * - __version__
-     - 0.2.0
+   * - ``MAXVAL``
+     - ``10000000000.0``
+   * - ``__version__``
+     - ``1.6.0.dev0``
+   * - ``use_coord_layout_targets``
+     - ``False``

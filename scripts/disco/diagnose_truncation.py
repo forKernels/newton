@@ -1,12 +1,15 @@
 """Check truncation_ts values for stuck vs moving particles."""
+
 import sys
+
 sys.path.insert(0, "scripts/disco")
 
-import warp as wp
-import newton
 import numpy as np
+import warp as wp
 from newton_sim_utils import *
-from test_cloth_self_collision import discover_original_garments, ORIGINAL_GARMENT_DIR
+from test_cloth_self_collision import ORIGINAL_GARMENT_DIR, discover_original_garments
+
+import newton
 
 wp.init()
 
@@ -15,9 +18,12 @@ with wp.ScopedDevice(wp.get_preferred_device()):
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     cfg = newton.ModelBuilder.ShapeConfig()
-    cfg.mu = 0.6; cfg.has_particle_collision = True; cfg.has_shape_collision = True
-    builder.add_shape_cone(body=-1, xform=wp.transform(p=wp.vec3(0,0,0.3), q=wp.quat_identity()),
-                           radius=0.12, half_height=0.3, cfg=cfg)
+    cfg.mu = 0.6
+    cfg.has_particle_collision = True
+    cfg.has_shape_collision = True
+    builder.add_shape_cone(
+        body=-1, xform=wp.transform(p=wp.vec3(0, 0, 0.3), q=wp.quat_identity()), radius=0.12, half_height=0.3, cfg=cfg
+    )
 
     g = discover_original_garments(ORIGINAL_GARMENT_DIR, "dress")[0]
     print(f"Garment: {g['name']}")
@@ -27,11 +33,15 @@ with wp.ScopedDevice(wp.get_preferred_device()):
 
     # Mass workarounds
     mass_np = model.particle_mass.numpy()
-    nz = mass_np[mass_np > 0]; mm = float(np.median(nz) * 0.1)
-    mass_np[mass_np < mm] = mm; model.particle_mass.assign(mass_np)
+    nz = mass_np[mass_np > 0]
+    mm = float(np.median(nz) * 0.1)
+    mass_np[mass_np < mm] = mm
+    model.particle_mass.assign(mass_np)
     inv_m = np.divide(1.0, mass_np, out=np.zeros_like(mass_np), where=mass_np != 0)
     model.particle_inv_mass.assign(inv_m)
-    fl = model.particle_flags.numpy(); fl[:] |= 1; model.particle_flags.assign(fl)
+    fl = model.particle_flags.numpy()
+    fl[:] |= 1
+    model.particle_flags.assign(fl)
 
     pos0 = model.particle_q.numpy().copy()
 
@@ -41,7 +51,8 @@ with wp.ScopedDevice(wp.get_preferred_device()):
     ctrl = model.control()
     cp = newton.CollisionPipeline(model, soft_contact_margin=0.02)
     ct = cp.contacts()
-    dt = 1.0/60.0; sdt = dt/10
+    dt = 1.0 / 60.0
+    sdt = dt / 10
 
     # Run 10 frames
     for f in range(10):
@@ -63,7 +74,7 @@ with wp.ScopedDevice(wp.get_preferred_device()):
 
     print(f"\nStuck: {np.sum(stuck)}, Moving: {np.sum(moving)}")
 
-    print(f"\n--- truncation_ts ---")
+    print("\n--- truncation_ts ---")
     print(f"  Stuck:  min={trunc[stuck].min():.6f}, max={trunc[stuck].max():.6f}, mean={trunc[stuck].mean():.6f}")
     print(f"  Moving: min={trunc[moving].min():.6f}, max={trunc[moving].max():.6f}, mean={trunc[moving].mean():.6f}")
     print(f"  Stuck with t<0.5: {np.sum(trunc[stuck] < 0.5)}")
@@ -71,15 +82,19 @@ with wp.ScopedDevice(wp.get_preferred_device()):
     print(f"  Stuck with t<0.01: {np.sum(trunc[stuck] < 0.01)}")
     print(f"  Moving with t<0.5: {np.sum(trunc[moving] < 0.5)}")
 
-    print(f"\n--- particle_displacements (pre-truncation) ---")
+    print("\n--- particle_displacements (pre-truncation) ---")
     disp_mag = np.linalg.norm(disps, axis=1)
-    print(f"  Stuck:  min={disp_mag[stuck].min():.8f}, max={disp_mag[stuck].max():.8f}, mean={disp_mag[stuck].mean():.8f}")
-    print(f"  Moving: min={disp_mag[moving].min():.8f}, max={disp_mag[moving].max():.8f}, mean={disp_mag[moving].mean():.8f}")
+    print(
+        f"  Stuck:  min={disp_mag[stuck].min():.8f}, max={disp_mag[stuck].max():.8f}, mean={disp_mag[stuck].mean():.8f}"
+    )
+    print(
+        f"  Moving: min={disp_mag[moving].min():.8f}, max={disp_mag[moving].max():.8f}, mean={disp_mag[moving].mean():.8f}"
+    )
 
     # Check conservative bounds
-    if hasattr(solver, 'particle_conservative_bounds'):
+    if hasattr(solver, "particle_conservative_bounds"):
         cb = solver.particle_conservative_bounds.numpy()
-        print(f"\n--- conservative_bounds ---")
+        print("\n--- conservative_bounds ---")
         print(f"  Stuck:  min={cb[stuck].min():.8f}, max={cb[stuck].max():.8f}, mean={cb[stuck].mean():.8f}")
         print(f"  Moving: min={cb[moving].min():.8f}, max={cb[moving].max():.8f}, mean={cb[moving].mean():.8f}")
 

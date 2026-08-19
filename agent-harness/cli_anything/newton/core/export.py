@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 
 
 def create_viewer(
@@ -66,7 +65,6 @@ def export_state_json(state, model, output_path: str, pretty: bool = True) -> di
     Returns:
         Dict with export info (path, size, counts).
     """
-    import numpy as np
 
     data = {
         "body_count": model.body_count,

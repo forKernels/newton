@@ -9,22 +9,25 @@ This fix recomputes tri_poses from the current particle positions after
 a warm-up period, so the elastic energy treats the current (partially
 draped) configuration as the rest shape.
 """
+
 import sys
+
 sys.path.insert(0, "scripts/disco")
 
-import warp as wp
-import newton
 import numpy as np
+import warp as wp
 from newton_sim_utils import *
-from test_cloth_self_collision import discover_original_garments, ORIGINAL_GARMENT_DIR
+from test_cloth_self_collision import ORIGINAL_GARMENT_DIR, discover_original_garments
+
+import newton
 
 
 @wp.kernel
 def recompute_tri_poses(
-    particle_q: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    tri_poses_out: wp.array(dtype=wp.mat22),
-    tri_areas_out: wp.array(dtype=float),
+    particle_q: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses_out: wp.array[wp.mat22],
+    tri_areas_out: wp.array[float],
 ):
     """Recompute tri_poses (inv_D) and tri_areas from current particle positions.
 
@@ -113,7 +116,9 @@ def main():
         builder.add_shape_cone(
             body=-1,
             xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.3), q=wp.quat_identity()),
-            radius=0.12, half_height=0.3, cfg=cfg,
+            radius=0.12,
+            half_height=0.3,
+            cfg=cfg,
         )
 
         garments = discover_original_garments(ORIGINAL_GARMENT_DIR, "dress")

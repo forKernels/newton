@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Cube Stacking
@@ -49,11 +37,11 @@ class TaskType(enum.IntEnum):
 
 @wp.kernel(enable_backward=False)
 def set_target_pose_kernel(
-    task_schedule: wp.array(dtype=wp.int32),
-    task_time_soft_limits: wp.array(dtype=float),
-    task_object: wp.array(dtype=int),
-    task_idx: wp.array(dtype=int),
-    task_time_elapsed: wp.array(dtype=float),
+    task_schedule: wp.array[wp.int32],
+    task_time_soft_limits: wp.array[float],
+    task_object: wp.array[int],
+    task_idx: wp.array[int],
+    task_time_elapsed: wp.array[float],
     task_dt: float,
     task_offset_approach: wp.vec3,
     task_offset_lift: wp.vec3,
@@ -61,17 +49,17 @@ def set_target_pose_kernel(
     task_drop_off_pos: wp.vec3,
     cube_size: float,
     home_pos: wp.vec3,
-    task_init_body_q: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
+    task_init_body_q: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     ee_index: int,
     robot_body_count: int,
     num_bodies_per_world: int,
     # outputs
-    ee_pos_target: wp.array(dtype=wp.vec3),
-    ee_pos_target_interpolated: wp.array(dtype=wp.vec3),
-    ee_rot_target: wp.array(dtype=wp.vec4),
-    ee_rot_target_interpolated: wp.array(dtype=wp.vec4),
-    gripper_target: wp.array2d(dtype=wp.float32),
+    ee_pos_target: wp.array[wp.vec3],
+    ee_pos_target_interpolated: wp.array[wp.vec3],
+    ee_rot_target: wp.array[wp.vec4],
+    ee_rot_target_interpolated: wp.array[wp.vec4],
+    gripper_target: wp.array2d[wp.float32],
 ):
     tid = wp.tid()
 
@@ -145,16 +133,16 @@ def set_target_pose_kernel(
 
 @wp.kernel(enable_backward=False)
 def advance_task_kernel(
-    task_time_soft_limits: wp.array(dtype=float),
-    ee_pos_target: wp.array(dtype=wp.vec3),
-    ee_rot_target: wp.array(dtype=wp.vec4),
-    body_q: wp.array(dtype=wp.transform),
+    task_time_soft_limits: wp.array[float],
+    ee_pos_target: wp.array[wp.vec3],
+    ee_rot_target: wp.array[wp.vec4],
+    body_q: wp.array[wp.transform],
     num_bodies_per_world: int,
     ee_index: int,
     # outputs
-    task_idx: wp.array(dtype=int),
-    task_time_elapsed: wp.array(dtype=float),
-    task_init_body_q: wp.array(dtype=wp.transform),
+    task_idx: wp.array[int],
+    task_time_elapsed: wp.array[float],
+    task_init_body_q: wp.array[wp.transform],
 ):
     tid = wp.tid()
     idx = task_idx[tid]
@@ -195,7 +183,8 @@ def advance_task_kernel(
 
 
 class Example:
-    def __init__(self, viewer, world_count=4, headless=False, args=None):
+    def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -203,14 +192,13 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.collide_substeps = False
-        self.world_count = world_count
-        self.headless = headless
-        self.verbose = getattr(args, "verbose", False)
+        self.world_count = args.world_count
+        self.headless = args.headless
+        self.verbose = args.verbose
 
         self.viewer = viewer
 
-        # Parameters
-        self.cube_count = getattr(args, "cube_count", 3)  # Tested from 1 to 3 cubes
+        self.cube_count = 3
         self.cube_size = 0.05
 
         self.table_height = 0.1
@@ -226,6 +214,7 @@ class Example:
         self.task_drop_off_pos = self.table_top_center + wp.vec3(0.0, -0.15, 0.5 * self.cube_size)
 
         # Build scene
+        self.use_mujoco_contacts = getattr(args, "use_mujoco_contacts", False)
         franka_with_table = self.build_franka_with_table()
         scene = self.build_scene(franka_with_table)
         self.robot_body_count = franka_with_table.body_count
@@ -234,7 +223,6 @@ class Example:
         self.model = scene.finalize()
         self.num_bodies_per_world = self.model.body_count // self.world_count
 
-        use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             solver="newton",
@@ -245,19 +233,20 @@ class Example:
             njmax=2000,
             cone="elliptic",
             impratio=1000.0,
-            use_mujoco_contacts=use_mujoco_contacts,
+            use_mujoco_contacts=self.use_mujoco_contacts,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.joint_target_shape = self.control.joint_target_pos.reshape((self.world_count, -1)).shape
-        wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
+        self.joint_target_shape = self.control.joint_target_q.reshape((self.world_count, -1)).shape
+        wp.copy(self.control.joint_target_q, self.model.joint_q)
 
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Setup ik and tasks
         self.state = self.model.state()
@@ -270,10 +259,6 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
-
-        # Set cube colors
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
-        self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.cube_colors.items()})
 
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_world_offsets(wp.vec3(1.5, 1.5, 0.0))
@@ -288,26 +273,24 @@ class Example:
 
     def capture_sim(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def capture_ik(self):
         self.graph_ik = None
 
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
-            self.graph_ik = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
+        self.graph_ik = capture.graph
 
     def simulate(self):
         if not self.collide_substeps:
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             if self.collide_substeps:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.state_0.clear_forces()
 
@@ -370,7 +353,7 @@ class Example:
             0.05,
         ]
 
-        builder.joint_target_pos[:9] = [
+        builder.joint_target_q[:9] = [
             -3.6802115e-03,
             2.3901723e-02,
             3.6804110e-03,
@@ -406,7 +389,7 @@ class Example:
         for body_idx in range(2, 14):
             gravcomp_body.values[body_idx] = 1.0
 
-        shape_cfg = newton.ModelBuilder.ShapeConfig(thickness=1e-3, density=1000.0)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(margin=0.0, density=1000.0)
         shape_cfg.ke = 5.0e4
         shape_cfg.kd = 5.0e2
         shape_cfg.kf = 1.0e3
@@ -422,10 +405,18 @@ class Example:
             cfg=shape_cfg,
         )
 
+        if self.use_mujoco_contacts:
+            # Set condim=4 (torsional friction) on finger shapes
+            condim_attr = builder.custom_attributes["mujoco:condim"]
+            if condim_attr.values is None:
+                condim_attr.values = {}
+            for shape_idx in range(builder.shape_count):
+                if builder.shape_body[shape_idx] in (12, 13):  # left/right finger bodies
+                    condim_attr.values[shape_idx] = 4
+
         return builder
 
     def build_scene(self, franka_with_table: newton.ModelBuilder):
-        self.cube_colors = {}
         rng = np.random.default_rng(42)
 
         # Range of values for the cube properties
@@ -466,7 +457,7 @@ class Example:
         rng: np.random.Generator,
     ):
         density = rng.uniform(density_range[0], density_range[1])
-        shape_cfg = newton.ModelBuilder.ShapeConfig(density=density, thickness=1e-3)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=density, margin=0.0)
 
         def get_random_pos():
             random_x = rng.uniform(x_range[0], x_range[1])
@@ -500,17 +491,32 @@ class Example:
             mesh_body = scene.add_body(xform=body_xform)
 
             half_size = 0.5 * self.cube_size
-            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, label=key)
-
-            # Set the color of the cube based on the index
+            cube_shape_idx = scene.shape_count
             if i == 0:
-                self.cube_colors[key] = [0.8, 0.2, 0.2]
+                cube_color = [0.8, 0.2, 0.2]
             elif i == 1:
-                self.cube_colors[key] = [0.2, 0.8, 0.2]
+                cube_color = [0.2, 0.8, 0.2]
             elif i == 2:
-                self.cube_colors[key] = [0.2, 0.2, 0.8]
+                cube_color = [0.2, 0.2, 0.8]
             else:
-                self.cube_colors[key] = [0.2, 0.2, 0.2]
+                cube_color = [0.2, 0.2, 0.2]
+
+            scene.add_shape_box(
+                body=mesh_body,
+                hx=half_size,
+                hy=half_size,
+                hz=half_size,
+                cfg=shape_cfg,
+                label=key,
+                color=cube_color,
+            )
+
+            if self.use_mujoco_contacts:
+                # Set condim=4 (torsional friction) on cube shapes
+                condim_attr = scene.custom_attributes["mujoco:condim"]
+                if condim_attr.values is None:
+                    condim_attr.values = {}
+                condim_attr.values[cube_shape_idx] = 4
 
     def setup_ik(self):
         self.ee_index = 11
@@ -642,9 +648,9 @@ class Example:
             self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
 
         # Set the joint target positions
-        joint_target_pos_view = self.control.joint_target_pos.reshape((self.world_count, -1))
-        wp.copy(dest=joint_target_pos_view[:, :7], src=self.joint_q_ik[:, :7])
-        wp.copy(dest=joint_target_pos_view[:, 7:9], src=self.gripper_target_interpolated[:, :2])
+        joint_target_q_view = self.control.joint_target_q.reshape((self.world_count, -1))
+        wp.copy(dest=joint_target_q_view[:, :7], src=self.joint_q_ik[:, :7])
+        wp.copy(dest=joint_target_q_view[:, 7:9], src=self.gripper_target_interpolated[:, :2])
 
         wp.launch(
             advance_task_kernel,
@@ -698,14 +704,19 @@ class Example:
         else:
             print(f"World success rate: {success_rate}")
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        newton.examples.add_mujoco_contacts_arg(parser)
+        parser.set_defaults(world_count=16)
+        parser.add_argument("--verbose", action="store_true", help="Enable verbose output.")
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=16, help="Total number of simulated worlds.")
-    parser.add_argument("--cube-count", type=int, default=3, help="Total number of cubes to stack.")
+    parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, world_count=args.world_count, headless=args.headless, args=args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

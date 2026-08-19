@@ -497,9 +497,11 @@ def _stitch_mesh(
 
     # Remap face indices and remove degenerate triangles
     new_faces = old_to_new[faces]
-    valid = (new_faces[:, 0] != new_faces[:, 1]) & \
-            (new_faces[:, 1] != new_faces[:, 2]) & \
-            (new_faces[:, 0] != new_faces[:, 2])
+    valid = (
+        (new_faces[:, 0] != new_faces[:, 1])
+        & (new_faces[:, 1] != new_faces[:, 2])
+        & (new_faces[:, 0] != new_faces[:, 2])
+    )
     n_degenerate = np.sum(~valid)
     if n_degenerate > 0:
         print(f"  stitch: Removed {n_degenerate} degenerate triangles")

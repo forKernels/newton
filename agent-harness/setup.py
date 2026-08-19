@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from setuptools import setup, find_namespace_packages
+from setuptools import find_namespace_packages, setup
 
 setup(
     name="cli-anything-newton",

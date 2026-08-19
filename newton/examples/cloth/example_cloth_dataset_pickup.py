@@ -147,13 +147,13 @@ def _download_menagerie_folder(folder_name: str):
 
 @wp.kernel
 def compute_ee_delta(
-    body_q: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
     offset: wp.transform,
     body_id: int,
     bodies_per_world: int,
     target: wp.transform,
     # outputs
-    ee_delta: wp.array(dtype=wp.spatial_vector),
+    ee_delta: wp.array[wp.spatial_vector],
 ):
     world_id = wp.tid()
     tf = body_q[bodies_per_world * world_id + body_id] * offset
@@ -187,7 +187,7 @@ def compute_body_jacobian(
     if velocity:
 
         @wp.kernel
-        def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
+        def compute_body_out(body_qd: wp.array[wp.spatial_vector], body_out: wp.array[float]):
             # TODO verify transform twist
             mv = transform_twist(offset, body_qd[body_id])
             if wp.static(include_rotation):
@@ -202,7 +202,7 @@ def compute_body_jacobian(
     else:
 
         @wp.kernel
-        def compute_body_out(body_q: wp.array(dtype=wp.transform), body_out: wp.array(dtype=float)):
+        def compute_body_out(body_q: wp.array[wp.transform], body_out: wp.array[float]):
             tf = body_q[body_id] * offset
             if wp.static(include_rotation):
                 for i in range(7):
@@ -907,7 +907,7 @@ class Example:
         self.joint_q_des = wp.array(self.model.joint_q.numpy(), dtype=float)
 
         @wp.kernel
-        def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
+        def compute_body_out(body_qd: wp.array[wp.spatial_vector], body_out: wp.array[float]):
             # TODO verify transform twist
             mv = transform_twist(wp.static(self.endeffector_offset), body_qd[wp.static(self.endeffector_id)])
             for i in range(6):

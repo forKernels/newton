@@ -4,7 +4,7 @@ on:
   pull_request_target:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref }}
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -15,6 +15,11 @@ jobs:
     outputs:
       membership_status: ${{ steps.check_org.outputs.membership_status }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
       - name: Check user's organization membership
         id: check_org
         run: |
@@ -78,6 +83,11 @@ jobs:
       name: external-pr-approval
       url: ${{ github.event.pull_request.html_url }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
       - name: Approval granted
         run: echo "Manual approval granted for external PR"
 
@@ -86,7 +96,17 @@ jobs:
     needs:
       - check-author-membership
       - require-approval
-    if: github.repository == 'newton-physics/newton' && (!cancelled())
+    if: >-
+      github.repository == 'newton-physics/newton' &&
+      !cancelled() &&
+      needs.check-author-membership.result == 'success' &&
+      (
+        needs.require-approval.result == 'success' ||
+        (
+          needs.require-approval.result == 'skipped' &&
+          needs.check-author-membership.outputs.membership_status == 'CONFIRMED_MEMBER'
+        )
+      )
     uses: ./.github/workflows/aws_gpu_benchmarks.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}

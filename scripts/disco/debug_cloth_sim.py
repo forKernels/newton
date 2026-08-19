@@ -64,7 +64,7 @@ bpy.context.view_layer.update()
 g_world2 = [garment.matrix_world @ Vector(c) for c in garment.bound_box]
 wmin = Vector((min(v.x for v in g_world2), min(v.y for v in g_world2), min(v.z for v in g_world2)))
 wmax = Vector((max(v.x for v in g_world2), max(v.y for v in g_world2), max(v.z for v in g_world2)))
-print(f"\nPositioned garment world bbox:")
+print("\nPositioned garment world bbox:")
 print(f"  X: [{wmin.x:.3f}, {wmax.x:.3f}]  chair: [{furn_min.x:.3f}, {furn_max.x:.3f}]")
 print(f"  Y: [{wmin.y:.3f}, {wmax.y:.3f}]  chair: [{furn_min.y:.3f}, {furn_max.y:.3f}]")
 print(f"  Z: [{wmin.z:.3f}, {wmax.z:.3f}]  chair top: {furn_max.z:.3f}")

@@ -18,13 +18,14 @@ Supported rigs:
     - Any rig added to BONE_MAPS with IK targets
 """
 
-import bpy
-import math
-import random
 import json
-import sys
+import math
 import os
-from mathutils import Vector, Euler, Quaternion
+import random
+import sys
+
+import bpy
+from mathutils import Euler, Vector
 
 # ---------------------------------------------------------------------------
 # STANDARD NAMING CONVENTION
@@ -111,8 +112,7 @@ def validate_rig_naming(armature_obj, bone_map):
     and 'missing' lists for debugging.
     """
     required = ["hand_r", "hand_l", "foot_r", "foot_l", "spine", "head"]
-    optional = ["elbow_r", "elbow_l", "knee_r", "knee_l",
-                "wrist_r", "wrist_l", "grip_master_r", "grip_master_l"]
+    optional = ["elbow_r", "elbow_l", "knee_r", "knee_l", "wrist_r", "wrist_l", "grip_master_r", "grip_master_l"]
 
     report = {"controllers_found": [], "fallbacks_used": [], "missing": []}
 
@@ -145,46 +145,56 @@ BONE_MAPS = {
         "type": "humanoid",
         "needs_ik_setup": False,
         # IK targets (root-level bones that drive the chains)
-        "hand_r":        "right_hand_ik",
-        "hand_l":        "left_hand_ik",
-        "foot_r":        "right_foot_ik",
-        "foot_l":        "left_foot_ik",
-        "elbow_r":       "right_elbow_ik",
-        "elbow_l":       "left_elbow_ik",
-        "knee_r":        "right_knee_ik",
-        "knee_l":        "left_knee_ik",
+        "hand_r": "right_hand_ik",
+        "hand_l": "left_hand_ik",
+        "foot_r": "right_foot_ik",
+        "foot_l": "left_foot_ik",
+        "elbow_r": "right_elbow_ik",
+        "elbow_l": "left_elbow_ik",
+        "knee_r": "right_knee_ik",
+        "knee_l": "left_knee_ik",
         # FK chain bones (for direct rotation if needed)
-        "upper_arm_r":   "upperarm01.R",
-        "upper_arm_l":   "upperarm01.L",
-        "forearm_r":     "lowerarm01.R",
-        "forearm_l":     "lowerarm01.L",
-        "wrist_r":       "wrist.R",
-        "wrist_l":       "wrist.L",
+        "upper_arm_r": "upperarm01.R",
+        "upper_arm_l": "upperarm01.L",
+        "forearm_r": "lowerarm01.R",
+        "forearm_l": "lowerarm01.L",
+        "wrist_r": "wrist.R",
+        "wrist_l": "wrist.L",
         # Spine / head
-        "spine":         "spine01",
-        "head":          "head",
+        "spine": "spine01",
+        "head": "head",
         # Grip controls — rotate these to close/open hands
         "grip_master_r": "right_master_grip",
         "grip_master_l": "left_master_grip",
         # Per-finger grip bones (COPY_ROTATION from master)
         "finger_grips_r": [
-            "right_finger1_grip", "right_finger2_grip",
-            "right_finger3_grip", "right_finger4_grip",
+            "right_finger1_grip",
+            "right_finger2_grip",
+            "right_finger3_grip",
+            "right_finger4_grip",
             "right_finger5_grip",
         ],
         "finger_grips_l": [
-            "left_finger1_grip", "left_finger2_grip",
-            "left_finger3_grip", "left_finger4_grip",
+            "left_finger1_grip",
+            "left_finger2_grip",
+            "left_finger3_grip",
+            "left_finger4_grip",
             "left_finger5_grip",
         ],
         # First knuckle of each finger (for direct FK if needed)
         "fingers_r": [
-            "finger1-1.R", "finger2-1.R", "finger3-1.R",
-            "finger4-1.R", "finger5-1.R",
+            "finger1-1.R",
+            "finger2-1.R",
+            "finger3-1.R",
+            "finger4-1.R",
+            "finger5-1.R",
         ],
         "fingers_l": [
-            "finger1-1.L", "finger2-1.L", "finger3-1.L",
-            "finger4-1.L", "finger5-1.L",
+            "finger1-1.L",
+            "finger2-1.L",
+            "finger3-1.L",
+            "finger4-1.L",
+            "finger5-1.L",
         ],
     },
 }
@@ -199,40 +209,46 @@ ACCURIG_BONE_MAP = {
     "type": "humanoid",
     "needs_ik_setup": True,
     # IK targets (root-level orphan bones — need constraints wired)
-    "hand_r":        "ik_hand_r",
-    "hand_l":        "ik_hand_l",
-    "foot_r":        "ik_foot_r",
-    "foot_l":        "ik_foot_l",
+    "hand_r": "ik_hand_r",
+    "hand_l": "ik_hand_l",
+    "foot_r": "ik_foot_r",
+    "foot_l": "ik_foot_l",
     # FK chain bones
-    "upper_arm_r":   "upperarm_r",
-    "upper_arm_l":   "upperarm_l",
-    "forearm_r":     "lowerarm_r",
-    "forearm_l":     "lowerarm_l",
-    "wrist_r":       "hand_r",
-    "wrist_l":       "hand_l",
-    "thigh_r":       "thigh_r",
-    "thigh_l":       "thigh_l",
-    "calf_r":        "calf_r",
-    "calf_l":        "calf_l",
+    "upper_arm_r": "upperarm_r",
+    "upper_arm_l": "upperarm_l",
+    "forearm_r": "lowerarm_r",
+    "forearm_l": "lowerarm_l",
+    "wrist_r": "hand_r",
+    "wrist_l": "hand_l",
+    "thigh_r": "thigh_r",
+    "thigh_l": "thigh_l",
+    "calf_r": "calf_r",
+    "calf_l": "calf_l",
     # Spine / head
-    "spine":         "spine_01",
-    "head":          "head",
+    "spine": "spine_01",
+    "head": "head",
     # No master grip bone — use per-finger FK rotation for grasping
     "fingers_r": [
-        "thumb_01_r", "index_01_r", "middle_01_r",
-        "ring_01_r", "pinky_01_r",
+        "thumb_01_r",
+        "index_01_r",
+        "middle_01_r",
+        "ring_01_r",
+        "pinky_01_r",
     ],
     "fingers_l": [
-        "thumb_01_l", "index_01_l", "middle_01_l",
-        "ring_01_l", "pinky_01_l",
+        "thumb_01_l",
+        "index_01_l",
+        "middle_01_l",
+        "ring_01_l",
+        "pinky_01_l",
     ],
     # IK chain wiring config (used by setup_accurig_ik)
     "_ik_chains": {
         # target bone: (chain tip bone, chain length, pole target bone or None)
-        "ik_hand_r":  ("hand_r",  3, None),   # hand_r <- lowerarm_r <- upperarm_r
-        "ik_hand_l":  ("hand_l",  3, None),
-        "ik_foot_r":  ("foot_r",  3, None),   # foot_r <- calf_r <- thigh_r
-        "ik_foot_l":  ("foot_l",  3, None),
+        "ik_hand_r": ("hand_r", 3, None),  # hand_r <- lowerarm_r <- upperarm_r
+        "ik_hand_l": ("hand_l", 3, None),
+        "ik_foot_r": ("foot_r", 3, None),  # foot_r <- calf_r <- thigh_r
+        "ik_foot_l": ("foot_l", 3, None),
     },
 }
 
@@ -252,6 +268,7 @@ _register_accurig_rigs()
 # ---------------------------------------------------------------------------
 # AccuRig IK SETUP
 # ---------------------------------------------------------------------------
+
 
 def setup_accurig_ik(armature_obj, bone_map):
     """Wire IK constraints on AccuRig FBX imports.
@@ -332,6 +349,7 @@ def import_accurig_fbx(fbx_path: str, rig_name: str = None):
 # ---------------------------------------------------------------------------
 # RIG ACCESSOR
 # ---------------------------------------------------------------------------
+
 
 class RigController:
     """Wraps a rig object with its bone map for interaction scripts.
@@ -448,6 +466,7 @@ class RigController:
 # SCENE UTILITIES
 # ---------------------------------------------------------------------------
 
+
 def clear_keyframes(obj):
     """Remove all animation data from object."""
     if obj.animation_data:
@@ -484,26 +503,27 @@ def add_child_of_constraint(child_obj, parent_obj, bone_name: str, frame_on: int
     return c
 
 
-def randomize_table_objects(obj_names: list, seed: int,
-                            x_range=(-0.3, 0.3), y_range=(-0.3, 0.3),
-                            z_base=0.8):
+def randomize_table_objects(obj_names: list, seed: int, x_range=(-0.3, 0.3), y_range=(-0.3, 0.3), z_base=0.8):
     """Scatter named objects randomly on a table surface."""
     random.seed(seed)
     for name in obj_names:
         obj = bpy.data.objects.get(name)
         if obj is None:
             continue
-        obj.location = Vector((
-            random.uniform(*x_range),
-            random.uniform(*y_range),
-            z_base,
-        ))
+        obj.location = Vector(
+            (
+                random.uniform(*x_range),
+                random.uniform(*y_range),
+                z_base,
+            )
+        )
         obj.rotation_euler = Euler((0, 0, random.uniform(0, math.tau)))
 
 
 # ---------------------------------------------------------------------------
 # INTERACTIONS
 # ---------------------------------------------------------------------------
+
 
 def knockover(rc: RigController, seed: int, objects: list, **kwargs):
     """
@@ -532,7 +552,8 @@ def knockover(rc: RigController, seed: int, objects: list, **kwargs):
 
     if not skip_randomize:
         randomize_table_objects(
-            objects, seed,
+            objects,
+            seed,
             x_range=(-0.25, 0.25),
             y_range=(table_y - 0.12, table_y + 0.12),
             z_base=table_z + 0.03,
@@ -560,8 +581,7 @@ def knockover(rc: RigController, seed: int, objects: list, **kwargs):
         rc.set_loc(hand, (end_x, y_reach, z_height), start_frame + sweep_frames)
 
         # Keyframe 4: hand lifts away
-        rc.set_loc(hand, (end_x + 0.1, y_reach - 0.1, z_height + 0.2),
-                   start_frame + sweep_frames + 10)
+        rc.set_loc(hand, (end_x + 0.1, y_reach - 0.1, z_height + 0.2), start_frame + sweep_frames + 10)
 
     bpy.context.scene.frame_end = start_frame + sweep_frames + settle_frames
 
@@ -591,8 +611,7 @@ def grasp_lift(rc: RigController, seed: int, objects: list, **kwargs):
         constraint_bone = rc.bone_name(hand_key)
     else:
         raise KeyError(
-            f"Neither '{wrist_key}' nor '{hand_key}' found in rig '{rc.rig.name}'. "
-            f"Cannot create grasp constraint."
+            f"Neither '{wrist_key}' nor '{hand_key}' found in rig '{rc.rig.name}'. Cannot create grasp constraint."
         )
 
     # Approach from above
@@ -736,11 +755,13 @@ def spill(rc: RigController, seed: int, objects: list, **kwargs):
     approach_frame = 10
     bump_frame = 25
 
-    bump_direction = Vector((
-        random.uniform(-0.15, 0.15),
-        random.uniform(0.05, 0.15),
-        random.uniform(0, 0.05),
-    ))
+    bump_direction = Vector(
+        (
+            random.uniform(-0.15, 0.15),
+            random.uniform(0.05, 0.15),
+            random.uniform(0, 0.05),
+        )
+    )
 
     hand = kwargs.get("hand", "r")
     hand_key = f"hand_{hand}"
@@ -804,17 +825,18 @@ def push_slide(rc: RigController, seed: int, objects: list, **kwargs):
 # ---------------------------------------------------------------------------
 
 INTERACTIONS = {
-    "knockover":    knockover,
-    "grasp_lift":   grasp_lift,
+    "knockover": knockover,
+    "grasp_lift": grasp_lift,
     "cloth_pickup": cloth_pickup,
-    "cloth_fold":   cloth_fold,
-    "spill":        spill,
-    "push_slide":   push_slide,
+    "cloth_fold": cloth_fold,
+    "spill": spill,
+    "push_slide": push_slide,
 }
 
 # ---------------------------------------------------------------------------
 # ANNOTATION EXPORT
 # ---------------------------------------------------------------------------
+
 
 def export_annotations(output_dir: str, rig_name: str, interaction: str, seed: int):
     """
@@ -832,10 +854,7 @@ def export_annotations(output_dir: str, rig_name: str, interaction: str, seed: i
     }
 
     # Collect all rigid body objects + cloth objects
-    tracked = [
-        o for o in bpy.data.objects
-        if o.rigid_body or any(m.type == "CLOTH" for m in o.modifiers)
-    ]
+    tracked = [o for o in bpy.data.objects if o.rigid_body or any(m.type == "CLOTH" for m in o.modifiers)]
 
     for f in frames:
         scene.frame_set(f)
@@ -862,15 +881,19 @@ def export_annotations(output_dir: str, rig_name: str, interaction: str, seed: i
 # BATCH RUNNER
 # ---------------------------------------------------------------------------
 
-def run_single(rig_name: str, interaction: str, seed: int,
-               objects: list = None, output_dir: str = "//output",
-               render: bool = True, **kwargs):
+
+def run_single(
+    rig_name: str,
+    interaction: str,
+    seed: int,
+    objects: list = None,
+    output_dir: str = "//output",
+    render: bool = True,
+    **kwargs,
+):
     """Run a single interaction variant."""
     if objects is None:
-        objects = [
-            o.name for o in bpy.data.objects
-            if o.rigid_body and o.name != rig_name
-        ]
+        objects = [o.name for o in bpy.data.objects if o.rigid_body and o.name != rig_name]
 
     rc = RigController(rig_name)
 
@@ -893,9 +916,7 @@ def run_single(rig_name: str, interaction: str, seed: int,
     # Render
     if render:
         scene = bpy.context.scene
-        scene.render.filepath = os.path.join(
-            abs_output, f"{rig_name}_{interaction}_s{seed:04d}_"
-        )
+        scene.render.filepath = os.path.join(abs_output, f"{rig_name}_{interaction}_s{seed:04d}_")
         bpy.ops.render.render(animation=True)
 
     print(f"[interaction_gen] Done: {rig_name}/{interaction}/seed={seed}")
@@ -913,11 +934,12 @@ def parse_seeds(seed_str: str) -> list:
 # CLI ENTRY POINT
 # ---------------------------------------------------------------------------
 
+
 def main():
     # Parse args after '--'
     argv = sys.argv
     if "--" in argv:
-        argv = argv[argv.index("--") + 1:]
+        argv = argv[argv.index("--") + 1 :]
     else:
         print("[interaction_gen] No args. Use: -- --rig NAME --interaction TYPE --seeds RANGE")
         print(f"[interaction_gen] Available rigs: {list(BONE_MAPS.keys())}")
@@ -925,6 +947,7 @@ def main():
         return
 
     import argparse
+
     parser = argparse.ArgumentParser(description="interaction_gen — procedural interaction generator")
     parser.add_argument("--rig", required=True, help=f"Rig object name. Available: {list(BONE_MAPS.keys())}")
     parser.add_argument("--interaction", required=True, choices=list(INTERACTIONS.keys()))

@@ -4,15 +4,19 @@ Test pinning fix strategies:
   B) Initial downward velocity kick
   C) Both combined
 """
+
 import sys
+
 sys.path.insert(0, "scripts/disco")
 
 import argparse
-import warp as wp
-import newton
+
 import numpy as np
+import warp as wp
 from newton_sim_utils import *
-from test_cloth_self_collision import discover_original_garments, ORIGINAL_GARMENT_DIR
+from test_cloth_self_collision import ORIGINAL_GARMENT_DIR, discover_original_garments
+
+import newton
 
 
 def run_test(strategy, viewer_type="gl"):
@@ -28,7 +32,9 @@ def run_test(strategy, viewer_type="gl"):
     builder.add_shape_cone(
         body=-1,
         xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.3), q=wp.quat_identity()),
-        radius=0.12, half_height=0.3, cfg=cfg,
+        radius=0.12,
+        half_height=0.3,
+        cfg=cfg,
     )
 
     garments = discover_original_garments(ORIGINAL_GARMENT_DIR, "dress")
@@ -40,15 +46,15 @@ def run_test(strategy, viewer_type="gl"):
     if strategy == "zero_ke":
         # Strategy A: Zero elastic stiffness
         print("  STRATEGY: Zero elastic stiffness (tri_ke=0, tri_ka=0)")
-        add_garment_as_cloth(builder, g, position=(0, 0, cloth_z),
-                             tri_ke=0.0, tri_ka=0.0, tri_kd=0.0,
-                             edge_ke=0.0, edge_kd=0.0)
+        add_garment_as_cloth(
+            builder, g, position=(0, 0, cloth_z), tri_ke=0.0, tri_ka=0.0, tri_kd=0.0, edge_ke=0.0, edge_kd=0.0
+        )
     elif strategy == "low_ke":
         # Very low stiffness
         print("  STRATEGY: Very low elastic stiffness (tri_ke=1, tri_ka=1)")
-        add_garment_as_cloth(builder, g, position=(0, 0, cloth_z),
-                             tri_ke=1.0, tri_ka=1.0, tri_kd=1e-7,
-                             edge_ke=1e-6, edge_kd=1e-5)
+        add_garment_as_cloth(
+            builder, g, position=(0, 0, cloth_z), tri_ke=1.0, tri_ka=1.0, tri_kd=1e-7, edge_ke=1e-6, edge_kd=1e-5
+        )
     elif strategy == "velocity_kick":
         # Strategy B: Normal stiffness + velocity kick
         print("  STRATEGY: Normal stiffness + downward velocity kick")
@@ -56,15 +62,15 @@ def run_test(strategy, viewer_type="gl"):
     elif strategy == "both":
         # Strategy C: Low stiffness + velocity kick
         print("  STRATEGY: Low stiffness + velocity kick")
-        add_garment_as_cloth(builder, g, position=(0, 0, cloth_z),
-                             tri_ke=10.0, tri_ka=10.0, tri_kd=1e-7,
-                             edge_ke=1e-5, edge_kd=1e-4)
+        add_garment_as_cloth(
+            builder, g, position=(0, 0, cloth_z), tri_ke=10.0, tri_ka=10.0, tri_kd=1e-7, edge_ke=1e-5, edge_kd=1e-4
+        )
     elif strategy == "ramp":
         # Strategy D: Start with zero stiffness, ramp up over time
         print("  STRATEGY: Ramp stiffness from 0 to normal over 50 frames")
-        add_garment_as_cloth(builder, g, position=(0, 0, cloth_z),
-                             tri_ke=0.0, tri_ka=0.0, tri_kd=0.0,
-                             edge_ke=0.0, edge_kd=0.0)
+        add_garment_as_cloth(
+            builder, g, position=(0, 0, cloth_z), tri_ke=0.0, tri_ka=0.0, tri_kd=0.0, edge_ke=0.0, edge_kd=0.0
+        )
     else:
         print("  STRATEGY: Normal (baseline)")
         add_garment_as_cloth(builder, g, position=(0, 0, cloth_z))
@@ -155,13 +161,19 @@ def run_test(strategy, viewer_type="gl"):
     pos_final = state_0.particle_q.numpy()
     disp = np.linalg.norm(pos_final - pos_initial, axis=1)
     stuck = np.sum(disp < 0.001)
-    print(f"\n  RESULT [{strategy}]: {stuck} stuck particles, z_range={pos_final[:, 2].max() - pos_final[:, 2].min():.3f}m")
+    print(
+        f"\n  RESULT [{strategy}]: {stuck} stuck particles, z_range={pos_final[:, 2].max() - pos_final[:, 2].min():.3f}m"
+    )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--strategy", type=str, default="zero_ke",
-                        choices=["normal", "zero_ke", "low_ke", "velocity_kick", "both", "ramp"])
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="zero_ke",
+        choices=["normal", "zero_ke", "low_ke", "velocity_kick", "both", "ramp"],
+    )
     parser.add_argument("--viewer", type=str, default="gl", choices=["gl", "null"])
     args = parser.parse_args()
 

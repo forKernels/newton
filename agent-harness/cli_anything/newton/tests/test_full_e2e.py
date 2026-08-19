@@ -24,8 +24,10 @@ import pytest
 
 NEWTON_AVAILABLE = False
 try:
-    import newton
     import warp as wp
+
+    import newton
+
     NEWTON_AVAILABLE = True
 except ImportError:
     pass
@@ -33,6 +35,7 @@ except ImportError:
 TRIMESH_AVAILABLE = False
 try:
     import trimesh
+
     TRIMESH_AVAILABLE = True
 except ImportError:
     pass
@@ -41,6 +44,7 @@ except ImportError:
 def _resolve_cli(name):
     """Resolve installed CLI command."""
     import shutil
+
     force = os.environ.get("CLI_ANYTHING_FORCE_INSTALLED", "").strip() == "1"
     path = shutil.which(name)
     if path:
@@ -79,6 +83,7 @@ class TestSceneE2E:
 
     def test_build_procedural_cloth_grid(self):
         from cli_anything.newton.core.scene import build_procedural_scene
+
         result = build_procedural_scene("cloth_grid", device="cpu", resolution=10, size=0.5)
         model = result["model"]
         info = result["scene_info"]
@@ -87,6 +92,7 @@ class TestSceneE2E:
 
     def test_build_procedural_pendulum(self):
         from cli_anything.newton.core.scene import build_procedural_scene
+
         result = build_procedural_scene("pendulum", device="cpu", num_links=3)
         model = result["model"]
         assert model.body_count == 3
@@ -97,11 +103,13 @@ class TestSceneE2E:
         if urdf is None:
             pytest.skip("No test URDF found in Newton assets")
         from cli_anything.newton.core.scene import load_scene
+
         result = load_scene(urdf, device="cpu")
         assert result["model"].body_count > 0
 
     def test_model_info(self):
         from cli_anything.newton.core.scene import build_procedural_scene, get_model_info
+
         result = build_procedural_scene("cloth_grid", device="cpu", resolution=5)
         info = get_model_info(result["model"])
         assert info["particle_count"] == 36
@@ -125,7 +133,7 @@ class TestSimulationE2E:
         scene = build_procedural_scene("pendulum", device="cpu", num_links=3)
         model = scene["model"]
         solver = create_solver(model, "xpbd", iterations=4)
-        result = run_simulation(model, solver, num_frames=10, substeps=4, dt=1.0/60.0)
+        result = run_simulation(model, solver, num_frames=10, substeps=4, dt=1.0 / 60.0)
 
         assert result["num_frames"] == 10
         assert result["wall_time_s"] > 0
@@ -133,14 +141,14 @@ class TestSimulationE2E:
         assert "body_positions" in result
 
     def test_simulation_with_export_json(self, tmp_path):
+        from cli_anything.newton.core.export import export_state_json
         from cli_anything.newton.core.scene import build_procedural_scene
         from cli_anything.newton.core.simulation import create_solver, run_simulation
-        from cli_anything.newton.core.export import export_state_json
 
         scene = build_procedural_scene("cloth_grid", device="cpu", resolution=5)
         model = scene["model"]
         solver = create_solver(model, "xpbd", iterations=4)
-        result = run_simulation(model, solver, num_frames=5, substeps=2, dt=1.0/60.0)
+        result = run_simulation(model, solver, num_frames=5, substeps=2, dt=1.0 / 60.0)
 
         # Export to JSON
         json_path = str(tmp_path / "state.json")
@@ -171,7 +179,6 @@ class TestMeshE2E:
 
     def test_inspect_simple_mesh(self, tmp_path):
         import trimesh
-        import numpy as np
 
         # Create a simple box mesh
         mesh = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
@@ -179,6 +186,7 @@ class TestMeshE2E:
         mesh.export(mesh_path)
 
         from cli_anything.newton.core.mesh import inspect_mesh
+
         info = inspect_mesh(mesh_path)
 
         assert info["vertex_count"] > 0
@@ -189,23 +197,37 @@ class TestMeshE2E:
         print(f"  Vertices: {info['vertex_count']}, Faces: {info['face_count']}")
 
     def test_stitch_mesh_with_duplicates(self, tmp_path):
-        import trimesh
         import numpy as np
+        import trimesh
 
         # Create two adjacent quads that share an edge but have duplicate vertices
-        verts = np.array([
-            [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # quad 1
-            [1, 0, 0], [2, 0, 0], [2, 1, 0], [1, 1, 0],  # quad 2 (verts 4,7 duplicate 1,2)
-        ], dtype=float)
-        faces = np.array([
-            [0, 1, 2], [0, 2, 3],  # quad 1
-            [4, 5, 6], [4, 6, 7],  # quad 2
-        ])
+        verts = np.array(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],  # quad 1
+                [1, 0, 0],
+                [2, 0, 0],
+                [2, 1, 0],
+                [1, 1, 0],  # quad 2 (verts 4,7 duplicate 1,2)
+            ],
+            dtype=float,
+        )
+        faces = np.array(
+            [
+                [0, 1, 2],
+                [0, 2, 3],  # quad 1
+                [4, 5, 6],
+                [4, 6, 7],  # quad 2
+            ]
+        )
         mesh = trimesh.Trimesh(vertices=verts, faces=faces)
         mesh_path = str(tmp_path / "seamed.obj")
         mesh.export(mesh_path)
 
         from cli_anything.newton.core.mesh import stitch_mesh
+
         result = stitch_mesh(mesh_path, threshold=0.001)
 
         assert result["stitched_vertices"] <= result["original_vertices"]
@@ -223,6 +245,7 @@ class TestMeshE2E:
         mesh.export(mesh_path)
 
         from cli_anything.newton.core.mesh import check_connectivity
+
         result = check_connectivity(mesh_path)
 
         assert result["vertex_count"] > 0
@@ -242,7 +265,8 @@ class TestCLISubprocessE2E:
     def _run(self, args, check=True):
         return subprocess.run(
             self.CLI_BASE + args,
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             check=check,
         )
 

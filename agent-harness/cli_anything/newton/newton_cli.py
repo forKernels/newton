@@ -18,7 +18,6 @@ import sys
 
 import click
 
-
 # ── JSON output helper ────────────────────────────────────────────────
 
 
@@ -113,7 +112,7 @@ def scene_load(ctx, scene_path, collapse_fixed_joints, self_collisions, num_worl
 @pass_ctx
 def scene_info(ctx, scene_path, up_axis):
     """Show detailed info about a scene file."""
-    from cli_anything.newton.core.scene import load_scene, get_model_info
+    from cli_anything.newton.core.scene import get_model_info, load_scene
 
     result = load_scene(scene_path, device=ctx.device, up_axis=up_axis)
     info = get_model_info(result["model"])
@@ -178,23 +177,28 @@ def sim():
 
 @sim.command("run")
 @click.argument("scene_path", type=click.Path(exists=True))
-@click.option("--solver", "solver_type", default="xpbd",
-              type=click.Choice(["vbd", "xpbd", "mujoco", "featherstone", "semi_implicit", "style3d", "mpm"]))
+@click.option(
+    "--solver",
+    "solver_type",
+    default="xpbd",
+    type=click.Choice(["vbd", "xpbd", "mujoco", "featherstone", "semi_implicit", "style3d", "mpm"]),
+)
 @click.option("--frames", default=100, type=int, help="Number of frames to simulate.")
 @click.option("--substeps", default=8, type=int, help="Physics substeps per frame.")
-@click.option("--dt", default=1.0/60.0, type=float, help="Frame timestep (seconds).")
+@click.option("--dt", default=1.0 / 60.0, type=float, help="Frame timestep (seconds).")
 @click.option("--iterations", default=10, type=int, help="Solver iterations per substep.")
 @click.option("--collision-margin", default=0.01, type=float, help="Collision margin (meters).")
 @click.option("--output", "-o", default=None, help="Output file path (USD/JSON).")
 @click.option("--output-format", default="usd", type=click.Choice(["usd", "json", "null"]))
 @click.option("--up-axis", default="y", type=click.Choice(["y", "z"]))
 @pass_ctx
-def sim_run(ctx, scene_path, solver_type, frames, substeps, dt, iterations,
-            collision_margin, output, output_format, up_axis):
+def sim_run(
+    ctx, scene_path, solver_type, frames, substeps, dt, iterations, collision_margin, output, output_format, up_axis
+):
     """Load a scene and run a full simulation."""
+    from cli_anything.newton.core.export import create_viewer
     from cli_anything.newton.core.scene import load_scene
     from cli_anything.newton.core.simulation import create_solver, run_simulation
-    from cli_anything.newton.core.export import create_viewer
 
     # Load scene
     if not ctx.json_mode:
@@ -221,7 +225,8 @@ def sim_run(ctx, scene_path, solver_type, frames, substeps, dt, iterations,
     if not ctx.json_mode:
         click.echo(f"Simulating {frames} frames ({substeps} substeps, dt={dt:.4f}s)...")
     result = run_simulation(
-        model, solver,
+        model,
+        solver,
         num_frames=frames,
         substeps=substeps,
         dt=dt,
@@ -327,8 +332,7 @@ def mesh_inspect(ctx, mesh_path):
 @mesh.command("stitch")
 @click.argument("mesh_path", type=click.Path(exists=True))
 @click.option("-o", "--output", default=None, help="Output path for stitched mesh.")
-@click.option("--threshold", default=0.0005, type=float,
-              help="Vertex merge distance threshold (meters).")
+@click.option("--threshold", default=0.0005, type=float, help="Vertex merge distance threshold (meters).")
 @pass_ctx
 def mesh_stitch(ctx, mesh_path, output, threshold):
     """Stitch garment seams by merging near-duplicate vertices."""
@@ -341,8 +345,10 @@ def mesh_stitch(ctx, mesh_path, output, threshold):
     else:
         click.echo(f"Stitched: {result['input']}")
         click.echo(f"  Threshold:    {result['threshold']}m")
-        click.echo(f"  Vertices:     {result['original_vertices']} -> {result['stitched_vertices']} "
-                    f"(-{result['vertices_merged']})")
+        click.echo(
+            f"  Vertices:     {result['original_vertices']} -> {result['stitched_vertices']} "
+            f"(-{result['vertices_merged']})"
+        )
         click.echo(f"  Faces:        {result['original_faces']} -> {result['stitched_faces']}")
         click.echo(f"  Components:   {result['original_components']} -> {result['stitched_components']}")
         click.echo(f"  Output:       {result['output']}")
@@ -412,8 +418,7 @@ def example_run(ctx, name, frames, viewer, output_path):
     """Run a built-in Newton example by name."""
     import subprocess
 
-    cmd = [sys.executable, "-m", "newton.examples", name,
-           "--viewer", viewer, "--num-frames", str(frames)]
+    cmd = [sys.executable, "-m", "newton.examples", name, "--viewer", viewer, "--num-frames", str(frames)]
     if output_path:
         cmd.extend(["--output-path", output_path])
     cmd.extend(["--device", ctx.device])
@@ -424,12 +429,14 @@ def example_run(ctx, name, frames, viewer, output_path):
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if ctx.json_mode:
-        ctx.output({
-            "example": name,
-            "returncode": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-        })
+        ctx.output(
+            {
+                "example": name,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+        )
     else:
         if result.stdout:
             click.echo(result.stdout)
@@ -464,8 +471,9 @@ def info(ctx):
     else:
         click.echo(f"Newton:  {backend['newton_version']}")
         click.echo(f"Warp:    {backend['warp_version']}")
-        click.echo(f"CUDA:    {'yes' if backend['cuda_available'] else 'no'}"
-                    f" ({backend.get('cuda_device_count', 0)} devices)")
+        click.echo(
+            f"CUDA:    {'yes' if backend['cuda_available'] else 'no'} ({backend.get('cuda_device_count', 0)} devices)"
+        )
         if backend.get("devices"):
             click.echo(f"Devices: {', '.join(backend['devices'])}")
 
@@ -479,8 +487,8 @@ def info(ctx):
 @click.pass_context
 def repl(ctx):
     """Interactive REPL mode (default when no subcommand given)."""
-    from cli_anything.newton.utils.repl_skin import ReplSkin
     from cli_anything.newton.core.session import Session
+    from cli_anything.newton.utils.repl_skin import ReplSkin
 
     parent_ctx = ctx.parent or ctx
     obj = parent_ctx.obj if hasattr(parent_ctx, "obj") and isinstance(parent_ctx.obj, _Ctx) else _Ctx()
@@ -492,19 +500,19 @@ def repl(ctx):
     pt_session = skin.create_prompt_session()
 
     commands = {
-        "help":      "Show this help",
-        "info":      "Show Newton backend info",
-        "load":      "Load a scene file (load <path>)",
-        "status":    "Show current session status",
-        "solver":    "Set solver (solver <type> [iterations])",
-        "solvers":   "List available solvers",
-        "step":      "Advance simulation by N frames (step [N])",
-        "run":       "Run full simulation (run <frames>)",
-        "export":    "Export state (export <path>)",
-        "mesh":      "Inspect mesh (mesh inspect <path>)",
-        "stitch":    "Stitch mesh (stitch <path> [threshold])",
-        "examples":  "List built-in examples",
-        "quit":      "Exit the REPL",
+        "help": "Show this help",
+        "info": "Show Newton backend info",
+        "load": "Load a scene file (load <path>)",
+        "status": "Show current session status",
+        "solver": "Set solver (solver <type> [iterations])",
+        "solvers": "List available solvers",
+        "step": "Advance simulation by N frames (step [N])",
+        "run": "Run full simulation (run <frames>)",
+        "export": "Export state (export <path>)",
+        "mesh": "Inspect mesh (mesh inspect <path>)",
+        "stitch": "Stitch mesh (stitch <path> [threshold])",
+        "examples": "List built-in examples",
+        "quit": "Exit the REPL",
     }
 
     while True:
@@ -533,6 +541,7 @@ def repl(ctx):
 
             elif cmd == "info":
                 from cli_anything.newton.utils.newton_backend import find_newton
+
                 try:
                     backend = find_newton()
                     skin.status("Newton", backend["newton_version"])
@@ -569,6 +578,7 @@ def repl(ctx):
 
             elif cmd == "solvers":
                 from cli_anything.newton.core.simulation import list_solvers
+
                 for s in list_solvers():
                     skin.status(s["name"], s["description"])
 
@@ -597,6 +607,7 @@ def repl(ctx):
                     skin.error("No scene loaded.")
                     continue
                 from cli_anything.newton.core.export import export_state_json
+
                 result = export_state_json(session.state_0, session.model, args[0])
                 skin.success(f"Exported to {result['output']} ({result['file_size']:,} bytes)")
 
@@ -606,6 +617,7 @@ def repl(ctx):
                     continue
                 if args[0] == "inspect":
                     from cli_anything.newton.core.mesh import inspect_mesh
+
                     info = inspect_mesh(args[1])
                     for k, v in info.items():
                         if k != "path":
@@ -616,6 +628,7 @@ def repl(ctx):
                     skin.error("Usage: stitch <mesh_path> [threshold]")
                     continue
                 from cli_anything.newton.core.mesh import stitch_mesh
+
                 threshold = float(args[1]) if len(args) > 1 else 0.0005
                 result = stitch_mesh(args[0], threshold=threshold)
                 skin.success(f"Stitched: {result['original_vertices']} -> {result['stitched_vertices']} vertices")
@@ -623,6 +636,7 @@ def repl(ctx):
 
             elif cmd == "examples":
                 from cli_anything.newton.utils.newton_backend import get_examples
+
                 examples = get_examples()
                 if examples:
                     for ex in examples:

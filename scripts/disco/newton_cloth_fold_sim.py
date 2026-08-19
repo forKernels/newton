@@ -33,8 +33,8 @@ import newton
 
 @wp.kernel
 def _fold_particles(
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
+    particle_q: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
     fold_center: float,
     fold_axis: int,
     fold_velocity: float,

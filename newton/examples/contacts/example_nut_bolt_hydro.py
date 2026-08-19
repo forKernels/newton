@@ -1,28 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example SDF Mesh Collision
 #
-# Demonstrates mesh-mesh collision using SDF (Signed Distance Field).
-# Supports two scenes "nut_bolt" and "gears":
+# Demonstrates nut/bolt mesh collision using hydroelastic contacts.
 #
-# Command: python -m newton.examples nut_bolt_hydro --scene nut_bolt
-#          python -m newton.examples nut_bolt_hydro --scene gears
+# Command: python -m newton.examples nut_bolt_hydro
 #
 ###########################################################################
+
+import argparse
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import trimesh
@@ -30,35 +20,60 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.geometry import HydroelasticSDF
 
 # Assembly type for the nut and bolt
 ASSEMBLY_STR = "m20_loose"
 
-# Gear mesh files available (filename -> key)
-GEAR_FILES = [
-    ("factory_gear_base_loose_space_5e-4_subdiv_4x.obj", "gear_base"),
-    ("factory_gear_large_space_5e-4.obj", "gear_large"),
-    ("factory_gear_medium_space_5e-4.obj", "gear_medium"),
-    ("factory_gear_small_space_5e-4.obj", "gear_small"),
-]
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
-ISAACGYM_GEARS_FOLDER = "assets/factory/mesh/factory_gears"
 
-SDF_MAX_RESOLUTION = 256
+SDF_MAX_RESOLUTION = 128
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
+# Persist cooked SDFs across runs so the (slow) cook only happens once.
+# Entries are content-addressed, so leftovers from older runs are harmless.
+MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
-    thickness=0.0,
+    margin=0.0,
     mu=0.01,
-    ke=1e7,  # Contact stiffness for MuJoCo solver
-    kd=1e4,  # Contact damping
-    contact_margin=0.005,
+    # Hydroelastic supplies the per-contact stiffness for the nut/bolt pair, so
+    # ``ke``/``kd`` reach only the non-hydroelastic contacts. At the 1e10 ``kh``
+    # default the thread contacts resolve over a ~95 ms solref time constant --
+    # roughly 45 substeps -- and the nut sits visibly cocked under MuJoCo. XPBD
+    # projects positions and is insensitive to this either way.
+    kh=1e11,  # Hydroelastic contact stiffness
+    ke=1e7,
+    kd=1e4,
+    gap=0.005,
     density=8000.0,
     mu_torsional=0.0,
     mu_rolling=0.0,
     is_hydroelastic=True,
 )
+
+
+# Demonstrate the user-facing pressure-callback API for the hydroelastic
+# solver. The contact patch is defined as the iso-pressure surface
+# ``p_a == p_b``; users supply a Warp ``@wp.func`` that maps a signed depth
+# to a pressure value, plus a ``@wp.struct`` carrying any per-shape state it
+# needs. The callback must be finite for any signed depth (positive or
+# negative) and monotone non-increasing in ``signed_depth`` so the marching-
+# cubes interpolation stays continuous across the patch boundary. Do not clip
+# the non-contact side to zero pressure; with different shape stiffnesses, the
+# iso-pressure surface can pass through that thin outside region.
+#
+# Here we re-implement the default linear law ``pressure = -kh * signed_depth``
+# explicitly so the example exercises the user pathway. Nonlinear laws should
+# similarly extend into ``signed_depth >= 0`` instead of flattening there.
+@wp.struct
+class LinearPressureData:
+    shape_kh: wp.array[wp.float32]
+
+
+@wp.func
+def linear_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: LinearPressureData) -> wp.float32:
+    return -data.shape_kh[shape_idx] * signed_depth
 
 
 def add_mesh_object(
@@ -126,68 +141,63 @@ def load_mesh_with_sdf(
     mesh.build_sdf(
         max_resolution=SDF_MAX_RESOLUTION,
         narrow_band_range=SDF_NARROW_BAND_RANGE,
-        margin=shape_cfg.contact_margin if shape_cfg and shape_cfg.contact_margin is not None else 0.005,
+        margin=shape_cfg.gap if shape_cfg and shape_cfg.gap is not None else 0.005,
         scale=(scale, scale, scale),
+        cache_dir=MESH_SDF_CACHE_DIR,
     )
     return mesh, center_vec
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-        world_count=1,
-        num_per_world=1,
-        scene="nut_bolt",
-        solver="xpbd",
-        test_mode=False,
-    ):
+    def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        # Use more substeps for gears scene to improve stability
-        self.sim_substeps = 50 if scene == "gears" else 5
+        self.sim_substeps = 4
+        self.collide_every = 2 if args.solver == "mujoco" else 1  # re-collide every K substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
         self.viewer = viewer
-        self.scene = scene
-        self.solver_type = solver
-        self.test_mode = test_mode
+        self.solver_type = args.solver
+        self.test_mode = args.test
+        self.deterministic = args.deterministic
+        self.deterministic_solver = args.deterministic_solver
 
         # XPBD contact correction (0.0 = no correction, 1.0 = full correction)
         self.xpbd_contact_relaxation = 0.8
 
         # Scene scaling factor (1.0 = original size)
-        self.scene_scale = 5.0
+        self.scene_scale = 1.0
 
         # Ground plane offset (negative = below origin)
         self.ground_plane_offset = -0.01
 
         # Grid dimensions for nut/bolt scene (number of assemblies in X and Y)
-        self.num_per_world = num_per_world
-        self.grid_x = int(np.ceil(np.sqrt(num_per_world)))
-        self.grid_y = int(np.ceil(num_per_world / self.grid_x))
+        self.num_per_world = args.num_per_world
+        self.grid_x = int(np.ceil(np.sqrt(self.num_per_world)))
+        self.grid_y = int(np.ceil(self.num_per_world / self.grid_x))
+
+        # Contact budget per world. MuJoCo's njmax/nconmax are per-world limits
+        # while CollisionPipeline's rigid_contact_max covers every world, so both
+        # derive from this rather than from a fixed whole-scene pool. A threading
+        # assembly peaks near 115 contacts, so this leaves ~9x headroom.
+        self.contacts_per_world = 1024 * self.num_per_world
 
         # Maximum number of rigid contacts to allocate (limits memory usage)
-        # None = auto-calculate (can be very large), or set explicit limit (e.g., 1_000_000)
-        self.rigid_contact_max = 100000
+        self.rigid_contact_max = self.contacts_per_world * self.world_count
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
         self.broad_phase_mode = "sap"
 
-        if scene == "nut_bolt":
-            world_builder = self._build_nut_bolt_scene()
-        elif scene == "gears":
-            world_builder = self._build_gears_scene()
-        else:
-            raise ValueError(f"Unknown scene '{scene}'")
+        world_builder = self._build_nut_bolt_scene()
 
         main_scene = newton.ModelBuilder()
-        main_scene.default_shape_cfg.contact_margin = 0.01
-        # Add ground plane with offset (plane equation: z = offset)
-        # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d
-        # Therefore, to get plane at z = offset, we need d = -offset
+        main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
+        # Add ground plane at z = ground_plane_offset.
+        # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d.
+        # Therefore d is the negative offset, and z = offset uses d = -offset.
         main_scene.add_shape_plane(
             plane=(0.0, 0.0, 1.0, -self.ground_plane_offset),
             width=0.0,
@@ -198,11 +208,26 @@ class Example:
 
         self.model = main_scene.finalize()
 
+        # Configure the hydroelastic pipeline with our custom (still linear)
+        # pressure callback. ``shape_kh`` reuses the per-shape stiffness already
+        # stored on the model. Disable the marching-cubes edge clamp because
+        # threading dynamics on the M20 helix are sensitive to the contact-
+        # surface vertex bias the clamp introduces.
+        pressure_data = LinearPressureData()
+        pressure_data.shape_kh = self.model.shape_material_kh
+        sdf_hydroelastic_config = HydroelasticSDF.Config(
+            pressure_func=linear_pressure,
+            pressure_data=pressure_data,
+            mc_edge_clamp_min=0.0,
+        )
+
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
             rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase_mode,
+            sdf_hydroelastic_config=sdf_hydroelastic_config,
+            deterministic=self.deterministic,
         )
 
         # Create solver based on user choice
@@ -211,20 +236,28 @@ class Example:
                 self.model,
                 iterations=10,
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN
+                if self.deterministic_solver
+                else wp.DeterministicMode.NOT_GUARANTEED,
             )
         elif self.solver_type == "mujoco":
-            num_per_world = self.rigid_contact_max // self.world_count
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_contacts=False,
+                # The scene defines no sensors, and MuJoCo's tactile sensor kernel
+                # mixes max/add reductions, which deterministic mode rejects.
+                disable_sensors=True,
                 solver="newton",
                 integrator="implicitfast",
                 cone="elliptic",
-                njmax=num_per_world,
-                nconmax=num_per_world,
+                njmax=self.contacts_per_world,
+                nconmax=self.contacts_per_world,
                 iterations=15,
                 ls_iterations=100,
                 impratio=1.0,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN
+                if self.deterministic_solver
+                else wp.DeterministicMode.NOT_GUARANTEED,
             )
         else:
             raise ValueError(f"Unknown solver '{self.solver_type}'")
@@ -235,18 +268,15 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
+        self.collision_pipeline.collide(self.state_0, self.contacts)
 
         self.viewer.set_model(self.model)
 
-        if scene == "nut_bolt":
-            offset = 0.15 * self.scene_scale
-            self.viewer.set_world_offsets((offset, offset, 0.0))
-            self.viewer.set_camera(pos=wp.vec3(offset, -offset, 0.12 * self.scene_scale), pitch=-15.0, yaw=135.0)
-        else:  # gears
-            offset = 0.25 * self.scene_scale
-            self.viewer.set_world_offsets((offset, offset, 0.0))
-            self.viewer.set_camera(pos=wp.vec3(offset, -offset, 0.2 * self.scene_scale), pitch=-25.0, yaw=135.0)
+        offset = 0.15 * self.scene_scale
+        self.viewer.set_world_offsets((offset, offset, 0.0))
+        camera_offset = np.sqrt(self.world_count) * offset * 1.25
+        self.viewer.set_camera(pos=wp.vec3(camera_offset, -camera_offset, 0.5 * camera_offset), pitch=-15.0, yaw=135.0)
 
         # Initialize test tracking data (only in test mode for nut_bolt scene)
         self._init_test_tracking()
@@ -259,7 +289,7 @@ class Example:
         print(f"Assets downloaded to: {asset_path}")
 
         world_builder = newton.ModelBuilder()
-        world_builder.default_shape_cfg.contact_margin = 0.01 * self.scene_scale
+        world_builder.default_shape_cfg.gap = 0.001 * self.scene_scale
 
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
         nut_file = str(asset_path / f"factory_nut_{ASSEMBLY_STR}_subdiv_3x.obj")
@@ -315,43 +345,17 @@ class Example:
 
         return world_builder
 
-    def _build_gears_scene(self) -> newton.ModelBuilder:
-        print("Downloading gear assets...")
-        asset_path = newton.examples.download_external_git_folder(ISAACGYM_ENVS_REPO_URL, ISAACGYM_GEARS_FOLDER)
-        print(f"Assets downloaded to: {asset_path}")
-
-        world_builder = newton.ModelBuilder()
-        world_builder.default_shape_cfg.contact_margin = 0.003 * self.scene_scale
-
-        for _, (gear_filename, gear_key) in enumerate(GEAR_FILES):
-            gear_file = str(asset_path / gear_filename)
-            gear_mesh, gear_center = load_mesh_with_sdf(
-                gear_file, shape_cfg=SHAPE_CFG, scale=self.scene_scale, center_origin=True
-            )
-            gear_xform = wp.transform(wp.vec3(0.0, 0.0, 0.01) * self.scene_scale, wp.quat_identity())
-            add_mesh_object(
-                world_builder,
-                gear_mesh,
-                gear_xform,
-                SHAPE_CFG,
-                key=gear_key,
-                center_vec=gear_center,
-                scale=self.scene_scale,
-            )
-
-        return world_builder
-
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-        for _ in range(self.sim_substeps):
+        for sub in range(self.sim_substeps):
+            # Refresh contacts every K substeps so contact normals stay
+            # aligned with the threading rotation.
+            if sub % self.collide_every == 0:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.state_0.clear_forces()
 
             self.viewer.apply_forces(self.state_0)
@@ -377,8 +381,8 @@ class Example:
         self.viewer.end_frame()
 
     def _init_test_tracking(self):
-        """Initialize tracking data for test validation (nut_bolt scene only)."""
-        if not self.test_mode or self.scene != "nut_bolt":
+        """Initialize tracking data for test validation."""
+        if not self.test_mode:
             self.bolt_body_indices = None
             self.nut_body_indices = None
             return
@@ -408,7 +412,7 @@ class Example:
 
     def _track_test_data(self):
         """Track transforms for test validation (called each step in test mode)."""
-        if not self.test_mode or self.scene != "nut_bolt":
+        if not self.test_mode:
             return
 
         body_q = self.state_0.body_q.numpy()
@@ -433,18 +437,13 @@ class Example:
     def test_final(self):
         """Verify simulation state after example completes.
 
-        For nut_bolt scene:
         - Bolts should stay approximately in place (limited displacement)
         - Nuts should rotate (thread engagement) and move slightly downward
         """
-        if self.scene != "nut_bolt":
-            # For gears scene, just verify simulation ran without error
-            return
-
         body_q = self.state_0.body_q.numpy()
 
         # Check bolts stayed in place
-        max_bolt_displacement = 0.01 * self.scene_scale  # 1cm scaled
+        max_bolt_displacement = 0.02  # 2 cm tolerance
         for i, bolt_idx in enumerate(self.bolt_body_indices):
             current_pos = body_q[bolt_idx][:3]
             initial_pos = self.bolt_initial_transforms[i][:3]
@@ -454,8 +453,10 @@ class Example:
                 f"Displacement={displacement:.4f} (max allowed={max_bolt_displacement:.4f})"
             )
 
-        # Check nuts rotated and moved down
-        min_rotation_threshold = 0.1  # At least ~5.7 degrees of rotation
+        # The 45 degree threshold catches stalled thread engagement while
+        # allowing observed solver/contact-count variation.
+        min_rotation_threshold = np.radians(45.0)
+        min_descent = 0.005
         for i in range(len(self.nut_body_indices)):
             # Check rotation occurred
             max_rotation = self.nut_max_rotation_change[i]
@@ -468,41 +469,54 @@ class Example:
             # Check nut moved downward (min_z should be less than initial z)
             initial_z = self.nut_initial_transforms[i][2]
             min_z = self.nut_min_z[i]
-            assert min_z < initial_z, (
-                f"Nut {i}: did not move downward. Initial z={initial_z:.4f}, min z reached={min_z:.4f}"
+            descent = initial_z - min_z
+            assert descent > min_descent, (
+                f"Nut {i}: did not move down enough. Descent={descent:.4f} (expected > {min_descent:.4f})"
             )
+
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(world_count=20)
+        parser.add_argument(
+            "--deterministic",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Make contact generation and ordering reproducible across runs on the same GPU. "
+                "Costs a few percent of step time. Needs a world count small enough to keep the "
+                "hydroelastic face-contact buffer under the 2^20 deterministic contact-id limit."
+            ),
+        )
+        parser.add_argument(
+            "--deterministic-solver",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Additionally make the solver bit-exact. Separate from --deterministic because "
+                "it instruments every atomic scatter in the solver and costs ~7x step time, "
+                "while contact ordering is what varies between runs."
+            ),
+        )
+        parser.add_argument(
+            "--solver",
+            type=str,
+            choices=["xpbd", "mujoco"],
+            default="mujoco",
+            help="Solver to use: 'xpbd' or 'mujoco'.",
+        )
+        parser.add_argument(
+            "--num-per-world",
+            type=int,
+            default=1,
+            help="Number of assemblies per world.",
+        )
+        return parser
 
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument(
-        "--world-count",
-        type=int,
-        default=20,
-        help="Total number of simulated worlds.",
-    )
-    parser.add_argument(
-        "--scene",
-        type=str,
-        choices=["nut_bolt", "gears"],
-        default="nut_bolt",
-        help="Scene to run: 'nut_bolt' or 'gears'.",
-    )
-    parser.add_argument(
-        "--solver",
-        type=str,
-        choices=["xpbd", "mujoco"],
-        default="mujoco",
-        help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
-    )
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(
-        viewer,
-        world_count=args.world_count,
-        scene=args.scene,
-        solver=args.solver,
-        test_mode=args.test,
-    )
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

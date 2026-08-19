@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Diffsim Ball
@@ -36,14 +24,14 @@ from newton.utils import bourke_color_map
 
 
 @wp.kernel
-def loss_kernel(pos: wp.array(dtype=wp.vec3), target: wp.vec3, loss: wp.array(dtype=float)):
+def loss_kernel(pos: wp.array[wp.vec3], target: wp.vec3, loss: wp.array[float]):
     # distance to target
     delta = pos[0] - target
     loss[0] = wp.dot(delta, delta)
 
 
 @wp.kernel
-def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha: float):
+def step_kernel(x: wp.array[wp.vec3], grad: wp.array[wp.vec3], alpha: float):
     tid = wp.tid()
 
     # gradient descent step
@@ -51,7 +39,7 @@ def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha
 
 
 class Example:
-    def __init__(self, viewer, args=None, verbose=False):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 60
         self.frame = 0
@@ -60,7 +48,7 @@ class Example:
         self.sim_substeps = 8
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.verbose = verbose
+        self.verbose = args.verbose
 
         self.train_iter = 0
         self.train_rate = 0.02
@@ -125,12 +113,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.forward_backward()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.forward_backward()
+        self.graph = capture.graph
 
     def forward_backward(self):
         self.tape = wp.Tape()
@@ -183,6 +168,11 @@ class Example:
         assert all(np.diff(self.loss_history[:-1]) < -1e-3)
 
     def render(self):
+        if self.viewer.is_paused():
+            self.viewer.begin_frame(self.viewer.time)
+            self.viewer.end_frame()
+            return
+
         if self.frame > 0 and self.train_iter % 16 != 0:
             return
 
@@ -202,7 +192,7 @@ class Example:
                 newton.GeoType.BOX,
                 (0.1, 0.1, 0.1),
                 wp.array([wp.transform(self.target, wp.quat_identity())], dtype=wp.transform),
-                wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
+                wp.array([wp.vec3(0.5, 0.0, 0.5)], dtype=wp.vec3),
             )
             self.viewer.log_lines(
                 f"/traj_{self.train_iter - 1}",
@@ -261,20 +251,22 @@ class Example:
 
         return x_grad_numeric, x_grad_analytic
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--verbose", action="store_true", help="Print out additional status messages during execution."
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
-    parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
-
-    # Parse arguments and initialize viewer
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    # Create example
-    example = Example(viewer, args=args, verbose=args.verbose)
+    def _build():
+        ex = Example(viewer, args)
+        ex.check_grad()
+        return ex
 
-    # Check gradients
-    example.check_grad()
-
-    # Run example
-    newton.examples.run(example, args)
+    newton.examples.run(_build(), args)

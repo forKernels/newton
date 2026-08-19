@@ -38,8 +38,8 @@ import newton
 
 @wp.kernel
 def _pull_pinned_particles(
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
+    particle_q: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
     pull_velocity: wp.vec3,
     dt: float,
 ):

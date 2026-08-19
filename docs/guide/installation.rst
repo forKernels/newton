@@ -1,54 +1,225 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
+.. currentmodule:: newton
+
 Installation
 ============
 
-This guide will help you install Newton and set up your Python environment.
+This guide covers the recommended way to install Newton from PyPI. For
+installing from source or using ``uv``, see the :doc:`development` guide.
+
+.. _system-requirements:
 
 System Requirements
 -------------------
 
-- Python 3.10 or higher
-- Windows or Linux on x86-64 architecture (Linux aarch64 is supported but not as thoroughly tested)
-- NVIDIA GPU with compute capability >= 5.0 (Maxwell) and driver 545 or newer (see note below)
+Minimum Requirements
+^^^^^^^^^^^^^^^^^^^^
 
-A local installation of the `CUDA Toolkit <https://developer.nvidia.com/cuda-downloads>`__ is not required for Newton.
+.. list-table::
+   :widths: 25 30 45
+   :header-rows: 1
 
-**Note:**
-    - NVIDIA GPU driver 545+ is required for Warp kernel compilation *during* CUDA graph capture. Some examples using graph capture may fail with older drivers.
-    - Unless otherwise specified, Newton's system requirements are identical to NVIDIA's `Warp <https://developer.nvidia.com/warp>`__ requirements.
+   * - Requirement
+     - Minimum
+     - Notes
+   * - Python
+     - 3.10
+     - 3.11+ recommended
+   * - OS
+     - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
+     - macOS has no GPU acceleration
+   * - NVIDIA GPU
+     - Compute capability 5.0+ (Maxwell)
+     - Any GeForce GTX 9xx or newer
+   * - NVIDIA Driver
+     - 545 or newer (CUDA 12)
+     - 550 or newer (CUDA 12.4) recommended for best performance
+   * - CUDA
+     - 12, 13
+     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime. See :ref:`cuda-compatibility` for version-specific notes.
 
 Platform-Specific Requirements
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Linux aarch64 (ARM64)**
 
-On ARM64 Linux systems (such as NVIDIA Jetson Thor and DGX Spark), installing the ``examples`` extras currently requires
-X11 development libraries to build ``imgui_bundle`` from source:
+On ARM64 Linux, the ``importers`` extra requires GLIBC 2.35 or newer because
+`usd-exchange <https://pypi.org/project/usd-exchange/>`__ publishes its Linux
+ARM64 wheels for ``manylinux_2_35``. This also applies to extras that include
+``importers``, such as ``examples`` and ``dev``. Distributions with an older
+GLIBC, including RHEL 9 with GLIBC 2.34, can install the base Newton package but
+cannot install these extras from the published wheels.
+
+Installing the ``examples`` extra on ARM64 Linux systems such as NVIDIA Jetson
+Thor and DGX Spark also requires X11 development libraries to build
+``imgui_bundle`` from source:
 
 .. code-block:: console
 
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
 
-1. Clone the repository
------------------------
+For tested configurations and CUDA version-specific notes, see
+:doc:`compatibility`.
+
+Installing Newton
+-----------------
+
+Basic installation:
 
 .. code-block:: console
 
-    git clone git@github.com:newton-physics/newton.git
-    cd newton
+    pip install newton
 
-2. Python Environment Setup
----------------------------
+Install with the ``examples`` extra to run the built-in examples (includes simulation and visualization dependencies):
 
-We recommend using the `uv <https://docs.astral.sh/uv/>`_ Python package and project manager. It will automatically setup a version-locked Python environment based on the `uv.lock <https://github.com/newton-physics/newton/blob/main/uv.lock>`_ file that the Newton team maintains.
+.. code-block:: console
+
+    pip install "newton[examples]"
+
+We recommend installing Newton inside a virtual environment to avoid conflicts
+with other packages:
+
+.. tab-set::
+    :sync-group: os
+
+    .. tab-item:: macOS / Linux
+        :sync: linux
+
+        .. code-block:: console
+
+            python -m venv .venv
+            source .venv/bin/activate
+            pip install "newton[examples]"
+
+    .. tab-item:: Windows (console)
+        :sync: windows
+
+        .. code-block:: console
+
+            python -m venv .venv
+            .venv\Scripts\activate.bat
+            pip install "newton[examples]"
+
+    .. tab-item:: Windows (PowerShell)
+        :sync: windows-ps
+
+        .. code-block:: console
+
+            python -m venv .venv
+            .venv\Scripts\Activate.ps1
+            pip install "newton[examples]"
 
 .. note::
-    During the alpha development phase, we recommend using uv. When Newton is stabilized and regularly publishing to PyPI we will update this guide to make the pip install approach the recommended method.
+
+    Users on Python 3.10 may experience issues when installing ``imgui_bundle`` (a dependency of the
+    ``examples`` extra). If you encounter installation errors, we recommend upgrading to a later
+    Python version, or follow the :doc:`development` guide to install Newton using ``uv``.
+
+.. _running-examples:
+
+Running Examples
+^^^^^^^^^^^^^^^^
+
+After installing Newton with the ``examples`` extra, launch the default
+``basic_pendulum`` example — you can browse other examples from the side panel:
+
+.. code-block:: console
+
+    python -m newton.examples
+
+Run an example that performs RL policy inference. The ``examples`` extra
+includes ``newton[onnx]``, which installs Warp-NN's ONNX runtime and the ONNX
+parser:
+
+.. code-block:: console
+
+    pip install "newton[examples]"
+    python -m newton.examples robot_anymal_c_walk
+
+See a list of all available examples (also browsable from the viewer's side panel):
+
+.. code-block:: console
+
+    python -m newton.examples --list
+
+Quick Start
+^^^^^^^^^^^
+
+After installing Newton with the base package, you can build models, create
+solvers, and run simulations directly from Python. This example uses only the
+required dependencies installed by ``pip install newton``:
+
+.. code-block:: python
+
+    import warp as wp
+    import newton
+
+    # Build a model
+    builder = newton.ModelBuilder()
+    body = builder.add_body(
+        xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity()),
+        mass=1.0,
+    )
+    builder.add_shape_sphere(body, radius=0.25)
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    # Create a solver and allocate state
+    solver = newton.solvers.SolverXPBD(model)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    # Step the simulation
+    for step in range(120):
+        state_0.clear_forces()
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+        state_0, state_1 = state_1, state_0
+
+The following workflow uses :class:`~newton.solvers.SolverMuJoCo`, so install
+the optional simulation dependencies first:
+
+.. code-block:: console
+
+    pip install "newton[sim]"
+
+Then build a robot template, replicate it across many worlds, and step them all
+simultaneously on the GPU:
+
+.. code-block:: python
+
+    # Build a single robot template
+    template = newton.ModelBuilder()
+    template.add_mjcf("humanoid.xml")
+
+    # Replicate into parallel worlds
+    builder = newton.ModelBuilder()
+    builder.replicate(template, world_count=1024)
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    # The solver steps all 1024 worlds in parallel
+    solver = newton.solvers.SolverMuJoCo(model)
+
+See the :doc:`MuJoCo solver guide </solvers/mujoco>` for solver-specific
+details, the :doc:`/guide/overview` for Newton's core workflow, and
+:doc:`/lab/isaac-lab` for Isaac Lab integration details.
+
+.. _extra-dependencies:
 
 Extra Dependencies
-^^^^^^^^^^^^^^^^^^
+------------------
 
-Newton's only mandatory dependency is `NVIDIA Warp <https://github.com/NVIDIA/warp>`_. We define additional dependency sets in the `pyproject.toml <https://github.com/newton-physics/newton/blob/main/pyproject.toml>`_ file. The sets are:
+Newton's only mandatory dependency is `NVIDIA Warp <https://github.com/NVIDIA/warp>`_.
+Additional optional dependency sets are defined in ``pyproject.toml``:
 
 .. list-table::
    :widths: 20 80
@@ -60,154 +231,30 @@ Newton's only mandatory dependency is `NVIDIA Warp <https://github.com/NVIDIA/wa
      - Simulation dependencies, including MuJoCo
    * - ``importers``
      - Asset import and mesh processing dependencies
+   * - ``remesh``
+     - Remeshing dependencies (Open3D, pyfqmr) for :func:`newton.utils.remesh_mesh`
+   * - ``onnx``
+     - Warp-NN ONNX runtime dependencies for neural actuators and RL policy examples
    * - ``examples``
-     - Dependencies for running examples, including visualization
+     - Dependencies for running examples, including visualization and ONNX policy inference (includes ``sim`` + ``importers`` + ``onnx``)
    * - ``torch-cu12``
-     - PyTorch dependency needed *in addition* to ``examples`` dependencies to run examples that inference RL-trained control policies
+     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
+   * - ``torch-cu13``
+     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
+   * - ``notebook``
+     - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
-     - Dependencies for development and testing
+     - Dependencies for development and testing (includes ``examples``)
    * - ``docs``
      - Dependencies for building the documentation
 
-Method 1: Using uv (Recommended)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Install `uv <https://docs.astral.sh/uv/>`_:
-
-.. tab-set::
-    :sync-group: os
-
-    .. tab-item:: macOS / Linux
-        :sync: linux
-
-        .. code-block:: console
-
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-
-    .. tab-item:: Windows
-        :sync: windows
-
-        .. code-block:: console
-
-            powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-See also instructions on updating packages in the uv lockfile in the :doc:`development`.
-
-Running Newton with uv
-""""""""""""""""""""""
-
-Run an example with minimal dependencies:
-
-.. code-block:: console
-
-    uv run -m newton.examples basic_pendulum --viewer null
-
-Run an example with additional dependencies:
-
-.. code-block:: console
-
-    uv run --extra examples -m newton.examples robot_humanoid --world-count 16
-
-Run an example that inferences an RL policy:
-
-.. code-block:: console
-
-    uv run --extra examples --extra torch-cu12 -m newton.examples robot_anymal_c_walk
-
-See a list of all available examples with:
-
-.. code-block:: console
-
-    uv run -m newton.examples
-
-Method 2: Using a Virtual Environment Setup by uv
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-`uv <https://docs.astral.sh/uv/>`_ can also be used to setup a virtual environment based on the `uv.lock <https://github.com/newton-physics/newton/blob/main/uv.lock>`_ file. You can setup a virtual environment with all ``examples`` dependencies by running:
-
-.. code-block:: console
-
-    uv venv
-    uv sync --extra examples
-
-Then you can activate the virtual environment and run an example using the virtual environment's Python:
-
-.. tab-set::
-    :sync-group: os
-
-    .. tab-item:: macOS / Linux
-        :sync: linux
-
-        .. code-block:: console
-
-            source .venv/bin/activate
-            python newton/examples/robot/example_robot_humanoid.py
-
-    .. tab-item:: Windows (console)
-        :sync: windows
-
-        .. code-block:: console
-
-            .venv\Scripts\activate.bat
-            python newton/examples/robot/example_robot_humanoid.py
-
-    .. tab-item:: Windows (PowerShell)
-        :sync: windows-ps
-
-        .. code-block:: console
-
-            .venv\Scripts\Activate.ps1
-            python newton/examples/robot/example_robot_humanoid.py
-
-Method 3: Manual Setup Using Pip in a Virtual Environment
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-These instructions are meant for users who wish to set up a development environment using `venv <https://docs.python.org/3/library/venv.html>`__
-or Conda (e.g. from `Miniforge <https://github.com/conda-forge/miniforge>`__).
-
-.. tab-set::
-    :sync-group: os
-
-    .. tab-item:: macOS / Linux
-        :sync: linux
-
-        .. code-block:: console
-
-            python -m venv .venv
-            source .venv/bin/activate
-
-    .. tab-item:: Windows (console)
-        :sync: windows
-
-        .. code-block:: console
-
-            python -m venv .venv
-            .venv\Scripts\activate.bat
-
-    .. tab-item:: Windows (PowerShell)
-        :sync: windows-ps
-
-        .. code-block:: console
-
-            python -m venv .venv
-            .venv\Scripts\Activate.ps1
-
-Installing dependencies including optional development dependencies:
-
-.. code-block:: console
-
-    python -m pip install mujoco
-    python -m pip install mujoco-warp
-    python -m pip install warp-lang --pre -U -f https://pypi.nvidia.com/warp-lang/
-    python -m pip install -e .[dev]
-
-Test the installation by running an example:
-
-.. code-block:: console
-
-    python newton/examples/robot/example_robot_humanoid.py
+Some extras transitively include others. For example, ``examples`` pulls in
+``sim``, ``importers``, and ``onnx``, and ``dev`` pulls in ``examples``. You only
+need to install the most specific set for your use case.
 
 Next Steps
 ----------
 
-- Explore more examples in the ``newton/examples/`` directory and checkout the :doc:`visualization` guide to learn how to interact with the examples simulation.
-- Check out the :doc:`development` guide to learn how to contribute to Newton.
+- Run ``python -m newton.examples --list`` to see all available examples and check out the :doc:`visualization` guide to learn how to interact with the example simulations.
+- See the :doc:`compatibility` guide for Newton's supported platforms, versioning scheme, and deprecation policy.
+- Check out the :doc:`development` guide to learn how to contribute to Newton, or how to use alternative installation methods.

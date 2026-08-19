@@ -14,16 +14,16 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 
 import pytest
 
-
 # ── Helper ────────────────────────────────────────────────────────────
+
 
 def _resolve_cli(name):
     """Resolve installed CLI command; falls back to python -m for dev."""
     import shutil
+
     force = os.environ.get("CLI_ANYTHING_FORCE_INSTALLED", "").strip() == "1"
     path = shutil.which(name)
     if path:
@@ -46,6 +46,7 @@ class TestSession:
 
     def test_session_creation(self):
         from cli_anything.newton.core.session import Session
+
         s = Session()
         assert s.model is None
         assert s.solver is None
@@ -55,12 +56,14 @@ class TestSession:
 
     def test_session_not_loaded(self):
         from cli_anything.newton.core.session import Session
+
         s = Session()
         assert s.is_loaded is False
         assert s.scene_name == ""
 
     def test_session_status_empty(self):
         from cli_anything.newton.core.session import Session
+
         s = Session()
         status = s.get_status()
         assert status["loaded"] is False
@@ -69,12 +72,14 @@ class TestSession:
 
     def test_session_save_no_path_raises(self):
         from cli_anything.newton.core.session import Session
+
         s = Session()
         with pytest.raises(ValueError, match="No save path"):
             s.save()
 
     def test_session_save_json(self, tmp_path):
         from cli_anything.newton.core.session import Session
+
         path = str(tmp_path / "session.json")
         s = Session(session_path=path)
         s.scene_info = {"path": "/test/robot.urdf"}
@@ -90,6 +95,7 @@ class TestSession:
 
     def test_session_history_tracking(self):
         from cli_anything.newton.core.session import Session
+
         s = Session()
         assert s.history == []
         # History is populated by load_scene/set_solver which need Newton,
@@ -99,12 +105,14 @@ class TestSession:
 
     def test_session_scene_name_extraction(self):
         from cli_anything.newton.core.session import Session
+
         s = Session()
         s.scene_info = {"path": "/home/user/models/anymal_c.urdf"}
         assert s.scene_name == "anymal_c"
 
     def test_session_scene_name_empty(self):
         from cli_anything.newton.core.session import Session
+
         s = Session()
         s.scene_info = {"path": ""}
         assert s.scene_name == ""
@@ -120,6 +128,7 @@ class TestSimulation:
 
     def test_list_solvers_returns_all(self):
         from cli_anything.newton.core.simulation import list_solvers
+
         solvers = list_solvers()
         assert len(solvers) == 7
         names = {s["name"] for s in solvers}
@@ -129,12 +138,14 @@ class TestSimulation:
 
     def test_solver_types_dict(self):
         from cli_anything.newton.core.simulation import SOLVER_TYPES
+
         assert len(SOLVER_TYPES) == 7
         assert SOLVER_TYPES["xpbd"] == "SolverXPBD"
         assert SOLVER_TYPES["mujoco"] == "SolverMuJoCo"
 
     def test_create_solver_invalid_type(self):
         from cli_anything.newton.core.simulation import create_solver
+
         with pytest.raises(ValueError, match="Unknown solver"):
             create_solver(None, "nonexistent_solver")
 
@@ -149,6 +160,7 @@ class TestExport:
 
     def test_list_export_formats(self):
         from cli_anything.newton.core.export import list_export_formats
+
         formats = list_export_formats()
         assert len(formats) >= 3
         names = {f["format"] for f in formats}
@@ -158,6 +170,7 @@ class TestExport:
 
     def test_create_viewer_invalid_type(self):
         from cli_anything.newton.core.export import create_viewer
+
         with pytest.raises(ValueError, match="Unknown viewer type"):
             create_viewer("nonexistent_viewer")
 
@@ -172,11 +185,13 @@ class TestScene:
 
     def test_load_scene_file_not_found(self):
         from cli_anything.newton.core.scene import load_scene
+
         with pytest.raises(FileNotFoundError):
             load_scene("/nonexistent/path/robot.urdf")
 
     def test_load_scene_unsupported_format(self, tmp_path):
         from cli_anything.newton.core.scene import load_scene
+
         bad = tmp_path / "scene.txt"
         bad.write_text("not a scene")
         with pytest.raises(ValueError, match="Unsupported scene format"):
@@ -184,6 +199,7 @@ class TestScene:
 
     def test_build_procedural_invalid_type(self):
         from cli_anything.newton.core.scene import build_procedural_scene
+
         with pytest.raises(ValueError, match="Unknown procedural scene type"):
             build_procedural_scene("nonexistent_type")
 
@@ -198,16 +214,19 @@ class TestMesh:
 
     def test_inspect_mesh_not_found(self):
         from cli_anything.newton.core.mesh import inspect_mesh
+
         with pytest.raises(FileNotFoundError):
             inspect_mesh("/nonexistent/mesh.obj")
 
     def test_stitch_mesh_not_found(self):
         from cli_anything.newton.core.mesh import stitch_mesh
+
         with pytest.raises(FileNotFoundError):
             stitch_mesh("/nonexistent/mesh.obj")
 
     def test_check_connectivity_not_found(self):
         from cli_anything.newton.core.mesh import check_connectivity
+
         with pytest.raises(FileNotFoundError):
             check_connectivity("/nonexistent/mesh.obj")
 
@@ -222,11 +241,13 @@ class TestBackend:
 
     def test_is_available_returns_bool(self):
         from cli_anything.newton.utils.newton_backend import is_available
+
         result = is_available()
         assert isinstance(result, bool)
 
     def test_find_newton_when_available(self):
-        from cli_anything.newton.utils.newton_backend import is_available, find_newton
+        from cli_anything.newton.utils.newton_backend import find_newton, is_available
+
         if not is_available():
             pytest.skip("Newton not installed in this environment")
         info = find_newton()
@@ -248,7 +269,8 @@ class TestCLISubprocess:
     def _run(self, args, check=True):
         return subprocess.run(
             self.CLI_BASE + args,
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             check=check,
         )
 

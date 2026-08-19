@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # ==================================================================================
 # sim utils
@@ -26,14 +14,28 @@ __all__ = [
 # ==================================================================================
 # mesh utils
 # ==================================================================================
+from ._src.geometry.utils import remesh_mesh
 from ._src.utils.mesh import (
     MeshAdjacency,
+    MeshAdjacencyData,
     solidify_mesh,
+    validate_tet_mesh,
+    validate_triangle_mesh,
 )
 
 __all__ += [
     "MeshAdjacency",
+    "MeshAdjacencyData",
+    "remesh_mesh",
     "solidify_mesh",
+    "validate_tet_mesh",
+    "validate_triangle_mesh",
+]
+
+from ._src.utils.heightfield import rasterize_mesh_to_heightfield  # noqa: E402
+
+__all__ += [
+    "rasterize_mesh_to_heightfield",
 ]
 
 # ==================================================================================
@@ -48,9 +50,26 @@ __all__ += [
 ]
 
 # ==================================================================================
+# color utils
+# ==================================================================================
+
+from ._src.utils.color import (  # noqa: E402
+    ColorSpace,
+    color_linear_to_srgb,
+    color_srgb_to_linear,
+)
+
+__all__ += [
+    "ColorSpace",
+    "color_linear_to_srgb",
+    "color_srgb_to_linear",
+]
+
+# ==================================================================================
 # cable utils
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
+    CableStiffness,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_straight_cable_points,
@@ -58,6 +77,7 @@ from ._src.utils.cable import (  # noqa: E402
 )
 
 __all__ += [
+    "CableStiffness",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_straight_cable_points",
@@ -65,71 +85,12 @@ __all__ += [
 ]
 
 # ==================================================================================
-# spatial math
-# TODO: move these to Warp?
+# world utils
 # ==================================================================================
-from ._src.core.spatial import (  # noqa: E402
-    quat_between_axes,
-    quat_between_vectors_robust,
-    quat_decompose,
-    quat_from_euler,
-    quat_to_euler,
-    quat_to_rpy,
-    quat_twist,
-    quat_twist_angle,
-    transform_twist,
-    transform_wrench,
-    velocity_at_point,
-)
-
-__all__ += [
-    "quat_between_axes",
-    "quat_between_vectors_robust",
-    "quat_decompose",
-    "quat_from_euler",
-    "quat_to_euler",
-    "quat_to_rpy",
-    "quat_twist",
-    "quat_twist_angle",
-    "transform_twist",
-    "transform_wrench",
-    "velocity_at_point",
-]
-
-# ==================================================================================
-# math utils
-# TODO: move math utils to Warp?
-# ==================================================================================
-from ._src.math import (  # noqa: E402
-    boltzmann,
-    leaky_max,
-    leaky_min,
-    smooth_max,
-    smooth_min,
-    vec_abs,
-    vec_allclose,
-    vec_inside_limits,
-    vec_leaky_max,
-    vec_leaky_min,
-    vec_max,
-    vec_min,
-)
 from ._src.utils import compute_world_offsets  # noqa: E402
 
 __all__ += [
-    "boltzmann",
     "compute_world_offsets",
-    "leaky_max",
-    "leaky_min",
-    "smooth_max",
-    "smooth_min",
-    "vec_abs",
-    "vec_allclose",
-    "vec_inside_limits",
-    "vec_leaky_max",
-    "vec_leaky_min",
-    "vec_max",
-    "vec_min",
 ]
 
 # ==================================================================================

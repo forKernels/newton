@@ -3,18 +3,6 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 unittest-parallel command-line script main module
@@ -28,8 +16,15 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from contextlib import contextmanager
 from io import StringIO
+
+# Work around a known OpenUSD thread-safety crash in
+# UsdPhysics.LoadUsdPhysicsFromRange for collider-dense assets. OpenUSD reads
+# this once when pxr initializes, so set it before test modules import pxr and
+# preserve any caller-provided override.
+os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
 
 from newton.tests.unittest_utils import (  # NVIDIA modification
     ParallelJunitTestResult,
@@ -48,24 +43,28 @@ except ImportError:
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
 
-def _parallel_download(items, download_fn, description, max_jobs):
-    """Download *items* in parallel via a thread pool, re-raising on first failure."""
+def _enable_strict_warnings():
+    """Escalate DeprecationWarnings and any newton.* warning to errors.
 
-    max_workers = max(1, min(max_jobs, len(items)))
-    futures = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for item in items:
-            futures[executor.submit(download_fn, item)] = item
+    Installed before discovery and in each worker initializer so import-time
+    warnings from test modules are escalated too, not just runtime ones.
+    """
+    warnings.filterwarnings("error", category=DeprecationWarning)
+    warnings.filterwarnings("error", module=r"newton(\.|$)")
 
-        for future in concurrent.futures.as_completed(futures):
-            item = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                print(f"{description} download failed: {item}: {e}", file=sys.stderr)
-                raise
 
-    print(f"Downloaded {description}")
+def _use_coord_layout_targets():
+    """Run the suite under the coordinate target layout (the future default).
+
+    Set here — in the runner entry points and worker initializers — rather than
+    at unittest_utils import time: newton.examples imports unittest_utils, so an
+    import-time assignment would leak the flag into production example runs.
+    Tests that exercise the deprecated DOF layout set the flag to False locally
+    and restore it afterwards.
+    """
+    import newton  # noqa: PLC0415
+
+    newton.use_coord_layout_targets = True
 
 
 def main(argv=None):
@@ -119,6 +118,14 @@ def main(argv=None):
     parser.add_argument(
         "--junit-report-xml", metavar="FILE", help="Generate JUnit report format XML file"
     )  # NVIDIA Modification
+    parser.add_argument(
+        "--strict-warnings",
+        action="store_true",
+        default=False,
+        help="Treat warnings we can act on as errors: all DeprecationWarnings (from Newton or its "
+        "dependencies) and any warning attributed to a newton.* module. Off by default so verifying an "
+        "installation does not fail on warnings the user cannot act on; enabled in CI to surface warning debt.",
+    )  # NVIDIA Modification
     group_parallel = parser.add_argument_group("parallelization options")
     group_parallel.add_argument(
         "-j",
@@ -146,13 +153,22 @@ def main(argv=None):
         "--disable-process-pooling",
         action="store_true",
         default=False,
-        help="Do not reuse processes used to run test suites",
+        help="Do not reuse processes used to run test suites (max_tasks_per_child=1). "
+        "For the concurrent.futures backend, this is also enabled automatically when "
+        "multiple CUDA devices are detected.",
     )
     group_parallel.add_argument(
         "--disable-concurrent-futures",
         action="store_true",
         default=False,
         help="Use multiprocessing instead of concurrent.futures.",
+    )  # NVIDIA Modification
+    group_parallel.add_argument(
+        "--parallel-timeout",
+        metavar="SECONDS",
+        type=int,
+        default=3600,
+        help="Timeout in seconds for collecting all parallel test results (default is 3600)",
     )  # NVIDIA Modification
     group_parallel.add_argument(
         "--serial-fallback",
@@ -183,7 +199,16 @@ def main(argv=None):
         help="Skip clearing the Warp kernel cache before running tests. "
         "Useful for faster iteration and avoiding interference with parallel sessions.",
     )
+    group_warp.add_argument(
+        "--warp-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Forward a warp.config override to example subprocesses (repeatable).",
+    )
     args = parser.parse_args(args=argv)
+    if args.parallel_timeout <= 0:
+        parser.error("--parallel-timeout must be greater than 0")
 
     if args.coverage_branch:
         args.coverage = args.coverage_branch
@@ -200,58 +225,24 @@ def main(argv=None):
 
     import warp as wp  # noqa: PLC0415 NVIDIA Modification
 
-    # Clear the Warp cache (NVIDIA Modification)
+    # Honor WARP_CACHE_ROOT so concurrent worktrees do not wipe each other's
+    # default cache.  init_kernel_cache appends the version segment.
+    if "WARP_CACHE_ROOT" in os.environ:
+        wp.config.kernel_cache_dir = os.environ["WARP_CACHE_ROOT"]
+
     if not args.no_cache_clear:
         wp.clear_lto_cache()
         wp.clear_kernel_cache()
-        print("Cleared Warp kernel cache")
-
-    # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
-    # For now this avoids races and conflicting downloads in parallel test runs.
-    import newton.utils  # noqa: PLC0415
-
-    assets_to_download = [
-        "anybotics_anymal_c",
-        "anybotics_anymal_d",
-        "franka_emika_panda",
-        "manipulation_objects/cup",  # Used in robot.example_robot_panda_hydro
-        "manipulation_objects/pad",  # Used in robot.example_robot_panda_hydro
-        "unitree_go2",
-        "unitree_g1",
-        "unitree_h1",
-        "style3d",
-        "universal_robots_ur10",
-        "wonik_allegro",
-    ]
-    # Passing args.maxjobs to respect CLI cap for parallelism.
-    _parallel_download(
-        assets_to_download,
-        newton.utils.download_asset,
-        "assets",
-        args.maxjobs,
-    )
-
-    # Pre-download mujoco_menagerie folders used by test_robot_composer
-    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
-
-    menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
-    menagerie_folders = [
-        "universal_robots_ur5e",
-        "apptronik_apollo",
-        "leap_hand",
-        "wonik_allegro",
-        "robotiq_2f85",
-    ]
-    # Passing args.maxjobs to respect CLI cap for parallelism.
-    _parallel_download(
-        menagerie_folders,
-        lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),
-        "mujoco_menagerie folders",
-        args.maxjobs,
-    )
+        print(f"Cleared Warp kernel cache: {wp.config.kernel_cache_dir}")
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
+        # Apply before discovery so import-time warnings are caught; also covers
+        # the serial-fallback path, which runs here.
+        if args.strict_warnings:
+            _enable_strict_warnings()
+        _use_coord_layout_targets()
+
         # Discover tests
         with _coverage(args, temp_dir):
             test_loader = unittest.TestLoader()
@@ -298,17 +289,38 @@ def main(argv=None):
                         initargs=(manager.Lock(), shared_index, args, temp_dir),
                     ) as pool:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
-                        results = pool.map(test_manager.run_tests, test_suites)
+                        try:
+                            results = pool.map_async(test_manager.run_tests, test_suites).get(
+                                timeout=args.parallel_timeout
+                            )
+                        except multiprocessing.TimeoutError:
+                            pool.terminate()
+                            results = [_parallel_timeout_result(args.parallel_timeout)]
                 else:
                     # NVIDIA Modification added concurrent.futures
-                    with concurrent.futures.ProcessPoolExecutor(
-                        max_workers=process_count,
-                        mp_context=multiprocessing.get_context(method="spawn"),
-                        initializer=initialize_test_process,
-                        initargs=(manager.Lock(), shared_index, args, temp_dir),
-                    ) as executor:
+                    executor_kwargs = {
+                        "max_workers": process_count,
+                        "mp_context": multiprocessing.get_context(method="spawn"),
+                        "initializer": initialize_test_process,
+                        "initargs": (manager.Lock(), shared_index, args, temp_dir),
+                    }
+                    if sys.version_info >= (3, 11) and (args.disable_process_pooling or wp.get_cuda_device_count() > 1):
+                        executor_kwargs["max_tasks_per_child"] = 1
+                    executor = concurrent.futures.ProcessPoolExecutor(**executor_kwargs)
+                    try:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
-                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
+                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=args.parallel_timeout))
+                    except concurrent.futures.TimeoutError:
+                        _shutdown_executor_after_timeout(executor)
+                        executor = None
+                        results = [_parallel_timeout_result(args.parallel_timeout)]
+                    except Exception:
+                        _shutdown_executor_after_timeout(executor)
+                        executor = None
+                        raise
+                    finally:
+                        if executor is not None:
+                            executor.shutdown()
         else:
             # This entire path is an NVIDIA Modification
 
@@ -422,6 +434,35 @@ def _convert_select_pattern(pattern):
     return pattern
 
 
+def _parallel_timeout_result(timeout_seconds):
+    message = f"Parallel test run exceeded timeout of {timeout_seconds} seconds"
+    details = f"{message} while waiting for worker results. Increase --parallel-timeout or reduce the test workload."
+    return (
+        1,
+        [message],
+        [],
+        0,
+        0,
+        0,
+        [("unittest_parallel", "parallel_timeout", float(timeout_seconds), "ERROR", message, details)],
+    )
+
+
+def _shutdown_executor_after_timeout(executor):
+    terminate_workers = getattr(executor, "terminate_workers", None)
+    if terminate_workers is not None:
+        terminate_workers()
+        return
+
+    # ProcessPoolExecutor has no public process-termination API before Python 3.14.
+    processes = list((getattr(executor, "_processes", None) or {}).values())
+    executor.shutdown(wait=False, cancel_futures=True)
+    for process in processes:
+        process.terminate()
+    for process in processes:
+        process.join(timeout=5)
+
+
 @contextmanager
 def _coverage(args, temp_dir):
     # Running tests with coverage?
@@ -511,6 +552,15 @@ class ParallelTestManager:
         newton.tests.unittest_utils.coverage_enabled = self.args.coverage
         newton.tests.unittest_utils.coverage_temp_dir = self.temp_dir
         newton.tests.unittest_utils.coverage_branch = self.args.coverage_branch
+        newton.tests.unittest_utils.warp_config_overrides = self.args.warp_config
+
+        # Publish the flag for subprocess-based tests (e.g. test_examples.py).
+        # Filters are applied earlier (pre-discovery and in the worker
+        # initializer); re-applying here is idempotent.
+        newton.tests.unittest_utils.strict_warnings = self.args.strict_warnings
+        if self.args.strict_warnings:
+            _enable_strict_warnings()
+        _use_coord_layout_targets()
 
         if self.args.junit_report_xml:
             resultclass = ParallelJunitTestResult
@@ -577,6 +627,20 @@ class ParallelTextTestResult(unittest.TextTestResult):
             self.stream.flush()
         super(unittest.TextTestResult, self).startTest(test)
 
+    def stopTest(self, test):
+        super().stopTest(test)
+        # Force garbage collection of CPU-side allocations and release unused
+        # CUDA mempool memory to reduce peak host RSS in parallel test runs
+        # (see issue #1881).
+        import gc  # noqa: PLC0415
+
+        gc.collect()
+        import warp as wp  # noqa: PLC0415
+
+        for device_name in wp.get_cuda_devices():
+            if wp.is_mempool_enabled(device_name):
+                wp.set_mempool_release_threshold(device_name, 0)
+
     def _add_helper(self, test, show_all_message):
         if self.showAll:
             self.stream.writeln(f"{self.getDescription(test)} ... {show_all_message}")
@@ -621,6 +685,12 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
     It also ensures that Warp is initialized prior to running any tests.
     """
 
+    # Apply before the worker imports any test module (suites are imported on
+    # unpickle, before run_tests).
+    if args.strict_warnings:
+        _enable_strict_warnings()
+    _use_coord_layout_targets()
+
     with lock:
         shared_index.value += 1
         worker_index = shared_index.value
@@ -629,23 +699,25 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
         import warp as wp  # noqa: PLC0415
 
         if args.no_shared_cache:
-            from warp.thirdparty import appdirs  # noqa: PLC0415
+            from warp._src.thirdparty import appdirs  # noqa: PLC0415
 
+            # init_kernel_cache appends the version below the worker suffix.
             if "WARP_CACHE_ROOT" in os.environ:
-                cache_root_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), f"{wp.config.version}-{worker_index:03d}")
+                cache_root_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), f"worker-{worker_index:03d}")
             else:
                 cache_root_dir = appdirs.user_cache_dir(
-                    appname="warp", appauthor="NVIDIA", version=f"{wp.config.version}-{worker_index:03d}"
+                    appname="warp", appauthor="NVIDIA", version=f"worker-{worker_index:03d}"
                 )
 
             wp.config.kernel_cache_dir = cache_root_dir
+            os.makedirs(cache_root_dir, exist_ok=True)
 
             if not args.no_cache_clear:
                 wp.clear_lto_cache()
                 wp.clear_kernel_cache()
         elif "WARP_CACHE_ROOT" in os.environ:
             # Using a shared cache for all test processes
-            wp.config.kernel_cache_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), wp.config.version)
+            wp.config.kernel_cache_dir = os.getenv("WARP_CACHE_ROOT")
 
 
 if __name__ == "__main__":  # pragma: no cover

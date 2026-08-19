@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import time
 
-
 SOLVER_TYPES = {
     "vbd": "SolverVBD",
     "xpbd": "SolverXPBD",
@@ -78,8 +77,8 @@ def run_simulation(
     Returns:
         Dict with simulation results: timing, final state stats, etc.
     """
+
     import newton
-    import numpy as np
 
     state_0 = model.state()
     state_1 = model.state()
@@ -168,6 +167,5 @@ def list_solvers() -> list[dict]:
     }
 
     return [
-        {"name": name, "class": cls, "description": descriptions.get(name, "")}
-        for name, cls in SOLVER_TYPES.items()
+        {"name": name, "class": cls, "description": descriptions.get(name, "")} for name, cls in SOLVER_TYPES.items()
     ]

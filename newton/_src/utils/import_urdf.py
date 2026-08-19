@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -19,6 +7,7 @@ import os
 import tempfile
 import warnings
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote, urlsplit
 
@@ -27,11 +16,16 @@ import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
-from ..geometry import Mesh
+from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
-from ..sim.joints import ActuatorMode
+from ..sim.enums import JointTargetMode
 from ..sim.model import Model
-from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
+from .import_utils import (
+    collapse_massless_fixed_root_joints,
+    parse_custom_attributes,
+    sanitize_xml_content,
+    should_show_collider,
+)
 from .mesh import load_meshes_from_file
 from .texture import load_texture
 from .topology import topological_sort
@@ -83,17 +77,27 @@ def parse_urdf(
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
     collapse_fixed_joints: bool = False,
+    collapse_massless_fixed_root: bool = False,
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
+    override_root_xform: bool = False,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
-        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        source (str): The filename of the URDF file to parse, or the URDF XML string content.
-        xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-        floating (bool or None): Controls the base joint type for the root body.
+        builder: The :class:`ModelBuilder` to add the bodies and joints to.
+        source: The filename of the URDF file to parse, or the URDF XML string content.
+        xform: The transform to apply to the root body. If None, the transform is set to identity.
+        override_root_xform: If ``True``, the articulation root's world-space
+            transform is replaced by ``xform`` instead of being composed with it,
+            preserving only the internal structure (relative body positions). Useful
+            for cloning articulations at explicit positions. When a ``base_joint`` is
+            specified, ``xform`` is applied as the full parent transform (including
+            rotation) rather than splitting position/rotation. Not intended for
+            sources containing multiple articulations, as all roots would be placed
+            at the same ``xform``. Defaults to ``False``.
+        floating: Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
             - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
@@ -101,13 +105,13 @@ def parse_urdf(
             - ``False``: Creates a FIXED joint (0 DOF).
 
             Cannot be specified together with ``base_joint``.
-        base_joint (dict): Custom joint specification for connecting the root body to the world
+        base_joint: Custom joint specification for connecting the root body to the world
             (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
             custom mobility. Dictionary with joint parameters as accepted by
             :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
             Cannot be specified together with ``floating``.
-        parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+        parent_body: Parent body index for hierarchical composition. If specified, attaches the
             imported root body to this existing body, making them part of the same kinematic articulation.
             The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
             the root connects to the world frame. **Restriction**: Only the most recently added
@@ -158,26 +162,30 @@ def parse_urdf(
                     - ``body_idx``
                     - ❌ Error: FREE joints require world frame
 
-        scale (float): The scaling factor to apply to the imported mechanism.
-        hide_visuals (bool): If True, hide visual shapes.
-        parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
-        up_axis (AxisType): The up axis of the URDF. This is used to transform the URDF to the builder's up axis. It also determines the up axis of capsules and cylinders in the URDF. The default is Z.
-        force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
-        enable_self_collisions (bool): If True, self-collisions are enabled.
-        ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
-        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
-        bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
-        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
-        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
-            (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-            If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
-            :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
-            damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
-            (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
+        scale: The scaling factor to apply to the imported mechanism.
+        hide_visuals: If True, hide visual shapes.
+        parse_visuals_as_colliders: If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
+        up_axis: The up axis of the URDF. This is used to transform the URDF to the builder's up axis. It also determines the up axis of capsules and cylinders in the URDF. The default is Z.
+        force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
+        enable_self_collisions: If True, self-collisions are enabled.
+        ignore_inertial_definitions: If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
+        joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
+        bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
+        collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+        collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
+        mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
+        force_position_velocity_actuation: If True and both position (stiffness) and velocity
+            (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
+            If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
+            :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
+            damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
+            (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
+
+    if override_root_xform and xform is None:
+        raise ValueError("override_root_xform=True requires xform to be set")
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -217,7 +225,9 @@ def parse_urdf(
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
+    default_joint_limit_effort = builder.default_joint_cfg.effort_limit
     default_joint_damping = builder.default_joint_cfg.target_kd
+    default_joint_friction = builder.default_joint_cfg.friction
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -271,8 +281,14 @@ def parse_urdf(
                     fn = filename.replace("package://", "")
                     package_name = fn.split("/")[0]
                     urdf_folder = os.path.dirname(source)
-                    if package_name in urdf_folder:
-                        filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
+                    package_root = None
+                    urdf_parts = Path(os.path.abspath(urdf_folder)).parts
+                    for index in range(len(urdf_parts) - 1, -1, -1):
+                        if urdf_parts[index] == package_name:
+                            package_root = Path(*urdf_parts[:index])
+                            break
+                    if package_root is not None:
+                        filename = os.path.join(os.fspath(package_root), fn)
                     else:
                         warnings.warn(
                             f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
@@ -319,9 +335,9 @@ def parse_urdf(
         if color_el is not None:
             rgba = color_el.get("rgba")
             if rgba:
-                values = np.fromstring(rgba, sep=" ", dtype=np.float32)
-                if len(values) >= 3:
-                    color = (float(values[0]), float(values[1]), float(values[2]))
+                parts = rgba.split()
+                if len(parts) >= 3:
+                    color = (float(parts[0]), float(parts[1]), float(parts[2]))
 
         texture_el = material_element.find("texture")
         if texture_el is not None:
@@ -357,6 +373,14 @@ def parse_urdf(
         if material_element is None:
             return {"color": None, "texture": None}
         mat_name = material_element.get("name")
+
+        # Fast path: pure name reference to an already-parsed material. URDFs
+        # typically define materials once at the top level and then reference
+        # them by name on individual geoms (`<material name="foo"/>` with no
+        # children). Skip the XML re-parse in that common case.
+        if mat_name and mat_name in materials and len(material_element) == 0:
+            return dict(materials[mat_name])
+
         color, texture = _parse_material_properties(material_element)
 
         if mat_name and mat_name in materials:
@@ -422,9 +446,7 @@ def parse_urdf(
             if incoming_xform is not None:
                 tf = incoming_xform * tf
 
-            material_info = {"color": None, "texture": None}
-            if just_visual:
-                material_info = resolve_material(geom_group.find("material"))
+            material_info = resolve_material(geom_group.find("material"))
 
             for box in geo.findall("box"):
                 size = box.get("size") or "1 1 1"
@@ -434,6 +456,7 @@ def parse_urdf(
                     hx=size[0] * 0.5 * scale,
                     hy=size[1] * 0.5 * scale,
                     hz=size[2] * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -442,6 +465,7 @@ def parse_urdf(
                 s = builder.add_shape_sphere(
                     xform=tf,
                     radius=float(sphere.get("radius") or "1") * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -453,6 +477,7 @@ def parse_urdf(
                     xform=xform,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -464,6 +489,7 @@ def parse_urdf(
                     xform=xform,
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -531,10 +557,11 @@ def parse_urdf(
             "type": joint.get("type"),
             "origin": parse_transform(joint),
             "damping": default_joint_damping,
-            "friction": 0.0,
+            "friction": default_joint_friction,
             "axis": wp.vec3(1.0, 0.0, 0.0),
             "limit_lower": default_joint_limit_lower,
             "limit_upper": default_joint_limit_upper,
+            "limit_effort": default_joint_limit_effort,
             "custom_attributes": joint_custom_attributes,
         }
         el_axis = joint.find("axis")
@@ -544,11 +571,12 @@ def parse_urdf(
         el_dynamics = joint.find("dynamics")
         if el_dynamics is not None:
             joint_data["damping"] = float(el_dynamics.get("damping", default_joint_damping))
-            joint_data["friction"] = float(el_dynamics.get("friction", 0))
+            joint_data["friction"] = float(el_dynamics.get("friction", default_joint_friction))
         el_limit = joint.find("limit")
         if el_limit is not None:
             joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
             joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
+            joint_data["limit_effort"] = float(el_limit.get("effort", default_joint_limit_effort))
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
@@ -599,8 +627,8 @@ def parse_urdf(
 
     # maps from link name -> link index
     link_index: dict[str, int] = {}
-    visual_shapes: list[int] = []
     start_shape_count = len(builder.shape_type)
+    model_has_visual_shapes = any(len(urdf_link.findall("visual")) > 0 for urdf_link in urdf_links)
 
     for urdf_link in urdf_links:
         name = urdf_link.get("name")
@@ -620,12 +648,11 @@ def parse_urdf(
         if parse_visuals_as_colliders:
             colliders = visuals
         else:
-            s = parse_shapes(link, visuals, density=0.0, just_visual=True, visible=not hide_visuals)
-            visual_shapes.extend(s)
+            parse_shapes(link, visuals, density=0.0, just_visual=True, visible=not hide_visuals)
 
         show_colliders = should_show_collider(
             force_show_colliders,
-            has_visual_shapes=len(visuals) > 0,
+            model_has_visual_shapes=model_has_visual_shapes,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
         )
 
@@ -650,7 +677,7 @@ def parse_urdf(
                 I_m[2, 0] = I_m[0, 2]
                 I_m[2, 1] = I_m[1, 2]
                 rot = wp.quat_to_matrix(inertial_frame.q)
-                I_m = rot @ wp.mat33(I_m)
+                I_m = rot @ wp.mat33(I_m) @ wp.transpose(rot)
                 builder.body_inertia[link] = I_m
                 if any(x for x in I_m):
                     builder.body_inv_inertia[link] = wp.inverse(I_m)
@@ -675,11 +702,14 @@ def parse_urdf(
     base_parent = parent_body
 
     if base_joint is not None:
-        # in case of a given base joint, the position is applied first, the rotation only
-        # after the base joint itself to not rotate its axis
-        # When parent_body is set, xform is interpreted as relative to the parent body
-        base_parent_xform = wp.transform(xform.p, wp.quat_identity())
-        base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
+        if override_root_xform:
+            base_parent_xform = xform
+            base_child_xform = wp.transform_identity()
+        else:
+            # Split xform: position goes to parent, rotation to child (inverted)
+            # so the custom base joint's axis isn't rotated by xform.
+            base_parent_xform = wp.transform(xform.p, wp.quat_identity())
+            base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
         base_joint_id = builder._add_base_joint(
             child=root,
             base_joint=base_joint,
@@ -736,7 +766,9 @@ def parse_urdf(
 
         lower = joint.get("limit_lower", None)
         upper = joint.get("limit_upper", None)
+        effort_limit = joint.get("limit_effort", None)
         joint_damping = joint["damping"]
+        joint_friction = joint["friction"]
 
         parent_xform = joint["origin"]
 
@@ -750,25 +782,31 @@ def parse_urdf(
 
         # URDF doesn't contain gain information (only damping, no stiffness), so we can't infer
         # actuator mode. Default to POSITION.
-        actuator_mode = ActuatorMode.POSITION_VELOCITY if force_position_velocity_actuation else ActuatorMode.POSITION
+        actuator_mode = (
+            JointTargetMode.POSITION_VELOCITY if force_position_velocity_actuation else JointTargetMode.POSITION
+        )
 
         created_joint_idx: int
         if joint["type"] == "revolute" or joint["type"] == "continuous":
             created_joint_idx = builder.add_joint_revolute(
                 axis=joint["axis"],
                 target_kd=joint_damping,
+                friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower,
                 limit_upper=upper,
+                effort_limit=effort_limit,
                 **joint_params,
             )
         elif joint["type"] == "prismatic":
             created_joint_idx = builder.add_joint_prismatic(
                 axis=joint["axis"],
                 target_kd=joint_damping,
+                friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower * scale,
                 limit_upper=upper * scale,
+                effort_limit=effort_limit,
                 **joint_params,
             )
         elif joint["type"] == "fixed":
@@ -792,17 +830,19 @@ def parse_urdf(
             created_joint_idx = builder.add_joint_d6(
                 linear_axes=[
                     ModelBuilder.JointDofConfig(
-                        u,
+                        axis=u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
+                        friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
                     ModelBuilder.JointDofConfig(
-                        v,
+                        axis=v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
+                        friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
                 ],
@@ -854,14 +894,16 @@ def parse_urdf(
         custom_attributes=articulation_custom_attrs,
     )
 
-    for i in range(start_shape_count, end_shape_count):
-        for j in visual_shapes:
-            builder.add_shape_collision_filter_pair(i, j)
-
     if not enable_self_collisions:
-        for i in range(start_shape_count, end_shape_count):
-            for j in range(i + 1, end_shape_count):
+        # The broad phase only ever tests colliding shapes, so visual-only shapes need no filter pairs.
+        colliding_shapes = [
+            i for i in range(start_shape_count, end_shape_count) if builder.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+        ]
+        for a, i in enumerate(colliding_shapes):
+            for j in colliding_shapes[a + 1 :]:
                 builder.add_shape_collision_filter_pair(i, j)
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
+    elif collapse_massless_fixed_root:
+        collapse_massless_fixed_root_joints(builder, joint_indices)

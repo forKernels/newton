@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot UR10
@@ -30,17 +18,17 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
-from newton import ActuatorMode
+from newton import JointTargetMode
 from newton.selection import ArticulationView
 
 
 @wp.kernel
 def update_joint_target_trajectory_kernel(
-    joint_target_trajectory: wp.array3d(dtype=wp.float32),
-    time: wp.array(dtype=wp.float32),
+    joint_target_trajectory: wp.array3d[wp.float32],
+    time: wp.array[wp.float32],
     dt: wp.float32,
     # output
-    joint_target: wp.array3d(dtype=wp.float32),
+    joint_target: wp.array3d[wp.float32],
 ):
     world_idx = wp.tid()
     t = time[world_idx]
@@ -60,7 +48,8 @@ def update_joint_target_trajectory_kernel(
 
 
 class Example:
-    def __init__(self, viewer, world_count=4):
+    def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -68,7 +57,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         self.viewer = viewer
 
@@ -93,7 +82,7 @@ class Example:
         for i in range(len(ur10.joint_target_ke)):
             ur10.joint_target_ke[i] = 500
             ur10.joint_target_kd[i] = 50
-            ur10.joint_act_mode[i] = int(ActuatorMode.POSITION)
+            ur10.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(ur10, self.world_count, spacing=(2, 2, 0))
@@ -152,7 +141,7 @@ class Example:
         self.joint_target_trajectory = wp.array(joint_target_trajectory, dtype=wp.float32, device=self.device)
         self.time_step = wp.zeros(self.world_count, dtype=wp.float32, device=self.device)
 
-        self.ctrl = self.articulation_view.get_attribute("joint_target_pos", self.control)
+        self.ctrl = self.articulation_view.get_attribute("joint_target_q", self.control)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
@@ -165,10 +154,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -184,7 +172,7 @@ class Example:
                 outputs=[self.ctrl],
                 device=self.device,
             )
-            self.articulation_view.set_attribute("joint_target_pos", self.control, self.ctrl)
+            self.articulation_view.set_attribute("joint_target_q", self.control, self.ctrl)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -207,13 +195,16 @@ class Example:
     def test_final(self):
         pass
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(world_count=100)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=100, help="Total number of simulated worlds.")
-
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.world_count)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

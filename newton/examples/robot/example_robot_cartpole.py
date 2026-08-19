@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot Cartpole
@@ -23,6 +11,7 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -30,14 +19,14 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, world_count=8):
+    def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         self.viewer = viewer
 
@@ -45,13 +34,20 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(cartpole)
         cartpole.default_shape_cfg.density = 100.0
         cartpole.default_joint_cfg.armature = 0.1
-        cartpole.default_body_armature = 0.1
 
         cartpole.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             enable_self_collisions=False,
             collapse_fixed_joints=True,
         )
+
+        # apply additional inertia to the bodies for better stability
+        body_armature = 0.1
+        for body in range(cartpole.body_count):
+            inertia_np = np.asarray(cartpole.body_inertia[body], dtype=np.float32).reshape(3, 3)
+            inertia_np += np.eye(3, dtype=np.float32) * body_armature
+            cartpole.body_inertia[body] = wp.mat33(inertia_np)
+
         # set initial joint positions
         cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
 
@@ -75,15 +71,24 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((0.0, 0.0, 0.0))
+
+        # Set camera to view all the cartpoles
+        self.viewer.set_camera(
+            pos=wp.vec3(7.3, -14.0, 2.3),
+            pitch=-5.0,
+            yaw=-225.0,
+        )
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 90.0
 
         self.capture()
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -119,6 +124,7 @@ class Example:
             lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -153,38 +159,45 @@ class Example:
             and qd[5] == 0.0,
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
+        # fmt: on
         qd = self.state_0.body_qd.numpy()
         world0_cart_vel = wp.spatial_vector(*qd[0])
         world0_pole1_vel = wp.spatial_vector(*qd[1])
         world0_pole2_vel = wp.spatial_vector(*qd[2])
+        # Replicated GPU worlds can drift by a few ulps in body twists.
+        world_velocity_atol = 1e-6
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cart velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_cart_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_cart_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole1 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole1_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole1_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world + 1 for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole2 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel, atol=world_velocity_atol),
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(world_count=100)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--world-count", type=int, default=100, help="Total number of simulated worlds.")
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.world_count)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

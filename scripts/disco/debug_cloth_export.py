@@ -19,7 +19,6 @@ from cloth_sim_utils import (
     garment_height,
     import_garment,
 )
-from mathutils import Vector
 
 FURNITURE = "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes/Chair_01.blend"
 GARMENT_DIR = Path("D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set")
@@ -97,9 +96,15 @@ for frame in [1, 10, 30, 60]:
         w_mid = eval_obj.matrix_world @ v_mid
         w_last = eval_obj.matrix_world @ v_last
 
-        print(f"  Frame {frame:3d}: vert[0]     local=({v0.x:.4f}, {v0.y:.4f}, {v0.z:.4f})  world=({w0.x:.4f}, {w0.y:.4f}, {w0.z:.4f})")
-        print(f"             vert[{v_count//2}] local=({v_mid.x:.4f}, {v_mid.y:.4f}, {v_mid.z:.4f})  world=({w_mid.x:.4f}, {w_mid.y:.4f}, {w_mid.z:.4f})")
-        print(f"             vert[{v_count-1}] local=({v_last.x:.4f}, {v_last.y:.4f}, {v_last.z:.4f})  world=({w_last.x:.4f}, {w_last.y:.4f}, {w_last.z:.4f})")
+        print(
+            f"  Frame {frame:3d}: vert[0]     local=({v0.x:.4f}, {v0.y:.4f}, {v0.z:.4f})  world=({w0.x:.4f}, {w0.y:.4f}, {w0.z:.4f})"
+        )
+        print(
+            f"             vert[{v_count // 2}] local=({v_mid.x:.4f}, {v_mid.y:.4f}, {v_mid.z:.4f})  world=({w_mid.x:.4f}, {w_mid.y:.4f}, {w_mid.z:.4f})"
+        )
+        print(
+            f"             vert[{v_count - 1}] local=({v_last.x:.4f}, {v_last.y:.4f}, {v_last.z:.4f})  world=({w_last.x:.4f}, {w_last.y:.4f}, {w_last.z:.4f})"
+        )
     eval_obj.to_mesh_clear()
 
 # 10. Now try export with depsgraph evaluation
@@ -117,7 +122,7 @@ bpy.ops.wm.usd_export(
     export_animation=True,
     export_mesh_colors=False,
     selected_objects_only=False,
-    evaluation_mode='RENDER',
+    evaluation_mode="RENDER",
 )
 print(f"Exported: {usda_path}")
 print("\nDone.")

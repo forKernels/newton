@@ -33,10 +33,7 @@ def find_newton() -> dict:
     try:
         import warp as wp
     except ImportError:
-        raise RuntimeError(
-            "NVIDIA Warp is not installed. Install it with:\n"
-            "  pip install warp-lang>=1.11.0"
-        )
+        raise RuntimeError("NVIDIA Warp is not installed. Install it with:\n  pip install warp-lang>=1.11.0")
 
     info = {
         "newton_version": getattr(newton, "__version__", "unknown"),
@@ -74,28 +71,28 @@ def get_examples() -> list[dict]:
     Returns:
         List of dicts with example name, module, description.
     """
-    import importlib
     import pkgutil
 
     examples = []
     try:
         import newton.examples
+
         examples_path = newton.examples.__path__
 
         # Discover example modules
         for importer, modname, ispkg in pkgutil.walk_packages(examples_path, prefix="newton.examples."):
-            if modname.startswith("newton.examples.example_") or (
-                ispkg and not modname.endswith("__pycache__")
-            ):
+            if modname.startswith("newton.examples.example_") or (ispkg and not modname.endswith("__pycache__")):
                 # Extract example name from module
                 parts = modname.split(".")
                 name = parts[-1]
                 if name.startswith("example_"):
-                    name = name[len("example_"):]
-                examples.append({
-                    "name": name,
-                    "module": modname,
-                })
+                    name = name[len("example_") :]
+                examples.append(
+                    {
+                        "name": name,
+                        "module": modname,
+                    }
+                )
     except ImportError:
         pass
 

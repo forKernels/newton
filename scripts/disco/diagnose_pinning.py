@@ -1,12 +1,15 @@
 """Quick diagnostic: inspect edge_rest_angle and bending properties."""
+
 import sys
+
 sys.path.insert(0, "scripts/disco")
 
-import warp as wp
-import newton
 import numpy as np
+import warp as wp
 from newton_sim_utils import *
-from test_cloth_self_collision import discover_original_garments, ORIGINAL_GARMENT_DIR
+from test_cloth_self_collision import ORIGINAL_GARMENT_DIR, discover_original_garments
+
+import newton
 
 wp.init()
 
@@ -27,7 +30,7 @@ with wp.ScopedDevice(wp.get_preferred_device()):
 
     # Inspect BEFORE zeroing
     era = model.edge_rest_angle.numpy()
-    print(f"\n--- BEFORE edge_rest_angle.zero_() ---")
+    print("\n--- BEFORE edge_rest_angle.zero_() ---")
     print(f"edge_rest_angle shape: {era.shape}")
     print(f"edge_rest_angle range: [{era.min():.6f}, {era.max():.6f}]")
     print(f"edge_rest_angle nonzero: {np.count_nonzero(era)} / {len(era)}")
@@ -39,14 +42,14 @@ with wp.ScopedDevice(wp.get_preferred_device()):
     # Zero it
     model.edge_rest_angle.zero_()
     era2 = model.edge_rest_angle.numpy()
-    print(f"\n--- AFTER edge_rest_angle.zero_() ---")
+    print("\n--- AFTER edge_rest_angle.zero_() ---")
     print(f"edge_rest_angle range: [{era2.min():.6f}, {era2.max():.6f}]")
     print(f"nonzero: {np.count_nonzero(era2)}")
 
     # Check edge_bending_properties
     if hasattr(model, "edge_bending_properties"):
         ebp = model.edge_bending_properties.numpy()
-        print(f"\n--- edge_bending_properties ---")
+        print("\n--- edge_bending_properties ---")
         print(f"shape: {ebp.shape}")
         print(f"col 0 (ke) range: [{ebp[:, 0].min():.6e}, {ebp[:, 0].max():.6e}]")
         if ebp.shape[1] > 1:
@@ -56,13 +59,13 @@ with wp.ScopedDevice(wp.get_preferred_device()):
     # Mass / inv_mass
     m = model.particle_mass.numpy()
     im = model.particle_inv_mass.numpy()
-    print(f"\n--- Particle mass ---")
+    print("\n--- Particle mass ---")
     print(f"mass range: [{m.min():.2e}, {m.max():.2e}]")
     print(f"inv_mass range: [{im.min():.2e}, {im.max():.2e}]")
     print(f"zero mass: {np.sum(m == 0)}, zero inv_mass: {np.sum(im == 0)}")
 
     # Flags
     f = model.particle_flags.numpy()
-    print(f"\n--- Particle flags ---")
+    print("\n--- Particle flags ---")
     print(f"all ACTIVE: {np.all(f & 1)}")
     print(f"inactive count: {np.sum((f & 1) == 0)}")

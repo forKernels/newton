@@ -1,14 +1,17 @@
 """Inspect tri_poses format and shape."""
+
 import sys
+
 sys.path.insert(0, "scripts/disco")
 import warp as wp
+
 import newton
-import numpy as np
 
 wp.init()
 b = newton.ModelBuilder()
-b.add_cloth_grid(pos=(0,0,0), rot=wp.quat_identity(), vel=(0,0,0),
-                 dim_x=3, dim_y=3, cell_x=0.1, cell_y=0.1, mass=0.1)
+b.add_cloth_grid(
+    pos=(0, 0, 0), rot=wp.quat_identity(), vel=(0, 0, 0), dim_x=3, dim_y=3, cell_x=0.1, cell_y=0.1, mass=0.1
+)
 b.color()
 m = b.finalize()
 
@@ -24,13 +27,13 @@ print(f"edge_rest_angle shape: {m.edge_rest_angle.numpy().shape}")
 print(f"edge_rest_length shape: {m.edge_rest_length.numpy().shape}")
 
 # Check what evaluate_stvk_force_hessian uses
-print(f"\nModel attributes with 'rest' or 'pose':")
+print("\nModel attributes with 'rest' or 'pose':")
 for a in sorted(dir(m)):
-    if 'rest' in a.lower() or 'pose' in a.lower():
+    if "rest" in a.lower() or "pose" in a.lower():
         attr = getattr(m, a)
-        if hasattr(attr, 'shape'):
+        if hasattr(attr, "shape"):
             print(f"  {a}: shape={attr.shape}, dtype={attr.dtype}")
-        elif hasattr(attr, 'numpy'):
+        elif hasattr(attr, "numpy"):
             arr = attr.numpy()
             print(f"  {a}: shape={arr.shape}")
         else:

@@ -35,7 +35,7 @@ def stitch_mesh(
     pairs = tree.query_pairs(merge_threshold)
 
     if not pairs:
-        print(f"  stitch_mesh: No vertices within {merge_threshold*1000:.1f}mm to merge")
+        print(f"  stitch_mesh: No vertices within {merge_threshold * 1000:.1f}mm to merge")
         return verts, faces
 
     # Build union-find for merging
@@ -89,9 +89,11 @@ def stitch_mesh(
     new_faces = old_to_new[faces]
 
     # Remove degenerate triangles (where two or more vertices collapsed to same index)
-    valid = (new_faces[:, 0] != new_faces[:, 1]) & \
-            (new_faces[:, 1] != new_faces[:, 2]) & \
-            (new_faces[:, 0] != new_faces[:, 2])
+    valid = (
+        (new_faces[:, 0] != new_faces[:, 1])
+        & (new_faces[:, 1] != new_faces[:, 2])
+        & (new_faces[:, 0] != new_faces[:, 2])
+    )
 
     n_degenerate = np.sum(~valid)
     if n_degenerate > 0:
@@ -100,6 +102,7 @@ def stitch_mesh(
 
     # Verify connectivity
     from collections import deque
+
     adj = [[] for _ in range(new_idx)]
     for f in new_faces:
         for i in range(3):
@@ -129,10 +132,13 @@ def stitch_mesh(
 
 if __name__ == "__main__":
     import sys
+
     sys.path.insert(0, "scripts/disco")
     from newton_sim_utils import load_mesh_from_file
 
-    path = r"C:\_SimObj\ClothDataset\dress_sleeveless_2550\dress_sleeveless_000YCTJ9HS\dress_sleeveless_000YCTJ9HS_sim.obj"
+    path = (
+        r"C:\_SimObj\ClothDataset\dress_sleeveless_2550\dress_sleeveless_000YCTJ9HS\dress_sleeveless_000YCTJ9HS_sim.obj"
+    )
     verts, faces = load_mesh_from_file(path)
 
     # Convert cm to m (same as load_garment_mesh)

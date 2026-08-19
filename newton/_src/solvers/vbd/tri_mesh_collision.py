@@ -27,6 +27,7 @@ from ...geometry.tri_mesh_collision import (  # noqa: F401
     get_vertex_colliding_triangles,
     get_vertex_colliding_triangles_count,
     get_vertex_collision_buffer_vertex_index,
+    leq_n_ring_vertices,
     one_ring_vertices,
     set_to_csr,
 )

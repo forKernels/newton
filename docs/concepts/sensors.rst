@@ -1,40 +1,105 @@
-Sensors
-=======
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
 
-Sensors in Newton provide a way to extract measurements and observations from the simulation state. They compute derived quantities that are commonly needed for control, reinforcement learning, robotics applications, and analysis.
+Sensors
+========
+
+Sensors in Newton provide a way to extract measurements and observations from the simulation. They compute derived
+quantities that are commonly needed for control, reinforcement learning, robotics applications, and analysis.
 
 Overview
 --------
 
-Newton sensors follow a consistent pattern:
+Most Newton sensors follow a common pattern:
 
 1. **Initialization**: Configure the sensor with the model and specify what to measure
-2. **Update**: Call ``sensor.update(...)`` during the simulation loop to compute measurements
+2. **Update**: Call ``sensor.update(state, ...)`` during the simulation loop to compute measurements
 3. **Access**: Read results from sensor attributes (typically as Warp arrays)
 
-Sensors are designed to be efficient and GPU-friendly, computing results in parallel where possible.
+.. note::
+
+   Sensors automatically request any :doc:`extended attributes <extended_attributes>` they need
+   (e.g. ``body_qdd``, ``Contacts.force``) at init, so ``State`` and ``Contacts`` objects created afterwards will
+   include them.
+
+   ``SensorContact`` additionally requires a call to ``solver.update_contacts()`` before ``sensor.update()``.
+
+   ``SensorTiledCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
+   attributes.
+
+.. testcode::
+
+   import warp as wp
+   import newton
+   from newton.sensors import SensorIMU
+
+   # Build the model
+   builder = newton.ModelBuilder()
+   builder.add_ground_plane()
+   body = builder.add_body(xform=wp.transform((0, 0, 1), wp.quat_identity()))
+   builder.add_shape_sphere(body, radius=0.1)
+   builder.add_site(body, label="imu_0")
+   model = builder.finalize()
+
+   # 1. Create sensor and specify what to measure
+   imu = SensorIMU(model, sites="imu_*")
+
+   # Create solver and state
+   solver = newton.solvers.SolverMuJoCo(model)
+   state = model.state()
+
+   # Simulation loop
+   for _ in range(100):
+       state.clear_forces()
+       solver.step(state, state, None, None, dt=1.0 / 60.0)
+
+       # 2. Compute measurements from the current state
+       imu.update(state)
+
+       # 3. Results stored on sensor attributes
+       acc = imu.accelerometer.numpy()   # (n_sensors, 3) linear acceleration
+       gyro = imu.gyroscope.numpy()      # (n_sensors, 3) angular velocity
+
+   print("accelerometer shape:", acc.shape)
+   print("gyroscope shape:", gyro.shape)
+
+.. testoutput::
+
+   accelerometer shape: (1, 3)
+   gyroscope shape: (1, 3)
 
 .. _label-matching:
 
 Label Matching
 --------------
 
-Several Newton APIs accept **label patterns** to select bodies, shapes, joints,
-etc. by name. Parameters that support label matching accept one of the following:
+Several Newton APIs accept **label patterns** to select bodies, shapes, joints, sites, etc. by name. Parameters that
+support label matching accept one of the following:
 
-- A **list of integer indices** — selects directly by index.
-- A **single string pattern** — selects all entries whose label matches the
-  pattern via :func:`fnmatch.fnmatch` (supports ``*`` and ``?`` wildcards).
-- A **list of string patterns** — selects all entries whose label matches at
-  least one of the patterns.
+- A **list of integer indices** -- selects directly by index.
+- A **single string pattern** -- selects all entries whose label matches the pattern via :func:`fnmatch.fnmatch`
+  (supports ``*`` and ``?`` wildcards).
+- A **list of string patterns** -- selects all entries whose label matches at least one pattern.
+- A **compiled string regular expression** -- selects all entries whose entire label or name matches the expression via
+  :meth:`re.Pattern.fullmatch`.
 
-Examples::
+Ordinary strings always use glob syntax. Compile a pattern with :func:`re.compile` to opt into regular-expression
+syntax. Callers who want a regular expression to match a substring can add ``.*`` around that substring explicitly.
+For :class:`~newton.selection.ArticulationView`, ``pattern`` is matched against full articulation labels. Joint and
+link filters are matched against the final path component of each label.
+
+.. code-block:: python
+
+   import re
 
    # single pattern: all shapes whose label starts with "foot_"
    SensorIMU(model, sites="foot_*")
 
+   # compiled regular expression: full-match an environment and object label
+   SensorIMU(model, sites=re.compile(r"/World/envs/env_[0-9]+/imu_(left|right)"))
+
    # list of patterns: union of two groups
-   SensorContact(model, sensing_obj_shapes=["*Plate*", "*Flap*"])
+   SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])
 
    # list of indices: explicit selection
    SensorFrameTransform(model, shapes=[0, 3, 7], reference_sites=[1])
@@ -42,202 +107,81 @@ Examples::
 Available Sensors
 -----------------
 
-Newton currently provides five sensor types:
+Newton provides five sensor types. See the
+:doc:`API reference <../api/newton_sensors>` for constructor arguments,
+attributes, and usage examples.
 
-* :class:`~newton.sensors.SensorContact` -- Detects and reports contact information between bodies (TODO: document)
-* :class:`~newton.sensors.SensorFrameTransform` -- Computes relative transforms between reference frames
-* :class:`~newton.sensors.SensorIMU` -- Measures linear acceleration and angular velocity at site frames
-* :class:`~newton.sensors.SensorRaycast` -- Performs ray casting for distance measurements and collision detection (TODO: document)
-* :class:`~newton.sensors.SensorTiledCamera` -- Raytraced rendering across multiple worlds
+* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or shapes, with friction decomposition,
+  optional per-counterpart force matrices, and force-weighted contact positions.
+* :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
+* :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
+* :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
 
-SensorFrameTransform
---------------------
+Camera Rays from USD Data
+-------------------------
 
-The ``SensorFrameTransform`` computes the relative pose (position and orientation) of objects with respect to reference frames. This is essential for:
+``SensorTiledCamera`` can build standard USD pinhole camera rays directly. For lens models without standard USD
+attributes, read the attributes you use in your pipeline and pass the numeric values into the matching helper:
 
-* End-effector pose tracking in robotics
-* Sensor pose computation (cameras, IMUs relative to world or body frames)
-* Object tracking and localization tasks
-* Reinforcement learning observations
+.. code-block:: python
 
-Basic Usage
-~~~~~~~~~~~
+   from pxr import Usd
 
-The sensor takes shape indices (which can include sites or regular shapes) and computes their transforms relative to reference site frames:
+   from newton.sensors import SensorTiledCamera
 
-.. testcode:: sensors-basic
+   stage = Usd.Stage.Open("scene.usda")
+   usd_camera = stage.GetPrimAtPath("/World/Camera")
 
-   from newton.sensors import SensorFrameTransform
-   import newton
-   
-   # Create model with sites
-   builder = newton.ModelBuilder()
-   
-   base = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   ref_site = builder.add_site(base, label="reference")
-   j_free = builder.add_joint_free(base)
-   
-   end_effector = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   ee_site = builder.add_site(end_effector, label="end_effector")
-   
-   # Add a revolute joint to connect bodies
-   j_revolute = builder.add_joint_revolute(
-       parent=base,
-       child=end_effector,
-       axis=newton.Axis.X,
-       parent_xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()),
-       child_xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()),
+   sensor = SensorTiledCamera(model)
+   camera_rays = sensor.utils.compute_camera_rays_usd_pinhole(640, 480, usd_camera)
+   camera_transforms = sensor.utils.compute_camera_transforms_usd(usd_camera)
+
+   color = sensor.utils.create_color_image_output(640, 480)
+   sensor.update(
+       state,
+       camera_transforms,
+       camera_rays,
+       color_image=color,
    )
-   builder.add_articulation([j_free, j_revolute])
-   
-   model = builder.finalize()
-   state = model.state()
-   
-   # Create sensor
-   sensor = SensorFrameTransform(
-       model,
-       shapes=[ee_site],              # What to measure
-       reference_sites=[ref_site]     # Reference frame(s)
-   )
-   
-   # In simulation loop (after eval_fk)
-   newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-   sensor.update(state)
-   transforms = sensor.transforms.numpy()  # Array of relative transforms
 
-Transform Computation
-~~~~~~~~~~~~~~~~~~~~~
+For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_opencv`,
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_ftheta`, or
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_kannala_brandt`. Each fisheye helper builds
+rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
-The sensor computes: ``X_ro = inverse(X_wr) * X_wo``
+Extended Attributes
+-------------------
 
-Where:
-- ``X_wo`` is the world transform of the object (shape/site)
-- ``X_wr`` is the world transform of the reference site
-- ``X_ro`` is the resulting transform expressing the object's pose in the reference frame's coordinate system
+Some sensors depend on extended attributes that are not allocated by default:
 
-This gives you the position and orientation of the object as observed from the reference frame.
-
-Multiple Objects and References
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The sensor supports measuring multiple objects, optionally with different reference frames:
-
-.. testcode:: sensors-multiple
-
-   from newton.sensors import SensorFrameTransform
-   
-   # Setup model with multiple sites
-   builder = newton.ModelBuilder()
-   body1 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   site1 = builder.add_site(body1, label="site1")
-   body2 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   site2 = builder.add_site(body2, label="site2")
-   body3 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   site3 = builder.add_site(body3, label="site3")
-   ref_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   ref_site = builder.add_site(ref_body, label="ref_site")
-
-   # Multiple objects, multiple references (must match in count) for sensor 2
-   ref1 = builder.add_site(body1, label="ref1")
-   ref2 = builder.add_site(body2, label="ref2")
-   ref3 = builder.add_site(body3, label="ref3")
-   
-   model = builder.finalize()
-   state = model.state()
-   
-   # Multiple objects, single reference
-   sensor1 = SensorFrameTransform(
-       model,
-       shapes=[site1, site2, site3],
-       reference_sites=[ref_site]  # Broadcasts to all objects
-   )
-   
-   sensor2 = SensorFrameTransform(
-       model,
-       shapes=[site1, site2, site3],
-       reference_sites=[ref1, ref2, ref3]  # One per object
-   )
-   
-   newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-   sensor2.update(state)
-   transforms = sensor2.transforms.numpy()  # Shape: (num_objects, 7)
-   
-   # Extract position and rotation for first object
-   import warp as wp
-   xform = wp.transform(*transforms[0])
-   pos = wp.transform_get_translation(xform)
-   quat = wp.transform_get_rotation(xform)
-
-Objects vs Reference Frames
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- **Objects** (``shapes``): Can be any shape index, including both regular shapes and sites
-- **Reference frames** (``reference_sites``): Must be site indices (validated at initialization)
-
-This design reflects the common use case where reference frames are explicitly defined coordinate systems (sites), while measurements can be taken of any geometric entity.
+- ``SensorIMU`` requires ``State.body_qdd`` (rigid-body accelerations). By
+  default it requests this from the model at construction, so subsequent
+  ``model.state()`` calls allocate it automatically.
+- ``SensorContact`` requires ``Contacts.force`` (per-contact spatial force
+  wrenches). By default it requests this from the model at construction, so
+  subsequent :meth:`CollisionPipeline.contacts <newton.CollisionPipeline.contacts>` calls allocate it automatically. The solver
+  must also support populating contact forces.
 
 Performance Considerations
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+--------------------------
 
-The sensor is optimized for GPU execution:
+Sensors are designed to be efficient and GPU-friendly, computing results in
+parallel where possible. Create each sensor once during setup and reuse it
+every step -- this lets Newton pre-allocate output arrays and avoid per-frame
+overhead.
 
-- Computes world transforms only once for all unique shapes/sites involved
-- Uses pre-allocated Warp arrays to minimize memory overhead
-- Parallel computation of all relative transforms
-
-For best performance, create the sensor once during initialization and reuse it throughout the simulation, rather than recreating it each frame.
-
-.. _sensorimu:
-
-SensorIMU
----------
-
-:class:`~newton.sensors.SensorIMU` measures inertial quantities at one or more sites; each site defines the IMU frame. Outputs are stored in two arrays:
-
-- :attr:`~newton.sensors.SensorIMU.accelerometer`: linear acceleration (specific force)
-- :attr:`~newton.sensors.SensorIMU.gyroscope`: angular velocity
-
-Basic Usage
-~~~~~~~~~~~
-
-``SensorIMU`` takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the :doc:`extended attribute <extended_attributes>` :attr:`State.body_qdd <newton.State.body_qdd>`.
-
-By default, the sensor requests ``body_qdd`` from the model during construction, so that subsequent calls to :meth:`Model.state() <newton.Model.state>` allocate it.
-If you need to allocate the State before constructing the sensor, you must request ``body_qdd`` on the model yourself before calling :meth:`Model.state() <newton.Model.state>`.
-
-
-.. testcode:: sensors-imu-basic
-
-   from newton.sensors import SensorIMU
-   import newton
-
-   builder = newton.ModelBuilder()
-   body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   s1 = builder.add_site(body, label="imu1")
-   s2 = builder.add_site(body, label="imu2")
-   model = builder.finalize()
-
-   imu = SensorIMU(model, sites=[s1, s2])
-   state = model.state()
-
-   imu.update(state)
-   acc = imu.accelerometer.numpy()  # shape: (2, 3)
-   gyro = imu.gyroscope.numpy()      # shape: (2, 3)
-
-State / Solver Requirements
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``SensorIMU`` depends on body accelerations computed by the solver and stored in ``state.body_qdd``:
-
-- Allocate: ensure ``body_qdd`` is allocated on the State (typically by constructing ``SensorIMU`` before calling :meth:`Model.state() <newton.Model.state>`).
-- Populate: use a solver that actually fills ``state.body_qdd`` (for example, :class:`~newton.solvers.SolverMuJoCo` computes body accelerations).
+Sensors that depend on extended attributes (e.g. ``body_qdd``,
+``Contacts.force``) may add nontrivial cost to the solver step itself, since
+the solver must compute and store these additional quantities regardless of
+whether the sensor is evaluated after each step.
 
 See Also
 --------
 
-* :doc:`sites` — Using sites as reference frames
-* :doc:`../api/newton_sensors` — Full sensor API reference
-* :doc:`extended_attributes` — Optional State/Contacts arrays (e.g., ``State.body_qdd``, ``Contacts.force``) required by some sensors.
-* ``newton.examples.sensors.example_sensor_contact`` — SensorContact example
-* ``newton.examples.sensors.example_sensor_imu`` — SensorIMU example
-* ``newton.examples.sensors.example_sensor_tiled_camera`` — SensorTiledCamera example
+* :doc:`sites` -- using sites as sensor attachment points and reference frames
+* :doc:`../api/newton_sensors` -- full sensor API reference
+* :doc:`extended_attributes` -- optional ``State``/``Contacts`` arrays required by some sensors
+* ``newton.examples.sensors.example_sensor_contact`` -- SensorContact example
+* ``newton.examples.sensors.example_sensor_imu`` -- SensorIMU example
+* ``newton.examples.sensors.example_sensor_tiled_camera`` -- SensorTiledCamera example

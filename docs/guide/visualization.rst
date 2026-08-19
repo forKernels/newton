@@ -1,17 +1,132 @@
-Visualization
-=============
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
 
-Newton provides multiple viewer backends for different visualization needs, from real-time rendering to offline recording and external integrations.
+.. currentmodule:: newton
 
-All viewer backends share a common interface with ``set_model()``, ``begin_frame()``, ``log_state()``, and ``end_frame()`` methods.
+Viewers and Debugging
+=====================
 
-**Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance. 
-All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
+Newton provides multiple viewer backends for live visualization, debugging,
+historical inspection, persistent recording, and external integrations.
 
-.. code-block:: python
+.. _choosing-a-viewer:
+
+Choosing a Viewer
+-----------------
+
+Choose a viewer based on whether you need a live display, history within the
+current viewer session, or a persistent artifact:
+
+.. list-table:: Viewer Comparison
+    :header-rows: 1
+
+    * - Viewer
+      - Best for
+      - Inspection or output
+      - Dependencies
+    * - :class:`~newton.viewer.ViewerGL`
+      - Interactive development and live debugging
+      - Real-time display; frame capture in headless mode
+      - pyglet, imgui_bundle
+    * - :class:`~newton.viewer.ViewerRTX`
+      - Path-traced visualization on NVIDIA GPUs
+      - Real-time display
+      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
+    * - :class:`~newton.viewer.ViewerFile`
+      - Persistent state-snapshot recording and visual playback
+      - ``.json`` or ``.bin`` file
+      - None for JSON; cbor2 for binary
+    * - :class:`~newton.viewer.ViewerUSD`
+      - Persistent scene export for 3D pipelines
+      - Time-sampled ``.usd`` file
+      - usd-core
+    * - :class:`~newton.viewer.ViewerRerun`
+      - Live visualization and optional session timeline inspection
+      - Web interface
+      - rerun-sdk
+    * - :class:`~newton.viewer.ViewerViser`
+      - Browser or notebook visualization and visual recording
+      - Web interface; ``.viser`` file
+      - viser
+    * - :class:`~newton.viewer.ViewerNull`
+      - Headless or automated execution without visualization
+      - None
+      - None
+
+.. _debugging-with-viewers:
+
+Debugging with Viewers
+----------------------
+
+Newton's viewers use cooperative, explicit logging rather than automatically
+inspecting every part of a simulation. Call
+:meth:`~newton.viewer.ViewerBase.set_model` to provide the scene structure and
+:meth:`~newton.viewer.ViewerBase.log_state` each frame to provide its motion.
+Contacts appear only when the application calls
+:meth:`~newton.viewer.ViewerBase.log_contacts`. Forces, targets, normals,
+metrics, and other diagnostics similarly require explicit ``log_*()`` calls.
+The way these diagnostics are presented and whether their history is retained
+depends on the viewer backend.
+
+Use a live viewer such as :class:`~newton.viewer.ViewerGL` to inspect the
+current scene and add :ref:`custom overlays <viewer-custom-visualization>` for
+contacts or other diagnostic data. For historical inspection, enable
+``keep_historical_data`` in :class:`~newton.viewer.ViewerRerun` to retain a
+timeline for the current viewer session, or use
+:ref:`ViewerFile <viewer-file-recording>` to create a persistent state-snapshot
+recording for later visual playback. :class:`~newton.viewer.ViewerViser` and
+:class:`~newton.viewer.ViewerUSD` instead create persistent visual or scene
+artifacts for sharing and external tools.
+
+Current viewers do not automatically capture solver internals or all the inputs
+needed to reproduce a simulation. Recording and diagnostic capture will be
+expanded in the future.
+
+Common Interface
+----------------
+
+All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a common interface:
+
+**Core loop methods** — every viewer uses the same simulation loop pattern:
+
+- :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
+- :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
+- :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
+- :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
+- :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
+- :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
+- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
+
+**Camera and layout:**
+
+- :meth:`~newton.viewer.ViewerBase.set_camera` — set camera position, pitch, and yaw
+- :attr:`~newton.viewer.ViewerBase.camera_speed` — set keyboard camera translation speed in m/s
+- :meth:`~newton.viewer.ViewerBase.set_world_offsets` — arrange multiple worlds in a grid with a given spacing along each axis
+
+**Custom visualization** — draw debug overlays on top of the simulation:
+
+- :meth:`~newton.viewer.ViewerBase.log_lines` — draw line segments (e.g. rays, normals, force vectors)
+- :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
+- :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
+- :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
+- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
+- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in :class:`~newton.viewer.ViewerGL` as a dockable window or, with ``fullscreen=True``, as the main viewer surface for the current frame (no-op on other
+  backends)
+
+**Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
+All viewers support ``set_visible_worlds()`` to limit visualization to a subset of environments:
+
+.. testcode:: viewer-max-worlds
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0)
+    model = builder.finalize()
 
     # Only render the first 4 environments
-    viewer.set_model(model, max_worlds=4)
+    viewer = newton.viewer.ViewerNull()
+    viewer.set_model(model)
+    viewer.set_visible_worlds(range(4))
 
 Real-time Viewers
 -----------------
@@ -33,24 +148,96 @@ The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.
     viewer.log_state(state)
     viewer.end_frame()
 
-    # pause the simulation (blocks the control flow):
-    viewer.pause = True
+    # advance the simulation each frame, or step once when paused:
+    if viewer.should_step():
+        pass  # call solver.step(), example.step(), etc.
 
-Keyboard shortcuts when working with the OpenGL Viewer (aka newton.viewer.ViewerGL):
+**Interactive forces and input:**
 
-.. list-table:: Keyboard Shortcuts
+:meth:`~newton.viewer.ViewerGL.apply_forces` applies viewer-driven forces (object picking with right-click, wind) to the simulation state.
+Call it each frame before stepping the solver:
+
+.. code-block:: python
+
+    viewer.apply_forces(state)
+    solver.step(model, state, ...)
+
+:meth:`~newton.viewer.ViewerGL.is_key_down` queries whether a key is currently pressed.
+Keys can be specified as single-character strings (``'w'``), special key names (``'space'``, ``'escape'``), or pyglet key constants:
+
+.. code-block:: python
+
+    if viewer.is_key_down('r'):
+        state = model.state()  # reset
+
+**Headless mode and frame capture:**
+
+In headless mode (``headless=True``), the viewer renders off-screen without opening a window.
+Use :meth:`~newton.viewer.ViewerGL.get_frame` to retrieve the rendered image as a
+Warp array on the viewer device:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerGL(headless=True)
+    viewer.set_model(model)
+
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
+    # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
+    frame = viewer.get_frame()
+
+**Custom UI panels:**
+
+:meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
+The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``, ``"free"``, or ``"panel"``:
+
+.. code-block:: python
+
+    def my_ui(ui):
+        import imgui_bundle.imgui as imgui
+        imgui.text("Hello from custom UI!")
+
+    viewer.register_ui_callback(my_ui, position="side")
+
+Viewer controls:
+
+.. list-table:: ViewerGL Controls
     :header-rows: 1
 
     * - Key(s)
       - Description
-    * - ``W``, ``A``, ``S``, ``D`` (or arrow keys) + mouse drag
-      - Move the camera like in a FPS game
+    * - ``W``, ``A``, ``S``, ``D`` or arrow keys
+      - Move the camera in the ground plane
+    * - ``Q`` / ``E``
+      - Move the camera down or up
+    * - Left drag
+      - Look around
+    * - Middle drag
+      - Orbit around the current camera pivot
+    * - ``Shift`` + middle drag
+      - Pan the camera and pivot
+    * - ``Ctrl`` + middle drag
+      - Dolly toward or away from the pivot
+    * - Mouse wheel
+      - Dolly toward or away from the pivot
+    * - ``Ctrl`` + mouse wheel
+      - Adjust field of view
+    * - ``F``
+      - Frame the visible model and set the orbit pivot
     * - ``H``
-      - Toggle Sidebar
+      - Toggle the sidebar
     * - ``SPACE``
-      - Pause/continue the simulation
-    * - ``Right Click``
+      - Pause or continue the simulation
+    * - ``.``
+      - Step the simulation by one frame while paused
+    * - ``ESC``
+      - Close the viewer
+    * - Right click
       - Pick objects
+
+Orbit mode keeps the pivot fixed while the camera rotates around it. Use ``F`` to center the pivot on the model, ``Shift`` + middle drag to pan the pivot with the camera, and the mouse wheel to change the orbit distance.
 
 **Troubleshooting:**
 
@@ -68,14 +255,61 @@ Set the PyOpenGL platform before running:
 
 This is a known issue when running OpenGL applications on Wayland display servers.
 
+RTX Viewer
+~~~~~~~~~~
+
+:class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
+presenting the result in a pyglet/OpenGL window.
+
+.. note::
+    The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
+
+**Installation**: Requires the ``rtx`` dependency group:
+
+.. code-block:: bash
+
+    uv sync --extra rtx
+
+This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in addition to ``pyglet`` for the window.
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(environment="studio")
+
+    viewer.set_model(model)
+
+    # at every frame:
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
 Recording and Offline Viewers
 -----------------------------
+
+.. _viewer-file-recording:
 
 Recording to File (ViewerFile)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The :class:`~newton.viewer.ViewerFile` backend records simulation data to JSON or binary files for later replay or analysis. 
-This is useful for capturing simulations for debugging, sharing results, or post-processing.
+The :class:`~newton.viewer.ViewerFile` backend records model and state
+snapshots to JSON or binary files for later visual playback or programmatic
+inspection. This is useful for capturing simulation motion for debugging or
+sharing.
+
+A ``ViewerFile`` recording contains:
+
+- the :class:`~newton.Model` passed to
+  :meth:`~newton.viewer.ViewerBase.set_model`;
+- every Warp array stored directly on each :class:`~newton.State` passed to
+  :meth:`~newton.viewer.ViewerBase.log_state`.
+
+It does not currently contain contacts, custom primitives, scalar or array
+diagnostics, solver internals, or the simulation timestamps passed to
+:meth:`~newton.viewer.ViewerBase.begin_frame`. Loading a recording restores the
+captured model and state snapshots; it does not re-execute the simulation.
+Solver configuration, controls, contacts, and other simulation inputs must be
+captured separately if they are needed to reproduce a run.
 
 **File formats:**
 
@@ -88,55 +322,81 @@ To use binary format, install the optional dependency:
 
     pip install cbor2
 
-**Recording a simulation:**
+**Recording static state snapshots:**
 
-.. code-block:: python
+.. testcode:: viewer-file
 
-    # Record to binary format (more efficient, requires cbor2)
-    viewer = newton.viewer.ViewerFile("simulation.bin", auto_save=True, save_interval=100)
-    
-    # Or record to JSON format (human-readable, no extra dependencies)
-    viewer = newton.viewer.ViewerFile("simulation.json")
+    import tempfile, os
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0)
+    model = builder.finalize()
+    state = model.state()
+
+    # Record to JSON format (human-readable, no extra dependencies)
+    output_path = os.path.join(tempfile.mkdtemp(), "simulation.json")
+    viewer = newton.viewer.ViewerFile(output_path)
 
     viewer.set_model(model)
 
-    # at every frame:
-    viewer.begin_frame(sim_time)
-    viewer.log_state(state)
-    viewer.end_frame()
+    sim_time = 0.0
+    # Record five snapshots of the current static state
+    for _ in range(5):
+        viewer.begin_frame(sim_time)
+        viewer.log_state(state)
+        viewer.end_frame()
+        sim_time += 1.0 / 60.0
 
     # Close to save the recording
     viewer.close()
+
+.. testoutput:: viewer-file
+   :options: +NORMALIZE_WHITESPACE, +ELLIPSIS
+
+    ...
+
+This minimal snippet records a static state to demonstrate the ``ViewerFile``
+API. Use the built-in recording example below to capture simulation motion.
 
 **Loading and playing back recordings:**
 
 Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the model and state for a given frame. Use :class:`~newton.viewer.ViewerGL` (or another rendering viewer) to visualize.
 
-.. code-block:: python
+.. testcode:: viewer-file
 
     # Load a recording for playback
-    viewer_file = newton.viewer.ViewerFile("simulation.bin")
+    viewer_file = newton.viewer.ViewerFile(output_path)
     viewer_file.load_recording()
 
     # Restore the model and state from the recording
     model = newton.Model()
     viewer_file.load_model(model)
+    print(f"Frames: {viewer_file.get_frame_count()}")
 
     state = model.state()
-    viewer_file.load_state(state, frame_id=10)  # frame index in [0, get_frame_count())
+    viewer_file.load_state(state, frame_id=0)  # frame index in [0, get_frame_count())
 
-    # Use ViewerGL for visualization
-    viewer = newton.viewer.ViewerGL()
-    viewer.set_model(model)
-    viewer.log_state(state)
+.. testoutput:: viewer-file
 
-For a complete example with UI controls for scrubbing and playback, see ``newton/examples/basic/example_replay_viewer.py``.
+    Frames: 5
 
-Key parameters:
+To try the complete workflow with the built-in examples:
 
-- ``output_path``: Path to the output file (format determined by extension: .json or .bin)
-- ``auto_save``: If True, automatically save periodically during recording (default: ``True``)
-- ``save_interval``: Number of frames between auto-saves when auto_save=True (default: ``100``)
+.. code-block:: bash
+
+    uv run --extra examples -m newton.examples recording
+    uv run --extra examples -m newton.examples replay_viewer
+
+``example_recording.py`` simulates humanoids across multiple worlds and writes
+the model and state snapshots to ``humanoid_recording.bin``. In the replay
+viewer, select that file to scrub through the captured state snapshots.
+
+``ViewerFile`` captures all direct Warp-array attributes of the logged
+``State``, regardless of which worlds are selected with
+:meth:`~newton.viewer.ViewerBase.set_visible_worlds`. Large states and long
+runs can therefore use substantial memory and disk space. Set
+``max_history_size`` when constructing ``ViewerFile`` to retain only the latest
+bounded number of snapshots. Per-world capture is not currently supported.
 
 Rendering to USD
 ~~~~~~~~~~~~~~~~
@@ -178,12 +438,12 @@ enabling real-time or offline visualization with advanced features like time scr
 
     # Default usage: spawns a local viewer
     viewer = newton.viewer.ViewerRerun(
-        app_id="newton-simulation" # Optional application identifier to differentiate multiple parallel instances.
+        app_id="newton-simulation"
     )
 
     # Or specify a custom server address for remote viewing
     viewer = newton.viewer.ViewerRerun(
-        address="rerun+http://127.0.0.1:9876/proxy", # Optional server address to connect to a remote rerun server.
+        address="rerun+http://127.0.0.1:9876/proxy",
         app_id="newton-simulation"
     )
 
@@ -194,7 +454,7 @@ enabling real-time or offline visualization with advanced features like time scr
     viewer.log_state(state)
     viewer.end_frame()
 
-By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
+By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via :meth:`~newton.viewer.ViewerBase.log_state`.
 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
 If you want to keep the historical state data in the viewer, you can set the ``keep_historical_data`` flag to ``True``.
 
@@ -218,7 +478,7 @@ You can use ``uv`` to start Jupyter lab with the required dependencies (or insta
 
   uv run --extra notebook jupyter lab
 
-Then, you can use the rerun SDK in a Jupyter notebook by importing the :mod:`rerun` module and creating a viewer instance.
+Then, you can use the rerun SDK in a Jupyter notebook by importing the ``rerun`` module and creating a viewer instance.
 
 .. code-block:: python
 
@@ -277,14 +537,6 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
     # Close the viewer when done
     viewer.close()
-
-Key parameters:
-
-- ``port``: Port number for the web server (default: ``8080``)
-- ``label``: Optional label for the browser window title
-- ``verbose``: If True, print the server URL when starting (default: ``True``)
-- ``share``: If True, create a publicly accessible URL via viser's share feature
-- ``record_to_viser``: Path to record the visualization to a ``.viser`` file for later playback
 
 **Recording and playback**
 
@@ -348,17 +600,28 @@ Null Viewer
 The :class:`~newton.viewer.ViewerNull` provides a no-operation viewer for headless environments or automated testing where visualization is not required.
 It simply counts frames and provides stub implementations for all viewer methods.
 
-.. code-block:: python
+.. testcode:: viewer-null
 
-    # Run for 1000 frames without visualization
-    viewer = newton.viewer.ViewerNull(num_frames=1000)
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0)
+    model = builder.finalize()
+    state = model.state()
+    sim_time = 0.0
 
+    viewer = newton.viewer.ViewerNull(num_frames=10)
     viewer.set_model(model)
 
     while viewer.is_running():
         viewer.begin_frame(sim_time)
         viewer.log_state(state)
         viewer.end_frame()
+        sim_time += 1.0 / 60.0
+
+    print(f"Ran {viewer.frame_count} frames")
+
+.. testoutput:: viewer-null
+
+    Ran 10 frames
 
 This is particularly useful for:
 
@@ -367,37 +630,146 @@ This is particularly useful for:
 - Running simulations on headless servers
 - Batch processing of simulations
 
-Choosing the Right Viewer
--------------------------
+.. _viewer-custom-visualization:
 
-.. list-table:: Viewer Comparison
-    :header-rows: 1
+Custom Visualization
+--------------------
 
-    * - Viewer
-      - Use Case
-      - Output
-      - Dependencies
-    * - :class:`~newton.viewer.ViewerGL`
-      - Interactive development and debugging
-      - Real-time display
-      - pyglet, imgui_bundle
-    * - :class:`~newton.viewer.ViewerFile`
-      - Recording for replay/sharing
-      - .json or .bin files
-      - None
-    * - :class:`~newton.viewer.ViewerUSD`
-      - Integration with 3D pipelines
-      - .usd files
-      - usd-core
-    * - :class:`~newton.viewer.ViewerRerun`
-      - Advanced visualization and analysis
-      - Web interface
-      - rerun-sdk
-    * - :class:`~newton.viewer.ViewerViser`
-      - Browser-based visualization and Jupyter notebooks
-      - Web interface, .viser files
-      - viser
-    * - :class:`~newton.viewer.ViewerNull`
-      - Headless/automated environments
-      - None
-      - None
+In addition to rendering simulation state with :meth:`~newton.viewer.ViewerBase.log_state`, you can draw custom debug overlays using the ``log_*`` methods available on all viewers.
+
+**Drawing lines:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_lines` to draw line segments — useful for visualizing forces, rays, or normals:
+
+.. code-block:: python
+
+    # Draw force vectors at body positions
+    viewer.log_lines(
+        "/debug/forces",
+        starts=positions,        # wp.array[wp.vec3]
+        ends=positions + forces, # wp.array[wp.vec3]
+        colors=(1.0, 0.0, 0.0), # red
+        width=0.005,
+    )
+
+**Drawing points:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_points` to draw a point cloud:
+
+.. code-block:: python
+
+    viewer.log_points(
+        "/debug/targets",
+        points=target_positions, # wp.array[wp.vec3]
+        radii=0.02,              # uniform radius, or wp.array[wp.float32]
+        colors=(0.0, 1.0, 0.0),  # green
+    )
+
+**Visualizing contacts:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_contacts` to draw contact normals from a :class:`~newton.Contacts` object.
+The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.ViewerGL` sidebar) controls visibility:
+
+.. code-block:: python
+
+    viewer.log_contacts(contacts, state)
+
+**Transform gizmos:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gizmo at a given transform:
+
+.. code-block:: python
+
+    viewer.log_gizmo("/debug/target_frame", wp.transform(pos, rot))
+
+**Logging images:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
+outputs from :class:`~newton.sensors.SensorTiledCamera`) in
+:class:`~newton.viewer.ViewerGL`. By default, non-headless :class:`~newton.viewer.ViewerGL`
+shows logged images as dockable windows. Pass ``fullscreen=True`` to draw the image
+as the main viewer surface for the current frame instead of the 3D scene. Accepted
+shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``, and ``(N, H, W, C)`` with
+``C in (1, 3, 4)``. Accepted dtypes are ``uint8`` (values in ``[0, 255]``) and
+``float32`` (values in ``[0, 1]``; values outside the range are clipped).
+
+.. testcode:: viewer-log-image
+
+    from newton.sensors import SensorTiledCamera
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0)
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerNull()
+    viewer.set_model(model)
+
+    # Grayscale heatmap: normalize to [0, 1] before logging so float32
+    # values land in the accepted range.
+    depth_image = np.full((16, 16), 2.0, dtype=np.float32)
+    heatmap = depth_image / max(depth_image.max(), 1e-6)
+    viewer.log_image("heatmap", heatmap)
+
+    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
+    # output once and reuse it every frame; the RGBA conversion is a
+    # zero-copy view.
+    sensor = SensorTiledCamera(model=model)
+    W, H, camera_count = 16, 16, 1
+    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
+    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
+    rgba = sensor.utils.to_rgba_from_color(color_image)
+    viewer.log_image("tiled_camera", rgba)
+
+For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
+for a single ``(H, W, C)`` image; otherwise the array is interpreted as a
+batch ``(N, H, W)`` of grayscale images. Pass a 4D array if the
+disambiguation matters.
+
+Use ``fullscreen=True`` for image-first viewers, camera-debug views, or headless
+frame capture where the image should replace the 3D scene:
+
+.. code-block:: python
+
+    from newton.sensors import SensorTiledCamera
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0)
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerNull()
+    viewer.set_model(model)
+
+    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
+    # output once and reuse it every frame; the RGBA conversion is a
+    # zero-copy view.
+    sensor = SensorTiledCamera(model=model)
+    W, H, camera_count = 16, 16, 1
+    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
+    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
+    rgba = sensor.utils.to_rgba_from_color(color_image)
+    viewer.log_image("tiled_camera", rgba, fullscreen=True)
+
+The ``fullscreen=True`` selection is per-frame: call
+:meth:`~newton.viewer.ViewerBase.log_image` with ``fullscreen=True`` after
+:meth:`~newton.viewer.ViewerBase.begin_frame` and before
+:meth:`~newton.viewer.ViewerBase.end_frame` on every frame that should show the
+image. If a frame does not log a fullscreen image, :class:`~newton.viewer.ViewerGL`
+renders the 3D scene for that frame. Image rendering is currently implemented only
+by :class:`~newton.viewer.ViewerGL`; other viewer backends inherit the no-op base
+implementation, so they ignore both the image and the ``fullscreen`` option.
+
+**Camera and world layout:**
+
+Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`:
+
+.. code-block:: python
+
+    viewer.set_camera(pos=wp.vec3(5.0, 2.0, 3.0), pitch=-0.3, yaw=0.5)
+    viewer.camera_speed = 0.2  # m/s
+
+When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world_offsets` to arrange them in a grid
+(must be called after :meth:`~newton.viewer.ViewerBase.set_model`):
+
+.. code-block:: python
+
+    viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))

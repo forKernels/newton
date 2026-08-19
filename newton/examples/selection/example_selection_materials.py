@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Selection Materials
@@ -33,8 +21,8 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton import ModelFlags
 from newton.selection import ArticulationView
-from newton.solvers import SolverNotifyFlags
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
@@ -47,15 +35,13 @@ RANDOMIZE_PER_WORLD = True
 
 
 @wp.kernel
-def compute_middle_kernel(
-    lower: wp.array3d(dtype=float), upper: wp.array3d(dtype=float), middle: wp.array3d(dtype=float)
-):
+def compute_middle_kernel(lower: wp.array3d[float], upper: wp.array3d[float], middle: wp.array3d[float]):
     world, arti, dof = wp.tid()
     middle[world, arti, dof] = 0.5 * (lower[world, arti, dof] + upper[world, arti, dof])
 
 
 @wp.kernel
-def reset_materials_kernel(mu: wp.array3d(dtype=float), seed: int, shape_count: int):
+def reset_materials_kernel(mu: wp.array3d[float], seed: int, shape_count: int):
     world, arti, shape = wp.tid()
 
     if RANDOMIZE_PER_WORLD:
@@ -63,11 +49,12 @@ def reset_materials_kernel(mu: wp.array3d(dtype=float), seed: int, shape_count: 
     else:
         rng = wp.rand_init(seed, world * shape_count + shape)
 
-    mu[world, arti, shape] = wp.randf(rng)  # random coefficient of friction
+    mu[world, arti, shape] = 0.5 + 0.5 * wp.randf(rng)  # random coefficient of friction
 
 
 class Example:
-    def __init__(self, viewer, world_count=16):
+    def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -75,7 +62,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.world_count = world_count
+        self.world_count = args.world_count
 
         world_template = newton.ModelBuilder()
         world_template.add_mjcf(
@@ -86,7 +73,7 @@ class Example:
 
         scene = newton.ModelBuilder()
 
-        scene.add_ground_plane()
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
         scene.replicate(world_template, world_count=self.world_count)
 
         # finalize model
@@ -100,7 +87,12 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         # Contacts only needed for non-MuJoCo solvers
-        self.contacts = self.model.contacts() if not isinstance(self.solver, newton.solvers.SolverMuJoCo) else None
+        if isinstance(self.solver, newton.solvers.SolverMuJoCo):
+            self.collision_pipeline = None
+            self.contacts = None
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.next_reset = 0.0
         self.reset_count = 0
@@ -148,6 +140,13 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
+        # Set camera to view the scene
+        self.viewer.set_camera(
+            pos=wp.vec3(18.0, 0.0, 2.0),
+            pitch=0.0,
+            yaw=-180.0,
+        )
+
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
@@ -159,10 +158,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -173,7 +171,7 @@ class Example:
 
             # explicit collisions needed without MuJoCo solver
             if self.contacts is not None:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -205,9 +203,11 @@ class Example:
 
             # randomize materials
             if RANDOMIZE_PER_WORLD:
-                material_mu = torch.rand(self.ants.count, 1).unsqueeze(1).repeat(1, 1, self.ants.shape_count)
+                material_mu = 0.5 + 0.5 * torch.rand(self.ants.count, 1).unsqueeze(1).repeat(
+                    1, 1, self.ants.shape_count
+                )
             else:
-                material_mu = torch.rand((self.ants.count, 1, self.ants.shape_count))
+                material_mu = 0.5 + 0.5 * torch.rand((self.ants.count, 1, self.ants.shape_count))
         else:
             # flip velocities
             if self.reset_count % 2 == 0:
@@ -230,7 +230,7 @@ class Example:
         # print(self.model.shape_material_mu)
 
         # !!! Notify solver of material changes !!!
-        self.solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        self.solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
 
         # ================================
         # reset transforms and velocities
@@ -258,15 +258,16 @@ class Example:
             lambda q, qd: q[2] > 0.01,
         )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(world_count=16)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument(
-        "--world-count",
-        type=int,
-        default=16,
-        help="Total number of simulated worlds.",
-    )
+    parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
 
@@ -275,6 +276,4 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, world_count=args.world_count)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

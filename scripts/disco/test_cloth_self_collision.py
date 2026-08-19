@@ -21,8 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import warp as wp
-
-import newton
 from newton_sim_utils import (
     CLOTH_PRESETS,
     add_garment_as_cloth,
@@ -33,9 +31,9 @@ from newton_sim_utils import (
     discover_garments,
     finalize_cloth_model,
     load_config,
-    load_garment_mesh,
 )
 
+import newton
 
 ORIGINAL_GARMENT_DIR = r"C:\_SimObj\ClothDataset"
 
@@ -43,6 +41,7 @@ ORIGINAL_GARMENT_DIR = r"C:\_SimObj\ClothDataset"
 def discover_original_garments(garment_dir: str, category_filter: str | None = None):
     """Find original *_sim.obj garments (no thickness) for Newton."""
     from pathlib import Path
+
     results = []
     root = Path(garment_dir)
     if not root.exists():
@@ -60,13 +59,15 @@ def discover_original_garments(garment_dir: str, category_filter: str | None = N
             # Exclude *_sim_prep.obj
             sim_objs = [p for p in sim_objs if "_sim_prep" not in p.name]
             if sim_objs:
-                results.append({
-                    "name": garment_dir_item.name,
-                    "category": category,
-                    "path": str(sim_objs[0]),
-                    "obj_path": str(sim_objs[0]),
-                    "is_clean": False,
-                })
+                results.append(
+                    {
+                        "name": garment_dir_item.name,
+                        "category": category,
+                        "path": str(sim_objs[0]),
+                        "obj_path": str(sim_objs[0]),
+                        "is_clean": False,
+                    }
+                )
     return results
 
 
@@ -126,8 +127,12 @@ def main():
     parser.add_argument("--viewer", type=str, default="gl", choices=["gl", "usd", "null"])
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--spring-assist", action=argparse.BooleanOptionalAction, default=True,
-                        help="Enable mass-spring force injection for stuck particles (default: True)")
+    parser.add_argument(
+        "--spring-assist",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable mass-spring force injection for stuck particles (default: True)",
+    )
     parser.add_argument("--spring-ks", type=float, default=500.0, help="Spring stretch stiffness")
     parser.add_argument("--spring-kb", type=float, default=25.0, help="Spring bend stiffness")
     parser.add_argument("--spring-boost", type=float, default=1.0, help="Spring force boost factor")
@@ -146,8 +151,7 @@ def main():
         # Obstacle(s) — cone/sphere on the ground
         obstacle_z = args.cone_height if args.obstacle != "sphere" else args.cone_radius
         if args.obstacle in ("cone", "both"):
-            add_cone(builder, position=(0.0, 0.0, obstacle_z),
-                     radius=args.cone_radius, half_height=args.cone_height)
+            add_cone(builder, position=(0.0, 0.0, obstacle_z), radius=args.cone_radius, half_height=args.cone_height)
             print(f"  Cone: radius={args.cone_radius}, half_height={args.cone_height}")
         if args.obstacle in ("sphere", "both"):
             sz = obstacle_z + (0.25 if args.obstacle == "both" else 0.0)
@@ -196,7 +200,8 @@ def main():
 
             print(f"  Garment: {garment['name']} ({garment['category']}), preset={args.preset}")
             add_garment_as_cloth(
-                builder, garment,
+                builder,
+                garment,
                 position=(0.0, 0.0, cloth_z),
                 **cloth_params,
             )
@@ -248,7 +253,7 @@ def main():
             )
 
         print(f"  Solver: {args.solver.upper()}")
-        print(f"  Self-contact: ENABLED (radius=0.002, margin=0.003)")
+        print("  Self-contact: ENABLED (radius=0.002, margin=0.003)")
         print(f"  Drop height: {args.drop_height}m above obstacle top")
         print(f"  Particles: {model.particle_count}")
         print(f"  Device: {device}")
@@ -305,7 +310,7 @@ def main():
             viewer.close()
 
         pq = state_0.particle_q.numpy()
-        print(f"\n  Final cloth bbox:")
+        print("\n  Final cloth bbox:")
         print(f"    min = {np.min(pq, axis=0)}")
         print(f"    max = {np.max(pq, axis=0)}")
         print(f"    z_range = {pq[:, 2].max() - pq[:, 2].min():.4f}m")
@@ -314,7 +319,7 @@ def main():
         displacement = np.linalg.norm(pq - pos_initial, axis=1)
         stuck_count = int(np.sum(displacement < 0.001))
         total = len(displacement)
-        print(f"\n  Stuck particle analysis (threshold=1mm):")
+        print("\n  Stuck particle analysis (threshold=1mm):")
         print(f"    Stuck: {stuck_count} / {total} ({100 * stuck_count / max(total, 1):.1f}%)")
         print(f"    Moving: {total - stuck_count} / {total}")
         if spring_assist is not None:

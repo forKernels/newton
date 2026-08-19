@@ -33,7 +33,7 @@ import newton
 
 @wp.kernel
 def _apply_wind_force(
-    particle_f: wp.array(dtype=wp.vec3),
+    particle_f: wp.array[wp.vec3],
     wind_dir: wp.vec3,
     strength: float,
     time: float,

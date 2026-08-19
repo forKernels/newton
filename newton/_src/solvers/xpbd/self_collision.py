@@ -38,15 +38,15 @@ from ...sim import Model
 
 @wp.kernel
 def solve_vertex_triangle_self_contacts(
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_inv_mass: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    collision_info_array: wp.array(dtype=TriMeshCollisionInfo),
+    particle_q: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    tri_indices: wp.array2d[wp.int32],
+    collision_info_array: wp.array[TriMeshCollisionInfo],
     contact_radius: float,
     relaxation: float,
     # outputs
-    particle_deltas: wp.array(dtype=wp.vec3),
+    particle_deltas: wp.array[wp.vec3],
 ):
     """XPBD position correction for vertex-triangle self-contacts."""
     v_index = wp.tid()
@@ -125,16 +125,16 @@ def solve_vertex_triangle_self_contacts(
 
 @wp.kernel
 def solve_edge_edge_self_contacts(
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_inv_mass: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    collision_info_array: wp.array(dtype=TriMeshCollisionInfo),
+    particle_q: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
+    collision_info_array: wp.array[TriMeshCollisionInfo],
     contact_radius: float,
     edge_parallel_epsilon: float,
     relaxation: float,
     # outputs
-    particle_deltas: wp.array(dtype=wp.vec3),
+    particle_deltas: wp.array[wp.vec3],
 ):
     """XPBD position correction for edge-edge self-contacts."""
     e_index = wp.tid()

@@ -86,8 +86,8 @@ def stitch_mesh(
         raise FileNotFoundError(f"Mesh file not found: {path}")
 
     try:
-        import trimesh
         import numpy as np
+        import trimesh
     except ImportError:
         raise RuntimeError("trimesh and numpy are required: pip install trimesh numpy")
 
@@ -102,6 +102,7 @@ def stitch_mesh(
     # Additional merging for close vertices
     if threshold > 0:
         from scipy.spatial import cKDTree
+
         tree = cKDTree(mesh.vertices)
         pairs = tree.query_pairs(threshold)
 
@@ -122,9 +123,11 @@ def stitch_mesh(
             new_faces = np.array([[mapping[v] for v in f] for f in mesh.faces])
 
             # Remove degenerate faces
-            valid = (new_faces[:, 0] != new_faces[:, 1]) & \
-                    (new_faces[:, 1] != new_faces[:, 2]) & \
-                    (new_faces[:, 0] != new_faces[:, 2])
+            valid = (
+                (new_faces[:, 0] != new_faces[:, 1])
+                & (new_faces[:, 1] != new_faces[:, 2])
+                & (new_faces[:, 0] != new_faces[:, 2])
+            )
             new_faces = new_faces[valid]
 
             # Compact vertex indices
@@ -178,8 +181,8 @@ def check_connectivity(mesh_path: str) -> dict:
         raise FileNotFoundError(f"Mesh file not found: {path}")
 
     try:
-        import trimesh
         import numpy as np
+        import trimesh
     except ImportError:
         raise RuntimeError("trimesh and numpy are required: pip install trimesh numpy")
 
@@ -198,13 +201,15 @@ def check_connectivity(mesh_path: str) -> dict:
     if len(components) > 1:
         result["components"] = []
         for i, comp in enumerate(components):
-            result["components"].append({
-                "index": i,
-                "vertex_count": len(comp.vertices),
-                "face_count": len(comp.faces),
-                "bbox_min": comp.bounds[0].tolist(),
-                "bbox_max": comp.bounds[1].tolist(),
-            })
+            result["components"].append(
+                {
+                    "index": i,
+                    "vertex_count": len(comp.vertices),
+                    "face_count": len(comp.faces),
+                    "bbox_min": comp.bounds[0].tolist(),
+                    "bbox_max": comp.bounds[1].tolist(),
+                }
+            )
 
     # Check for boundary edges (non-manifold)
     edges = mesh.edges_unique

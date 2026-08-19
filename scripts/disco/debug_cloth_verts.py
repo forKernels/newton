@@ -18,7 +18,6 @@ from cloth_sim_utils import (
     garment_height,
     import_garment,
 )
-from mathutils import Vector
 
 FURNITURE = "D:/_blender/_myBlender/SimulationWork/seedAssets/scenes/Chair_01.blend"
 GARMENT_DIR = Path("D:/_blender/_myBlender/SimulationWork/ClothDataset/_Maria_Set")
@@ -40,7 +39,9 @@ garment.location = (center.x, center.y, drop_z)
 garment.rotation_euler = (0, 0, 0)
 bpy.context.view_layer.update()
 
-print(f"\nChair bbox: ({furn_min.x:.3f},{furn_min.y:.3f},{furn_min.z:.3f}) to ({furn_max.x:.3f},{furn_max.y:.3f},{furn_max.z:.3f})")
+print(
+    f"\nChair bbox: ({furn_min.x:.3f},{furn_min.y:.3f},{furn_min.z:.3f}) to ({furn_max.x:.3f},{furn_max.y:.3f},{furn_max.z:.3f})"
+)
 print(f"Garment location: {garment.location[:]}")
 print(f"Garment height: {garment_height(garment):.3f}m")
 
@@ -59,7 +60,7 @@ for obj in bpy.context.scene.objects:
 for mod in garment.modifiers:
     if mod.type == "CLOTH":
         s = mod.settings
-        print(f"\n=== CLOTH SETTINGS ===")
+        print("\n=== CLOTH SETTINGS ===")
         print(f"  quality: {s.quality}")
         print(f"  mass: {s.mass}")
         print(f"  tension_stiffness: {s.tension_stiffness}")
@@ -112,9 +113,11 @@ for frame in [1, 5, 10, 20, 30, 60]:
     eval_obj.to_mesh_clear()
 
     deformed = "SAME" if (eval_v0 - raw_v0).length < 0.0001 else "DIFFERENT"
-    print(f"  Frame {frame:3d}: eval_v0=({eval_v0.x:.4f},{eval_v0.y:.4f},{eval_v0.z:.4f})  "
-          f"raw_v0=({raw_v0.x:.4f},{raw_v0.y:.4f},{raw_v0.z:.4f})  [{deformed}]  "
-          f"world_Z=[{zmin:.3f},{zmax:.3f}]  world_X=[{xmin:.3f},{xmax:.3f}]")
+    print(
+        f"  Frame {frame:3d}: eval_v0=({eval_v0.x:.4f},{eval_v0.y:.4f},{eval_v0.z:.4f})  "
+        f"raw_v0=({raw_v0.x:.4f},{raw_v0.y:.4f},{raw_v0.z:.4f})  [{deformed}]  "
+        f"world_Z=[{zmin:.3f},{zmax:.3f}]  world_X=[{xmin:.3f},{xmax:.3f}]"
+    )
 
 OUTPUT = Path("D:/_blender/_myBlender/SimulationWork/ClothDataset/_TestSims")
 blend_path = str(OUTPUT / "debug_cloth_verts.blend")

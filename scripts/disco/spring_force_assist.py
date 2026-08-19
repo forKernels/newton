@@ -19,23 +19,23 @@ Usage:
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 
 import numpy as np
 import warp as wp
 
-
 # ── Warp kernels ─────────────────────────────────────────────────────────────
+
 
 @wp.kernel
 def _compute_spring_forces(
-    positions: wp.array(dtype=wp.vec3),
-    velocities: wp.array(dtype=wp.vec3),
-    spring_indices: wp.array(dtype=wp.vec2i),
-    rest_lengths: wp.array(dtype=float),
-    stiffness: wp.array(dtype=float),
-    damping: wp.array(dtype=float),
-    forces: wp.array(dtype=wp.vec3),
+    positions: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
+    spring_indices: wp.array[wp.vec2i],
+    rest_lengths: wp.array[float],
+    stiffness: wp.array[float],
+    damping: wp.array[float],
+    forces: wp.array[wp.vec3],
 ):
     """Compute spring force for one spring and scatter via atomic_add."""
     sid = wp.tid()
@@ -77,8 +77,8 @@ def _compute_spring_forces(
 
 @wp.kernel
 def _apply_forces_all(
-    spring_forces: wp.array(dtype=wp.vec3),
-    particle_f: wp.array(dtype=wp.vec3),
+    spring_forces: wp.array[wp.vec3],
+    particle_f: wp.array[wp.vec3],
     boost_factor: float,
 ):
     """Add spring forces (scaled by boost_factor) into particle_f for all particles."""
@@ -88,9 +88,9 @@ def _apply_forces_all(
 
 @wp.kernel
 def _apply_forces_masked(
-    spring_forces: wp.array(dtype=wp.vec3),
-    particle_f: wp.array(dtype=wp.vec3),
-    mask: wp.array(dtype=wp.int32),
+    spring_forces: wp.array[wp.vec3],
+    particle_f: wp.array[wp.vec3],
+    mask: wp.array[wp.int32],
     boost_factor: float,
 ):
     """Add spring forces only where mask[i] != 0 (stuck particles)."""
@@ -101,9 +101,9 @@ def _apply_forces_masked(
 
 @wp.kernel
 def _compute_displacement(
-    current_q: wp.array(dtype=wp.vec3),
-    prev_q: wp.array(dtype=wp.vec3),
-    displacement: wp.array(dtype=float),
+    current_q: wp.array[wp.vec3],
+    prev_q: wp.array[wp.vec3],
+    displacement: wp.array[float],
 ):
     """Compute per-particle displacement magnitude between two states."""
     i = wp.tid()
@@ -156,8 +156,10 @@ class SpringForceAssist:
         stretch_pairs, bend_pairs = self._build_spring_network(model)
 
         if verbose:
-            print(f"  SpringForceAssist: {len(stretch_pairs)} stretch + "
-                  f"{len(bend_pairs)} bend = {len(stretch_pairs) + len(bend_pairs)} springs")
+            print(
+                f"  SpringForceAssist: {len(stretch_pairs)} stretch + "
+                f"{len(bend_pairs)} bend = {len(stretch_pairs) + len(bend_pairs)} springs"
+            )
 
         # Get initial positions for rest lengths
         rest_positions = model.particle_q.numpy()
@@ -355,10 +357,9 @@ class SpringForceAssist:
     def log_stats(self):
         """Print diagnostic stats."""
         stats = self.get_stats()
-        print(f"  SpringForceAssist stats:")
-        print(f"    Springs: {stats['n_springs']} "
-              f"({self._n_stretch} stretch, {self._n_bend} bend)")
+        print("  SpringForceAssist stats:")
+        print(f"    Springs: {stats['n_springs']} ({self._n_stretch} stretch, {self._n_bend} bend)")
         print(f"    Boost factor: {stats['boost_factor']}")
-        if stats['stuck_only']:
+        if stats["stuck_only"]:
             print(f"    Avg stuck particles: {stats['avg_stuck']:.0f} / {stats['n_particles']}")
         print(f"    Total apply() calls: {stats['total_calls']}")

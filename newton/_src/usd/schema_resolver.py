@@ -1,25 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
-USD schema resolver system. Currently not used.
+USD schema resolver infrastructure.
+
+This module defines the base resolver types used to map authored USD schema
+attributes onto Newton builder attributes. Public users should import resolver
+types from :mod:`newton.usd`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -51,28 +43,27 @@ class PrimType(IntEnum):
     """Articulation root prim type."""
 
 
-@dataclass
-class SchemaAttribute:
-    """
-    Specifies a USD attribute and its transformation function.
-
-    Args:
-        name (str): The name of the USD attribute.
-        default (Any | None): Default USD-authored value from schema, if any.
-        usd_value_transformer (Callable[[Any], Any] | None): A function to transform the raw USD attribute value
-            into the format expected by Newton. Takes the USD value as input and returns the transformed
-            value. For example, converting PhysX timeStepsPerSecond to Newton's timestep by computing 1/Hz.
-    """
-
-    name: str
-    default: Any | None = None
-    usd_value_transformer: Callable[[Any], Any] | None = None
-
-
 class SchemaResolver:
-    """
-    Defines a mapping from USD schema attributes to Newton attributes.
-    """
+    """Base class mapping USD schema attributes to Newton attributes."""
+
+    @dataclass
+    class SchemaAttribute:
+        """
+        Specifies a USD attribute and its transformation function.
+
+        Args:
+            name: The name of the USD attribute (or primary attribute when using a getter).
+            default: Default USD-authored value from schema, if any.
+            usd_value_transformer: Optional function to transform the raw value into the format expected by Newton.
+            usd_value_getter: Optional function (prim) -> value used instead of reading a single attribute (e.g. to compute gap from contactOffset - restOffset).
+            attribute_names: When set, names used for collect_prim_attrs; otherwise [name] is used.
+        """
+
+        name: str
+        default: Any | None = None
+        usd_value_transformer: Callable[[Any], Any] | None = None
+        usd_value_getter: Callable[[Usd.Prim], Any] | None = None
+        attribute_names: Sequence[str] = ()
 
     # mapping is a dictionary for known variables in Newton. Its purpose is to map USD attributes to existing Newton data.
     # PrimType -> Newton variable -> Attribute
@@ -83,6 +74,12 @@ class SchemaResolver:
 
     # extra_attr_namespaces is a list of additional USD attribute namespaces in which the schema attributes may be authored.
     extra_attr_namespaces: ClassVar[list[str]] = []
+
+    # deformable_attr_namespaces lists vendor namespaces that carry the deformable
+    # material/geometry attributes (parsed as a fallback to the canonical physics:
+    # schema). Kept separate from extra_attr_namespaces so generic rigid-body
+    # namespaces are never read as deformable attributes.
+    deformable_attr_namespaces: ClassVar[list[str]] = []
 
     def __init__(self) -> None:
         # Precompute the full set of USD attribute names referenced by this resolver's mapping.
@@ -97,34 +94,43 @@ class SchemaResolver:
             except AttributeError:
                 continue
             for _var, spec in var_items:
-                names.add(spec.name)
+                if spec.attribute_names:
+                    names.update(spec.attribute_names)
+                else:
+                    names.add(spec.name)
         self._solver_attributes: list[str] = list(names)
 
     def get_value(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> Any | None:
-        """
-        Get attribute value for a given prim type and key.
+        """Get an authored value for a resolver key.
 
         Args:
-            prim: USD prim to query
-            prim_type: Prim type (PrimType enum)
-            key: Attribute key within the prim type
+            prim: USD prim to query.
+            prim_type: Prim type category.
+            key: Logical Newton attribute key within the prim category.
 
         Returns:
-            Value if found, None otherwise
+            Resolved authored value, or ``None`` when not found.
         """
         if prim is None:
             return None
         spec = self.mapping.get(prim_type, {}).get(key)
         if spec is not None:
-            v = usd.get_attribute(prim, spec.name)
+            if spec.usd_value_getter is not None:
+                v = spec.usd_value_getter(prim)
+            else:
+                v = usd.get_attribute(prim, spec.name)
             if v is not None:
                 return spec.usd_value_transformer(v) if spec.usd_value_transformer is not None else v
         return None
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> dict[str, Any]:
-        """
-        Collect attributes pertaining to this schema for a single prim.
-        Returns dictionary of attributes for this prim.
+        """Collect all resolver-relevant attributes for a prim.
+
+        Args:
+            prim: USD prim to inspect.
+
+        Returns:
+            Dictionary mapping authored USD attribute names to values.
         """
         if prim is None:
             return {}
@@ -156,10 +162,14 @@ class SchemaResolver:
         Args:
             builder: The ModelBuilder to validate custom attributes on.
         """
-        pass
+        del builder
 
 
-def _collect_attrs_by_name(prim: Usd.Prim, names: list[str]) -> dict[str, Any]:
+# Backward-compatible alias; prefer SchemaResolver.SchemaAttribute.
+SchemaAttribute = SchemaResolver.SchemaAttribute
+
+
+def _collect_attrs_by_name(prim: Usd.Prim, names: Sequence[str]) -> dict[str, Any]:
     """Collect attributes authored on the prim that have direct mappings in the resolver mapping"""
     out: dict[str, Any] = {}
     for n in names:
@@ -169,7 +179,7 @@ def _collect_attrs_by_name(prim: Usd.Prim, names: list[str]) -> dict[str, Any]:
     return out
 
 
-def _collect_attrs_by_namespace(prim: Usd.Prim, namespaces: list[str]) -> dict[str, Any]:
+def _collect_attrs_by_namespace(prim: Usd.Prim, namespaces: Sequence[str]) -> dict[str, Any]:
     """Collect authored attributes using USD namespace queries."""
     out: dict[str, Any] = {}
     if prim is None:
@@ -184,7 +194,7 @@ class SchemaResolverManager:
     Manager for resolving multiple USD schemas in a priority order.
     """
 
-    def __init__(self, resolvers: list[SchemaResolver]):
+    def __init__(self, resolvers: Sequence[SchemaResolver]):
         """
         Initialize resolver manager with resolver instances in priority order.
 
@@ -227,17 +237,24 @@ class SchemaResolverManager:
         Returns:
             Resolved value according to the precedence above.
         """
+        value, _ = self.get_value_with_resolver(prim, prim_type, key, default, verbose)
+        return value
+
+    def get_value_with_resolver(
+        self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
+    ) -> tuple[Any, SchemaResolver | None]:
+        """Resolve a value and return the resolver that supplied an authored value."""
         # 1) Authored value by schema priority
         for r in self.resolvers:
             val = r.get_value(prim, prim_type, key)
             if val is None:
                 continue
             self._collect_on_first_use(r, prim)
-            return val
+            return val, r
 
         # 2) Caller-provided default, if any
         if default is not None:
-            return default
+            return default, None
 
         # 3) Resolver mapping defaults in priority order
         for resolver in self.resolvers:
@@ -246,7 +263,7 @@ class SchemaResolverManager:
                 d = getattr(spec, "default", None)
                 if d is not None:
                     transformer = getattr(spec, "usd_value_transformer", None)
-                    return transformer(d) if transformer is not None else d
+                    return (transformer(d) if transformer is not None else d), None
 
         # Nothing found
         try:
@@ -254,11 +271,38 @@ class SchemaResolverManager:
         except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
         if verbose:
-            print(
+            error_message = (
                 f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
-                f"no authored value, no explicit default, and no solver mapping default."
+                + "no authored value, no explicit default, and no solver mapping default."
             )
-        return None
+            print(error_message)
+        return None, None
+
+    def deformable_compat_namespaces(self) -> list[str]:
+        """Deformable vendor attribute namespaces declared by the active resolvers.
+
+        Returns the union of every resolver's ``deformable_attr_namespaces``, in
+        resolver priority order. Used to accept deformable material/geometry
+        attributes authored under vendor namespaces (e.g. ``omniphysics:``,
+        ``physxDeformableBody:``) as a fallback to the canonical ``physics:``
+        schema. This is deliberately separate from the generic
+        ``extra_attr_namespaces`` so unrelated namespaces (``physxScene``,
+        ``drive``, ``state``, ...) are never read as deformable schema attributes.
+        Empty by default, so a default import reads only the canonical schema.
+        """
+        seen: set[str] = set()
+        namespaces: list[str] = []
+        for r in self.resolvers:
+            for ns in r.deformable_attr_namespaces:
+                if ns not in seen:
+                    seen.add(ns)
+                    namespaces.append(ns)
+        return namespaces
+
+    def read_deformable_attr(self, prim: Usd.Prim, name: str) -> Any:
+        """Read a deformable physics attribute: canonical ``physics:`` first, then the
+        resolver-declared vendor namespaces. The first authored value, or ``None``."""
+        return usd._read_physics_attr(prim, name, self.deformable_compat_namespaces())
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> None:
         """

@@ -339,13 +339,13 @@ def ccd_edge_edge(
 
 @wp.kernel
 def compute_tri_aabbs_swept(
-    pos_t0: wp.array(dtype=wp.vec3),
-    pos_t1: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos_t0: wp.array[wp.vec3],
+    pos_t1: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     thickness: float,
     # outputs
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     """Compute AABBs enclosing the swept volume of each triangle from t0 to t1.
 
@@ -376,13 +376,13 @@ def compute_tri_aabbs_swept(
 
 @wp.kernel
 def compute_edge_aabbs_swept(
-    pos_t0: wp.array(dtype=wp.vec3),
-    pos_t1: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos_t0: wp.array[wp.vec3],
+    pos_t1: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
     thickness: float,
     # outputs
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     """Compute AABBs enclosing the swept volume of each edge from t0 to t1."""
     eid = wp.tid()
@@ -404,16 +404,16 @@ def compute_edge_aabbs_swept(
 
 @wp.kernel
 def vertex_triangle_ccd_kernel(
-    pos_t0: wp.array(dtype=wp.vec3),
-    pos_t1: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos_t0: wp.array[wp.vec3],
+    pos_t1: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     thickness: float,
     bvh_id: wp.uint64,
-    filtering_list: wp.array(dtype=wp.int32),
-    filtering_list_offsets: wp.array(dtype=wp.int32),
+    filtering_list: wp.array[wp.int32],
+    filtering_list_offsets: wp.array[wp.int32],
     # outputs
-    toi_per_vertex: wp.array(dtype=float),
-    contact_tri_per_vertex: wp.array(dtype=wp.int32),
+    toi_per_vertex: wp.array[float],
+    contact_tri_per_vertex: wp.array[wp.int32],
 ):
     """Per-vertex CCD: query swept BVH, run cubic CCD against candidates, store min TOI."""
     v_index = wp.tid()
@@ -471,16 +471,16 @@ def vertex_triangle_ccd_kernel(
 
 @wp.kernel
 def edge_edge_ccd_kernel(
-    pos_t0: wp.array(dtype=wp.vec3),
-    pos_t1: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos_t0: wp.array[wp.vec3],
+    pos_t1: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
     thickness: float,
     bvh_id: wp.uint64,
-    filtering_list: wp.array(dtype=wp.int32),
-    filtering_list_offsets: wp.array(dtype=wp.int32),
+    filtering_list: wp.array[wp.int32],
+    filtering_list_offsets: wp.array[wp.int32],
     # outputs
-    toi_per_edge: wp.array(dtype=float),
-    contact_edge_per_edge: wp.array(dtype=wp.int32),
+    toi_per_edge: wp.array[float],
+    contact_edge_per_edge: wp.array[wp.int32],
 ):
     """Per-edge CCD: query swept BVH, run cubic CCD against candidate edges, store min TOI."""
     e_index = wp.tid()
@@ -546,14 +546,14 @@ def edge_edge_ccd_kernel(
 
 @wp.kernel
 def clamp_positions_to_toi(
-    pos_t0: wp.array(dtype=wp.vec3),
-    pos_t1: wp.array(dtype=wp.vec3),
-    toi_vertices: wp.array(dtype=float),
-    toi_edges: wp.array(dtype=float),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos_t0: wp.array[wp.vec3],
+    pos_t1: wp.array[wp.vec3],
+    toi_vertices: wp.array[float],
+    toi_edges: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
     safety_factor: float,
     # outputs
-    pos_out: wp.array(dtype=wp.vec3),
+    pos_out: wp.array[wp.vec3],
 ):
     """Clamp particle positions to prevent tunneling past the earliest TOI.
 

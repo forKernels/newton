@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import io
 import os
@@ -19,6 +7,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import warnings
 import zlib
 
 import numpy as np
@@ -28,11 +17,173 @@ import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
-from newton._src.utils.import_mjcf import _load_and_expand_mjcf
+from newton._src.solvers.mujoco.constants import (
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
+from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.utils.import_mjcf import _load_and_expand_mjcf, parse_mjcf
 from newton.solvers import SolverMuJoCo
+
+MASSLESS_FIXED_ROOT_MJCF = """
+<mujoco model="massless_fixed_root">
+    <worldbody>
+        <body name="base_link">
+            <freejoint name="floating_base"/>
+            <body name="chassis">
+                <inertial pos="0 0 0" mass="2.0" diaginertia="0.1 0.1 0.1"/>
+                <geom type="box" size="0.5 0.5 0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
+<mujoco model="massless_fixed_root_internal_fixed">
+    <worldbody>
+        <body name="base_link">
+            <freejoint name="floating_base"/>
+            <body name="chassis">
+                <inertial pos="0 0 0" mass="2.0" diaginertia="0.1 0.1 0.1"/>
+                <geom type="box" size="0.5 0.5 0.5"/>
+                <body name="sensor" pos="0 0 0.6">
+                    <inertial pos="0 0 0" mass="0.1" diaginertia="0.01 0.01 0.01"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_collision_shapes_hidden_by_default_even_without_same_body_visuals(self):
+        mjcf = """
+<mujoco model="collision_visibility">
+    <default>
+        <default class="visual">
+            <geom contype="0" conaffinity="0"/>
+        </default>
+        <default class="collision">
+            <geom contype="1" conaffinity="1"/>
+        </default>
+    </default>
+    <worldbody>
+        <body name="wheel">
+            <geom name="wheel_visual" class="visual" type="box" size="0.1 0.1 0.1"/>
+            <body name="roller">
+                <geom name="roller_collision" class="collision" type="sphere" size="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        visual_idx = builder.shape_label.index("collision_visibility/worldbody/wheel/wheel_visual")
+        visual_flags = builder.shape_flags[visual_idx]
+        self.assertTrue(visual_flags & ShapeFlags.VISIBLE)
+        self.assertFalse(visual_flags & ShapeFlags.COLLIDE_SHAPES)
+
+        collision_idx = builder.shape_label.index("collision_visibility/worldbody/wheel/roller/roller_collision")
+        collision_flags = builder.shape_flags[collision_idx]
+        self.assertTrue(collision_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(collision_flags & ShapeFlags.VISIBLE)
+
+        forced_builder = newton.ModelBuilder()
+        forced_builder.add_mjcf(mjcf, force_show_colliders=True)
+        forced_collision_idx = forced_builder.shape_label.index(
+            "collision_visibility/worldbody/wheel/roller/roller_collision"
+        )
+        forced_collision_flags = forced_builder.shape_flags[forced_collision_idx]
+        self.assertTrue(forced_collision_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(forced_collision_flags & ShapeFlags.VISIBLE)
+
+    def test_collision_only_import_keeps_colliders_visible(self):
+        """Collision-only MJCF assets must remain visible by default."""
+        mjcf = """
+<mujoco model="collision_only">
+    <worldbody>
+        <body name="body">
+            <geom name="collision" type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        collision_idx = builder.shape_label.index("collision_only/worldbody/body/collision")
+        collision_flags = builder.shape_flags[collision_idx]
+        self.assertTrue(collision_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(collision_flags & ShapeFlags.VISIBLE)
+
+    def test_massless_fixed_root_default_preserves_topology(self):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF)
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertTrue(any(label.endswith("/floating_base") for label in builder.joint_label))
+        self.assertTrue(any(label.endswith("/chassis/chassis_joint") for label in builder.joint_label))
+        self.assertTrue(any(label.endswith("/sensor/sensor_joint") for label in builder.joint_label))
+
+        root_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/floating_base"))
+        root_body = builder.joint_child[root_joint]
+        self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
+        self.assertEqual(builder.body_mass[root_body], 0.0)
+
+    def test_massless_fixed_root_opt_in_is_dynamic(self):
+        dt = 1.0 / 60.0
+        step_count = 5
+        expected_drop = 0.5 * 9.81 * (step_count * dt) ** 2
+        min_drop = 0.5 * expected_drop
+
+        for mjcf in [MASSLESS_FIXED_ROOT_MJCF, MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF]:
+            with self.subTest(mjcf=mjcf.splitlines()[1].strip()):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, collapse_massless_fixed_root=True)
+
+                self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+                self.assertGreater(builder.body_mass[0], 0.0)
+
+                model = builder.finalize()
+                state_0 = model.state()
+                state_1 = model.state()
+                control = model.control()
+                collision_pipeline = newton.CollisionPipeline(model)
+                contacts = collision_pipeline.contacts()
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+                root_body = int(model.joint_child.numpy()[0])
+                start_z = float(state_0.body_q.numpy()[root_body][2])
+
+                solver = newton.solvers.SolverXPBD(model, iterations=2)
+                for _ in range(step_count):
+                    state_0.clear_forces()
+                    solver.step(state_0, state_1, control, contacts, dt)
+                    state_0, state_1 = state_1, state_0
+
+                end_z = float(state_0.body_q.numpy()[root_body][2])
+                self.assertGreaterEqual(start_z - end_z, min_drop)
+
+    def test_massless_fixed_root_opt_in_preserves_imported_internal_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF, collapse_massless_fixed_root=True)
+
+        self.assertEqual(builder.joint_count, 2)
+        self.assertTrue(any(label.endswith("/floating_base") for label in builder.joint_label))
+        self.assertFalse(any(label.endswith("/chassis/chassis_joint") for label in builder.joint_label))
+        self.assertTrue(any(label.endswith("/sensor/sensor_joint") for label in builder.joint_label))
+
+        root_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/floating_base"))
+        sensor_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/sensor/sensor_joint"))
+        self.assertGreater(builder.body_mass[builder.joint_child[root_joint]], 0.0)
+        self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
+        self.assertEqual(builder.joint_type[sensor_joint], newton.JointType.FIXED)
+
     def test_humanoid_mjcf(self):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 123.0
@@ -52,7 +203,12 @@ class TestImportMjcfBasic(unittest.TestCase):
 
         # Check ke/kd from nv_humanoid.xml: solref=".015 1"
         # ke = 1/(0.015^2 * 1^2) ≈ 4444.4, kd = 2/0.015 ≈ 133.3
-        # MJCF-specified solref overrides user defaults (like friction does)
+        # MJCF-specified solref overrides user defaults (like friction does).
+        # The same authored ``solref`` is also stored verbatim in the
+        # ``mujoco.solref`` custom attribute (with ``solref_mode`` =
+        # ``SOLREF_MODE_RAW``); the MuJoCo solver consults that raw value
+        # for ``SOLREF_MODE_RAW`` shapes so the ``shape_material_ke`` value
+        # here remains the legacy back-compat fallback.
         self.assertTrue(np.allclose(np.array(builder.shape_material_ke)[non_site_indices], 4444.4, rtol=0.01))
         self.assertTrue(np.allclose(np.array(builder.shape_material_kd)[non_site_indices], 133.3, rtol=0.01))
 
@@ -136,6 +292,130 @@ class TestImportMjcfBasic(unittest.TestCase):
                 self.assertEqual(meshes[0].maxhullvert, 32)
                 self.assertEqual(meshes[1].maxhullvert, 128)
                 self.assertEqual(meshes[2].maxhullvert, 64)  # Default value
+
+    def test_mesh_geom_ignores_geom_size_length(self):
+        obj = "\n".join(
+            [
+                "v -0.5 -0.5 -0.5",
+                "v 0.5 -0.5 -0.5",
+                "v 0.5 0.5 -0.5",
+                "v -0.5 0.5 -0.5",
+                "v -0.5 -0.5 0.5",
+                "v 0.5 -0.5 0.5",
+                "v 0.5 0.5 0.5",
+                "v -0.5 0.5 0.5",
+                "f 1 2 3",
+                "f 1 3 4",
+                "f 5 8 7",
+                "f 5 7 6",
+                "f 1 5 6",
+                "f 1 6 2",
+                "f 2 6 7",
+                "f 2 7 3",
+                "f 3 7 8",
+                "f 3 8 4",
+                "f 4 8 5",
+                "f 4 5 1",
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mesh_path = os.path.join(tmpdir, "cube.obj")
+            xml_path = os.path.join(tmpdir, "model.xml")
+            with open(mesh_path, "w", encoding="utf-8") as f:
+                f.write(obj)
+            with open(xml_path, "w", encoding="utf-8") as f:
+                f.write(
+                    """
+<mujoco>
+    <asset>
+        <mesh name="cube" file="cube.obj"/>
+    </asset>
+    <worldbody>
+        <body name="body">
+            <geom name="mesh_geom" type="mesh" mesh="cube" size="0.1 0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+                )
+
+            builder = newton.ModelBuilder()
+            parse_mjcf(builder, xml_path)
+
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.shape_type[0], GeoType.MESH)
+
+    def test_nested_free_joint_raises_value_error(self):
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="parent">
+            <geom type="sphere" size="0.1"/>
+            <body name="child">
+                <freejoint name="bad_free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+
+        with self.assertRaisesRegex(ValueError, "Free joints must have the world body as parent"):
+            parse_mjcf(builder, mjcf)
+
+    def test_inertial_requires_diaginertia_or_fullinertia(self):
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="body">
+            <inertial pos="0 0 0" mass="1.0"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+
+        with self.assertRaisesRegex(ValueError, "diaginertia or fullinertia"):
+            parse_mjcf(builder, mjcf)
+
+    def test_inertial_diaginertia_requires_three_values(self):
+        for diaginertia in ("1 2", "1 2 3 4"):
+            with self.subTest(diaginertia=diaginertia):
+                mjcf = f"""
+<mujoco>
+    <worldbody>
+        <body name="body">
+            <inertial pos="0 0 0" mass="1.0" diaginertia="{diaginertia}"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+
+                with self.assertRaisesRegex(ValueError, "diaginertia.*3 values"):
+                    parse_mjcf(builder, mjcf)
+
+    def test_inertial_fullinertia_requires_six_values(self):
+        for fullinertia in ("1 2 3", "1 2 3 4 5 6 7"):
+            with self.subTest(fullinertia=fullinertia):
+                mjcf = f"""
+<mujoco>
+    <worldbody>
+        <body name="body">
+            <inertial pos="0 0 0" mass="1.0" fullinertia="{fullinertia}"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+
+                with self.assertRaisesRegex(ValueError, "fullinertia.*6 values"):
+                    parse_mjcf(builder, mjcf)
 
     def test_inertia_rotation(self):
         """Test that inertia tensors are properly rotated using sandwich product R @ I @ R.T"""
@@ -257,6 +537,189 @@ class TestImportMjcfBasic(unittest.TestCase):
         # MJCF quat is [w, x, y, z], body_q quat is [x, y, z, w]
         # So [0.7071068, 0, 0, 0.7071068] becomes [0, 0, 0.7071068, 0.7071068]
         np.testing.assert_allclose(body_quat, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
+
+    def test_xyaxes_uses_x_and_y_axes(self):
+        """MJCF xyaxes specifies X then Y, not X then Z."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="test_body" xyaxes="1 0 0 0 0 1">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        body_idx = model.body_label.index("test/worldbody/test_body")
+        body_quat = model.body_q.numpy()[body_idx, 3:]
+        quat = wp.quat(*body_quat)
+
+        actual_y = np.array(wp.quat_rotate(quat, wp.vec3(0.0, 1.0, 0.0)), dtype=np.float64)
+        actual_z = np.array(wp.quat_rotate(quat, wp.vec3(0.0, 0.0, 1.0)), dtype=np.float64)
+
+        np.testing.assert_allclose(actual_y, [0.0, 0.0, 1.0], atol=1e-6)
+        np.testing.assert_allclose(actual_z, [0.0, -1.0, 0.0], atol=1e-6)
+
+    def test_site_euler_sequence_matches_mujoco(self):
+        """Non-default compiler eulerseq should match MuJoCo site orientation."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian" eulerseq="zyx"/>
+    <worldbody>
+        <body name="test_body">
+            <site name="test_site" euler="0.3 -1.2 0.7" size="0.01"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True)
+
+        site_indices = [i for i, flags in enumerate(builder.shape_flags) if flags & ShapeFlags.SITE]
+        self.assertEqual(len(site_indices), 1, "Expected exactly one parsed site shape")
+        site_idx = site_indices[0]
+        newton_xyzw = np.array(builder.shape_transform[site_idx][3:7], dtype=np.float64)
+
+        native_wxyz = np.array(
+            SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf_content).site_quat[0], dtype=np.float64
+        )
+        native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
+
+        same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+        negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+        self.assertTrue(same or negated, "Site quaternion mismatch (accounting for q/-q equivalence)")
+
+    def test_body_euler_matches_mujoco(self):
+        """Sweep every 3-character ``eulerseq`` from ``{x,y,z,X,Y,Z}`` (216
+        combinations, including Tait-Bryan, proper-Euler, and degenerate
+        repeated-axis sequences) and assert Newton's body quaternion matches
+        MuJoCo's for a fixed non-trivial ``euler``. Skips sequences MuJoCo
+        itself rejects; flags any sequence Newton accepts that MuJoCo doesn't.
+        """
+        from itertools import product  # noqa: PLC0415
+
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        euler = "0.3 1.2 -0.7"
+        chars = "xyzXYZ"
+        compared = 0
+        for triple in product(chars, repeat=3):
+            seq = "".join(triple)
+            mjcf = f"""<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian" eulerseq="{seq}"/>
+    <worldbody>
+        <body name="test_body" euler="{euler}">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            try:
+                native_m = mujoco.MjModel.from_xml_string(mjcf)
+            except Exception:
+                # MuJoCo rejected this eulerseq; Newton must too. Either side
+                # may raise an MJCF-parsing-specific exception type we don't
+                # want to enumerate, so the assertion is intentionally broad.
+                with self.assertRaises(Exception, msg=f"Newton accepts eulerseq={seq!r} that MuJoCo rejects"):  # noqa: B017
+                    newton.ModelBuilder().add_mjcf(mjcf)
+                continue
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            model = builder.finalize()
+            body_idx = model.body_label.index("test/worldbody/test_body")
+            newton_xyzw = np.array(model.body_q.numpy()[body_idx, 3:], dtype=np.float64)
+
+            native_wxyz = np.array(native_m.body_quat[1], dtype=np.float64)
+            native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
+            same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+            negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+            self.assertTrue(same or negated, f"eulerseq={seq!r}: newton={newton_xyzw} native={native_xyzw}")
+            compared += 1
+
+        # Sanity: at least the default-style sequences must have run.
+        self.assertGreater(compared, 0, "no eulerseq combinations actually compared")
+
+    def test_compiler_merge_across_includes(self):
+        """``<compiler>`` attributes merge globally across ``<include>``-expanded
+        files (document order, later wins, scope is not file-local).
+
+        Both layouts (inner-compiler-after-outer and outer-compiler-after-inner)
+        check that the latest compiler wins for ALL bodies regardless of which
+        file authored them.
+        """
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+
+        inner_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="inner">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="inner_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        layouts = {
+            "inner_compiler_wins": """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="outer">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="outer_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <include file="inner.xml"/>
+</mujoco>
+""",
+            "outer_compiler_wins": """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="outer">
+    <include file="inner.xml"/>
+    <worldbody>
+        <body name="outer_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <compiler angle="degree"/>
+</mujoco>
+""",
+        }
+
+        for layout_name, outer_xml in layouts.items():
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "outer.xml"), "w") as f:
+                    f.write(outer_xml)
+                with open(os.path.join(d, "inner.xml"), "w") as f:
+                    f.write(inner_xml)
+
+                # MuJoCo (the ground truth) — loads and merges across includes
+                native = mujoco.MjModel.from_xml_path(os.path.join(d, "outer.xml"))
+
+                # Newton — must produce the same body quats
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(os.path.join(d, "outer.xml"))
+                model = builder.finalize()
+
+            for native_idx in range(1, native.nbody):  # skip worldbody
+                name = native.body(native_idx).name
+                native_wxyz = np.array(native.body_quat[native_idx], dtype=np.float64)
+                native_xyzw = np.array(
+                    [native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64
+                )
+                # Find the body in Newton's label-path scheme (`outer/worldbody/<name>`)
+                matches = [j for j in range(model.body_count) if model.body_label[j].endswith(name)]
+                self.assertEqual(len(matches), 1, f"Body {name!r} not uniquely found in Newton model")
+                newton_xyzw = np.array(model.body_q.numpy()[matches[0], 3:], dtype=np.float64)
+
+                same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+                negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+                self.assertTrue(
+                    same or negated,
+                    f"Compiler-merge layout={layout_name!r} body={name!r}: newton={newton_xyzw} native={native_xyzw}",
+                )
 
     def test_root_body_with_custom_xform(self):
         """Test 1: Root body with custom xform parameter (with rotation) → verify transform is properly applied."""
@@ -396,6 +859,68 @@ class TestImportMjcfBasic(unittest.TestCase):
         body_quat = body_q[body_idx, 3:]
         np.testing.assert_allclose(joint_pos, body_pos, atol=1e-6)
         np.testing.assert_allclose(joint_quat, body_quat, atol=1e-6)
+
+    def test_floating_base_with_import_xform_is_relative(self):
+        """Test that xform composes with (does not overwrite) a floating root body's local transform."""
+        local_pos = wp.vec3(1.0, 2.0, 3.0)
+        local_quat = wp.quat_rpy(0.3, -0.4, 0.2)
+        # MJCF expects quaternions as [w, x, y, z].
+        local_quat_mjcf = f"{local_quat[3]} {local_quat[0]} {local_quat[1]} {local_quat[2]}"
+
+        mjcf_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="floating_with_xform">
+    <worldbody>
+        <body name="floating_body" pos="{local_pos[0]} {local_pos[1]} {local_pos[2]}" quat="{local_quat_mjcf}">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        import_pos = wp.vec3(4.0, -5.0, 6.0)
+        import_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 3.0)
+        import_xform = wp.transform(import_pos, import_quat)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, xform=import_xform)
+        model = builder.finalize()
+
+        local_xform = wp.transform(local_pos, local_quat)
+        expected_xform = import_xform * local_xform
+        expected_pos = np.array([expected_xform.p[0], expected_xform.p[1], expected_xform.p[2]])
+        expected_quat = np.array([expected_xform.q[0], expected_xform.q[1], expected_xform.q[2], expected_xform.q[3]])
+
+        body_idx = model.body_label.index("floating_with_xform/worldbody/floating_body")
+        body_q = model.body_q.numpy()[body_idx]
+        body_pos = body_q[:3]
+        body_quat = body_q[3:7]
+
+        np.testing.assert_allclose(body_pos, expected_pos, atol=1e-6)
+        body_quat_match = np.allclose(body_quat, expected_quat, atol=1e-6) or np.allclose(
+            body_quat, -expected_quat, atol=1e-6
+        )
+        self.assertTrue(body_quat_match, f"Body quaternion does not match composed transform. Got {body_quat}")
+
+        # Guard against overwrite behavior: final pose should not equal raw import xform pose.
+        self.assertFalse(
+            np.allclose(body_pos, [import_pos[0], import_pos[1], import_pos[2]], atol=1e-6),
+            "Body position unexpectedly equals raw import xform position (overwrite behavior).",
+        )
+
+        joint_idx = model.joint_label.index("floating_with_xform/worldbody/floating_body/floating_body_freejoint")
+        joint_q_start = model.joint_q_start.numpy()
+        joint_q = model.joint_q.numpy()
+        joint_start = joint_q_start[joint_idx]
+        joint_pos = np.array([joint_q[joint_start + 0], joint_q[joint_start + 1], joint_q[joint_start + 2]])
+        joint_quat = np.array(
+            [joint_q[joint_start + 3], joint_q[joint_start + 4], joint_q[joint_start + 5], joint_q[joint_start + 6]]
+        )
+
+        np.testing.assert_allclose(joint_pos, expected_pos, atol=1e-6)
+        joint_quat_match = np.allclose(joint_quat, expected_quat, atol=1e-6) or np.allclose(
+            joint_quat, -expected_quat, atol=1e-6
+        )
+        self.assertTrue(joint_quat_match, f"Joint quaternion does not match composed transform. Got {joint_quat}")
 
     def test_chain_with_rotations(self):
         """Test 3: Chain of bodies with different pos/quat → verify each body's world transform."""
@@ -587,6 +1112,24 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(leaf2_pos, expected_leaf2_xform.p, atol=1e-6)
         np.testing.assert_allclose(leaf2_quat, expected_leaf2_xform.q, atol=1e-6)
 
+    def test_native_ball_joint_preserves_friction(self):
+        """Regression: authored frictionloss on <joint type="ball"/> must reach joint_friction."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="root">
+            <joint name="j" type="ball" armature="0.5" frictionloss="1.25"/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_type[0], newton.JointType.BALL)
+        # Ball joint has 3 DOFs; all three should carry the authored friction.
+        self.assertEqual(builder.joint_friction, [1.25, 1.25, 1.25])
+
     def test_replace_3d_hinge_with_ball_joint(self):
         """Test that 3D hinge joints are replaced with ball joints."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -612,6 +1155,324 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(joint_x_p.p, [1, 2, 3], atol=1e-6)
         # note we need to swap quaternion order wxyz -> xyzw
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
+
+
+class TestImportMjcfMeshScale(unittest.TestCase):
+    """Tests for MJCF mesh scale resolution from default classes."""
+
+    _OBJ_TRIANGLE = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+
+    def _build(self, mjcf_content: str) -> newton.ModelBuilder:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            mesh_path = os.path.join(tmpdir, "mesh.obj")
+            with open(mesh_path, "w") as f:
+                f.write(self._OBJ_TRIANGLE)
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf_path, parse_meshes=True)
+        return builder
+
+    def _mesh_extent(self, builder: newton.ModelBuilder, shape_idx: int = 0) -> float:
+        """Return the vertex extent (max - min) of a mesh shape."""
+        v = np.asarray(builder.shape_source[shape_idx].vertices)
+        return float(v.max() - v.min())
+
+    def test_mesh_no_class_no_explicit_scale(self):
+        """Mesh with no class and no explicit scale uses default (1,1,1)."""
+        builder = self._build("""\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 1.0, places=5)
+
+    def test_mesh_explicit_scale_on_asset(self):
+        """Explicit scale on <asset><mesh> is applied to vertices."""
+        builder = self._build("""\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj" scale="0.5 0.5 0.5"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
+
+    def test_mesh_inherits_scale_from_own_class(self):
+        """Mesh with class="X" inherits scale from <default class="X"><mesh scale="..."/>."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="scaled">
+      <mesh scale="2 2 2"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="scaled"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 2.0, places=5)
+
+    def test_mesh_explicit_scale_overrides_class_default(self):
+        """Explicit scale on <mesh> overrides the class default."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="scaled">
+      <mesh scale="2 2 2"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="scaled" scale="3 3 3"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 3.0, places=5)
+
+    def test_mesh_inherits_scale_from_global_default(self):
+        """Mesh with no class inherits from the root <default><mesh scale="..."/>."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <mesh scale="0.25 0.25 0.25"/>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.25, places=5)
+
+    def test_geom_class_mesh_scale_does_not_leak_to_asset(self):
+        """Geom's default class mesh scale must NOT override the asset mesh's scale.
+
+        Reproduces issue #2034: Robotiq 2F-85 V4 gripper from MuJoCo Menagerie.
+        The MJCF has <default class="robot"><mesh scale="0.001"/> but the
+        <asset><mesh> elements have no class, so they should load at scale=(1,1,1).
+        """
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="robot">
+      <mesh scale="0.001 0.001 0.001"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+  </asset>
+  <worldbody>
+    <body childclass="robot">
+      <geom class="visual" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        # Asset mesh has no class → scale=(1,1,1), NOT 0.001 from the geom's class.
+        self.assertAlmostEqual(self._mesh_extent(builder), 1.0, places=5)
+
+    def test_geom_class_mesh_scale_applied_when_asset_has_same_class(self):
+        """When the asset mesh references the same class, its scale IS applied."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="robot">
+      <mesh scale="0.5 0.5 0.5"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" file="mesh.obj" class="robot"/>
+  </asset>
+  <worldbody>
+    <body childclass="robot">
+      <geom class="visual" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
+
+
+class TestImportMjcfInlineMesh(unittest.TestCase):
+    """Tests for MJCF mesh assets authored with inline arrays."""
+
+    def test_inline_mesh_builds_convex_hull_without_faces(self):
+        """Build a convex hull when inline mesh faces are absent or empty."""
+        for face_attribute in ("", ' face=""', ' face="   "'):
+            with self.subTest(face_attribute=face_attribute):
+                mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="tetra" vertex="0 0 0  1 0 0  0 1 0  0 0 1"{face_attribute}/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+
+                mesh = builder.shape_source[0]
+                self.assertEqual(len(mesh.vertices), 4)
+                self.assertEqual(len(mesh.indices), 12)
+                np.testing.assert_allclose(
+                    np.asarray(mesh.vertices)[np.lexsort(np.asarray(mesh.vertices).T[::-1])],
+                    [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+                )
+
+    def test_inline_mesh_vertex_face_data(self):
+        """Import inline mesh vertices and triangle faces."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"/>
+    </asset>
+    <worldbody>
+        <body>
+            <geom type="mesh" mesh="tetra" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, scale=2.0)
+
+        self.assertEqual(builder.shape_count, 1)
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(
+            mesh.vertices,
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]],
+        )
+        np.testing.assert_array_equal(mesh.indices, [0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2])
+
+    def test_inline_mesh_preserves_texcoords_for_textures(self):
+        """Preserve per-vertex UVs on a textured inline mesh."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            texture_path = os.path.join(tmpdir, "texture.png")
+            mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"
+              texcoord="0 0  1 0  0 1  1 1"/>
+        <texture name="texture" type="2d" file="{texture_path}"/>
+        <material name="textured" texture="texture"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" material="textured" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(mesh.uvs, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        self.assertEqual(mesh.texture, texture_path)
+
+    def test_inline_mesh_applies_reference_pose_to_vertices_and_normals(self):
+        """Apply the MJCF reference pose and scale to inline mesh data."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="1 0 0  2 0 0  1 1 0  1 0 1"
+              face="0 2 1  0 1 3  0 3 2  1 2 3"
+              normal="1 1 0  1 1 0  1 1 0  1 1 0"
+              refpos="1 0 0"
+              refquat="0.7071067811865476 0 0 0.7071067811865476"
+              scale="2 3 4"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(
+            mesh.vertices,
+            [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+            atol=1e-5,
+        )
+        expected_normal = np.array([0.5, -1.0 / 3.0, 0.0])
+        expected_normal /= np.linalg.norm(expected_normal)
+        np.testing.assert_allclose(mesh.normals, np.tile(expected_normal, (4, 1)), atol=1e-5)
+
+    def test_inline_mesh_rejects_malformed_vertex_attributes(self):
+        """Reject normals and texture coordinates with the wrong vertex count."""
+        for attribute, message in (
+            ('normal="0 0 1"', "normal.*3 values per vertex"),
+            ('texcoord="0 0"', "texcoord.*2 values per vertex"),
+            ('refpos="invalid 0 0"', "Inline MJCF mesh 'bad'.*invalid refpos data"),
+            ('refquat="invalid 0 0 1"', "Inline MJCF mesh 'bad'.*invalid refquat data"),
+        ):
+            with self.subTest(attribute=attribute):
+                mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="bad"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"
+              {attribute}/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="bad" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(ValueError, message):
+                    builder.add_mjcf(mjcf)
+
+    def test_inline_mesh_rejects_malformed_faces(self):
+        """Reject inline mesh face data that does not contain triangles."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="bad" vertex="0 0 0  1 0 0  0 1 0" face="0 1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="bad"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "face.*multiple of 3"):
+            builder.add_mjcf(mjcf)
 
 
 class TestImportMjcfGeometry(unittest.TestCase):
@@ -674,6 +1535,257 @@ class TestImportMjcfGeometry(unittest.TestCase):
         shape_scale = builder.shape_scale[0]
         self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
         self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
+
+    def test_ellipsoid_shape_gets_mass(self):
+        """Regression: ellipsoid geoms are imported as shapes so the body gets density-based mass.
+
+        Previously ellipsoid was unsupported and no shape was added, so the body had zero mass
+        and finalize could raise or produce invalid dynamics.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="ellipsoid_test">
+    <worldbody>
+        <body name="object">
+            <freejoint/>
+            <geom type="ellipsoid" size="0.03 0.04 0.02"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.shape_type[0], GeoType.ELLIPSOID)
+        np.testing.assert_allclose(builder.shape_scale[0], [0.03, 0.04, 0.02], atol=1e-12)
+        model = builder.finalize()
+        body_idx = model.body_label.index("ellipsoid_test/worldbody/object")
+        body_mass = model.body_mass.numpy()
+        self.assertGreater(body_mass[body_idx], 0.0, msg="Ellipsoid body must have positive mass")
+
+    def test_explicit_geom_mass(self):
+        """Regression test: explicit geom mass attributes are correctly handled.
+
+        When a geom has an explicit 'mass' attribute in MJCF, it should:
+        1. Contribute that exact mass to the body (not density-based)
+        2. Compute correct inertia tensor for the explicit mass
+        3. Not use density-based mass calculation for that geom
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="explicit_mass_test">
+    <worldbody>
+        <!-- Body with explicit mass on sphere geom -->
+        <body name="body1" pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="2.5"/>
+        </body>
+
+        <!-- Body with explicit mass on box geom -->
+        <body name="body2" pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+
+        <!-- Body with explicit mass on cylinder geom -->
+        <body name="body3" pos="2 0 1">
+            <freejoint/>
+            <geom type="cylinder" size="0.05 0.1" mass="0.5"/>
+        </body>
+
+        <!-- Body with explicit mass on capsule geom -->
+        <body name="body4" pos="3 0 1">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" mass="0.75"/>
+        </body>
+
+        <!-- Body with multiple geoms, some with explicit mass -->
+        <body name="body5" pos="4 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.05" mass="0.3"/>
+            <geom type="box" size="0.05 0.05 0.05" mass="0.2"/>
+        </body>
+
+        <!-- Body with mixed explicit mass and density-based mass -->
+        <!-- Explicit mass should win even when a conflicting density is specified -->
+        <body name="body6" pos="5 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.5" density="5000"/>
+            <geom type="box" size="0.1 0.1 0.1" density="1000"/>
+        </body>
+
+        <!-- Body with mass="0" — should contribute zero mass and zero inertia -->
+        <body name="body7" pos="6 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Get body masses
+        body_mass = model.body_mass.numpy()
+
+        # Bodies with freejoint start at index 0 (no separate world body)
+        # Body 0: single sphere with mass=2.5
+        self.assertAlmostEqual(body_mass[0], 2.5, places=6, msg="Body 0 mass should be 2.5")
+
+        # Body 1: single box with mass=1.0
+        self.assertAlmostEqual(body_mass[1], 1.0, places=6, msg="Body 1 mass should be 1.0")
+
+        # Body 2: single cylinder with mass=0.5
+        self.assertAlmostEqual(body_mass[2], 0.5, places=6, msg="Body 2 mass should be 0.5")
+
+        # Body 3: single capsule with mass=0.75
+        self.assertAlmostEqual(body_mass[3], 0.75, places=6, msg="Body 3 mass should be 0.75")
+
+        # Body 4: two geoms with explicit masses (0.3 + 0.2 = 0.5)
+        self.assertAlmostEqual(body_mass[4], 0.5, places=6, msg="Body 4 mass should be 0.5 (sum of explicit masses)")
+
+        # Body 5: one explicit mass (1.5) + one density-based mass
+        # Box volume = 8 * 0.1 * 0.1 * 0.1 = 0.008 m³
+        # Density-based mass = 1000 * 0.008 = 8.0 kg
+        # Total = 1.5 + 8.0 = 9.5 kg
+        expected_body5_mass = 1.5 + (1000.0 * 8.0 * 0.1 * 0.1 * 0.1)
+        self.assertAlmostEqual(
+            body_mass[5], expected_body5_mass, places=4, msg="Body 5 mass should combine explicit and density-based"
+        )
+
+        # Body 6: mass="0" — zero mass zeroes density, m_computed guard skips inertia → no contribution
+        self.assertAlmostEqual(body_mass[6], 0.0, places=6, msg="Body 6 (mass=0) should have zero mass")
+
+        # Verify that bodies with explicit mass have non-zero inertia
+        # (inertia should be computed from the explicit mass, not zero)
+        body_inertia = model.body_inertia.numpy()
+        for i in range(5):  # Bodies 0-4 have only explicit mass
+            inertia_trace = np.trace(body_inertia[i])
+            self.assertGreater(inertia_trace, 0.0, msg=f"Body {i} should have non-zero inertia from explicit mass")
+
+        # Body 6: mass="0" should also have zero inertia
+        self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
+
+    def test_explicit_small_mesh_geom_mass(self):
+        """Test that a positive mass on a solid or hollow mesh sets body mass and inertia."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="explicit_mesh_mass_test">
+    <asset>
+        <mesh name="box_mesh" file="box.obj" scale="0.005 0.005 0.005"/>
+    </asset>
+    <worldbody>
+        <body name="body">
+            <freejoint/>
+            <geom type="mesh" mesh="box_mesh" mass="0.012" density="5000"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        mesh_content = """v -0.5 -0.5 -0.5
+v 0.5 -0.5 -0.5
+v 0.5 0.5 -0.5
+v -0.5 0.5 -0.5
+v -0.5 -0.5 0.5
+v 0.5 -0.5 0.5
+v 0.5 0.5 0.5
+v -0.5 0.5 0.5
+f 1 3 2
+f 1 4 3
+f 5 6 7
+f 5 7 8
+f 1 2 6
+f 1 6 5
+f 2 3 7
+f 2 7 6
+f 3 4 8
+f 3 8 7
+f 4 1 5
+f 4 5 8
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            mesh_path = os.path.join(tmpdir, "box.obj")
+            with open(mesh_path, "w") as f:
+                f.write(mesh_content)
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            for name, is_solid, margin in (("solid", True, 0.0), ("hollow", False, 0.001)):
+                with self.subTest(name=name):
+                    builder = newton.ModelBuilder()
+                    builder.default_shape_cfg.is_solid = is_solid
+                    builder.default_shape_cfg.margin = margin
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        builder.add_mjcf(mjcf_path)
+
+                    self.assertFalse(any("explicit mass" in str(w.message) for w in caught))
+                    self.assertAlmostEqual(builder.body_mass[0], 0.012, places=7)
+                    np.testing.assert_allclose(builder.body_com[0], np.zeros(3), atol=1e-7)
+                    inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
+                    self.assertGreater(np.trace(inertia), 0.0)
+                    if is_solid:
+                        np.testing.assert_allclose(
+                            inertia,
+                            np.diag([5.0e-8, 5.0e-8, 5.0e-8]),
+                            atol=1e-11,
+                            rtol=1e-6,
+                        )
+
+    def test_zero_mass_mesh_geom_no_warning(self):
+        """Regression test: mass='0' on mesh geoms must not emit a warning.
+
+        MuJoCo models commonly set mass='0' (with density='0') as a default
+        for visual mesh geoms. The MJCF importer should silently skip the
+        explicit-mass handling when the mass is zero instead of warning that
+        'explicit mass on mesh is not supported'.
+
+        See https://github.com/newton-physics/newton/issues/1836
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="zero_mass_mesh_test">
+    <asset>
+        <mesh name="box_mesh" file="box.obj"/>
+    </asset>
+    <default>
+        <geom group="3" mass="0" density="0"/>
+    </default>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+            <freejoint/>
+            <geom type="mesh" mesh="box_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            mesh_path = os.path.join(tmpdir, "box.obj")
+            with open(mesh_path, "w") as f:
+                f.write(
+                    "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+                    "v 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n"
+                    "f 1 2 3 4\nf 5 6 7 8\nf 1 2 6 5\n"
+                    "f 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n"
+                )
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.add_mjcf(mjcf_path)
+
+            mass_warnings = [
+                w for w in caught if "explicit mass" in str(w.message) and "not supported" in str(w.message)
+            ]
+            self.assertEqual(
+                len(mass_warnings),
+                0,
+                msg=f"Expected no 'explicit mass' warnings for mass=0 mesh geoms, got: "
+                f"{[str(w.message) for w in mass_warnings]}",
+            )
 
     def test_solreflimit_parsing(self):
         """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
@@ -809,14 +1921,13 @@ class TestImportMjcfGeometry(unittest.TestCase):
         nbTendonsPerBuilder = 2
 
         individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
         for _i in range(0, nbBuilders):
             builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
-        import mujoco
+        mujoco = SolverMuJoCo._mujoco
 
         tendon_names = [
             mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, i) for i in range(solver.mj_model.ntendon)
@@ -1268,7 +2379,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
@@ -1452,6 +2562,47 @@ class TestImportMjcfGeometry(unittest.TestCase):
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
 
+    def test_fixed_tendon_inherits_default_class(self):
+        """Apply tendon default classes to fixed tendons with explicit overrides."""
+        mjcf = """
+<mujoco>
+    <default>
+        <tendon damping="3" limited="true" range="0 2"/>
+        <default class="stiff">
+            <tendon stiffness="12"/>
+        </default>
+    </default>
+    <worldbody>
+        <body>
+            <joint name="joint" type="slide"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+    <tendon>
+        <fixed name="global">
+            <joint joint="joint" coef="0.5"/>
+        </fixed>
+        <fixed name="inherited" class="stiff">
+            <joint joint="joint" coef="1"/>
+        </fixed>
+        <fixed name="overridden" class="stiff" stiffness="7" range="-1 1">
+            <joint joint="joint" coef="2"/>
+        </fixed>
+    </tendon>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.mujoco.tendon_stiffness.numpy(), [0.0, 12.0, 7.0])
+        np.testing.assert_allclose(model.mujoco.tendon_damping.numpy(), [3.0, 3.0, 3.0])
+        np.testing.assert_array_equal(model.mujoco.tendon_limited.numpy(), [1, 1, 1])
+        np.testing.assert_allclose(
+            model.mujoco.tendon_range.numpy(),
+            [[0.0, 2.0], [0.0, 2.0], [-1.0, 1.0]],
+        )
+
     def test_single_mujoco_fixed_tendon_limit_parsing(self):
         """Test that tendon limits are correctly parsed."""
         mjcf = """<?xml version="1.0" ?>
@@ -1532,7 +2683,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
         nbTendons = nbBuilders * nbTendonsPerBuilder
 
         individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
         for _i in range(0, nbBuilders):
@@ -1637,7 +2787,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 </mujoco>
 """
         individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
         builder.add_world(individual_builder)
@@ -1694,7 +2843,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 </mujoco>
 """
         individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf, ctrl_direct=True)
         builder = newton.ModelBuilder()
         builder.add_world(individual_builder)
@@ -1748,7 +2896,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 """
         # With autolimits=true (default), actuatorfrclimited="auto" resolves to true
         builder_true = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder_true)
         builder_true.add_mjcf(mjcf_autolimits_true)
         model_true = newton.ModelBuilder()
         model_true.add_world(builder_true)
@@ -1758,7 +2905,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 
         # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
         builder_false = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder_false)
         builder_false.add_mjcf(mjcf_autolimits_false)
         model_false = newton.ModelBuilder()
         model_false.add_world(builder_false)
@@ -1816,7 +2962,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1839,6 +2984,577 @@ class TestImportMjcfGeometry(unittest.TestCase):
             places=4,
             msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
         )
+
+    def test_visual_geom_density_with_parse_visuals(self):
+        """Regression: visual geoms must use the default density when parse_visuals=True.
+
+        When a model has only visual geoms providing mass (collision geoms have
+        mass=0) and no class-level density override, parse_visuals=True should
+        use the default density (1000) for the visual geoms.  Previously, visual
+        geoms were always parsed with density=0, producing zero body mass.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="test" pos="0 0 0.5">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="vis" type="box" size="0.1 0.1 0.1"
+            contype="0" conaffinity="0" group="2"/>
+      <geom name="col" type="box" size="0.1 0.1 0.1"
+            mass="0" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=True)
+        model = builder.finalize()
+
+        # density(1000) * volume(8 * 0.1^3) = 8.0
+        expected_mass = 1000.0 * (8 * 0.1**3)
+        actual_mass = float(model.body_mass.numpy()[0])
+        self.assertAlmostEqual(
+            actual_mass,
+            expected_mass,
+            places=2,
+            msg=f"Visual geom with default density should produce mass={expected_mass}, got {actual_mass}",
+        )
+
+    def test_visual_geom_explicit_mass_with_parse_visuals(self):
+        """Regression: visual geoms must honor explicit mass when parse_visuals=True."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="test" pos="0 0 0.5">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="vis" type="box" size="0.1 0.1 0.1"
+            contype="0" conaffinity="0" group="2" mass="5"/>
+      <geom name="col" type="box" size="0.1 0.1 0.1"
+            mass="0" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=True)
+        model = builder.finalize()
+
+        actual_mass = float(model.body_mass.numpy()[0])
+        self.assertAlmostEqual(actual_mass, 5.0, places=4, msg=f"Expected visual geom mass=5.0, got {actual_mass}")
+        self.assertGreater(
+            float(np.trace(model.body_inertia.numpy()[0])),
+            0.0,
+            msg="Visual geom with explicit mass should contribute non-zero inertia",
+        )
+
+    def test_geom_inertia_independent_of_visual_loading(self):
+        """Preserve combined geom mass properties across visual-loading modes."""
+        cases = {
+            "explicit mass": ('mass="1.25"', 'mass="2.75"'),
+            "density": ("", 'density="600"'),
+        }
+        import_modes = {
+            "visuals": ({"parse_visuals": True}, 2),
+            "no visuals": ({"parse_visuals": False}, 1),
+            "visuals as colliders": ({"parse_visuals_as_colliders": True}, 1),
+        }
+        visual_com = np.array([0.4, -0.2, 0.15])
+        collider_com = np.array([-0.3, 0.25, -0.1])
+
+        for case_name, (visual_mass_attrib, collider_mass_attrib) in cases.items():
+            mjcf = f"""<?xml version="1.0" ?>
+<mujoco>
+  <default>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="2"/>
+    </default>
+    <default class="collision">
+      <geom group="3"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <geom name="visual" class="visual" type="box" size="0.12 0.07 0.03"
+            pos="0.4 -0.2 0.15" quat="0.9238795 0 0 0.3826834" {visual_mass_attrib}/>
+      <geom name="collision" class="collision" type="cylinder" size="0.08 0.2"
+            pos="-0.3 0.25 -0.1" euler="20 0 0" {collider_mass_attrib}/>
+    </body>
+  </worldbody>
+</mujoco>"""
+            properties = {}
+            for mode_name, (options, expected_shape_count) in import_modes.items():
+                with self.subTest(case=case_name, mode=mode_name):
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf, **options)
+
+                    self.assertEqual(builder.shape_count, expected_shape_count)
+                    properties[mode_name] = (
+                        builder.body_mass[0],
+                        np.array(builder.body_com[0]),
+                        np.array(builder.body_inertia[0]).reshape(3, 3),
+                    )
+
+            reference_mass, reference_com, reference_inertia = properties["visuals"]
+            self.assertFalse(np.allclose(reference_com, visual_com))
+            self.assertFalse(np.allclose(reference_com, collider_com))
+            self.assertGreater(
+                np.max(np.abs(reference_inertia - np.diag(np.diag(reference_inertia)))),
+                1e-4,
+            )
+            for mode_name in ("no visuals", "visuals as colliders"):
+                with self.subTest(case=case_name, mode=mode_name):
+                    mass, com, inertia = properties[mode_name]
+                    self.assertAlmostEqual(mass, reference_mass, places=6)
+                    np.testing.assert_allclose(com, reference_com, atol=1e-7, rtol=1e-6)
+                    np.testing.assert_allclose(inertia, reference_inertia, atol=1e-7, rtol=1e-6)
+
+    def test_compiler_inertiagrouprange(self):
+        """Test that only geom groups in the compiler range contribute inertia."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiagrouprange="0 2"/>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <geom type="sphere" size="0.1" group="2" mass="0.5"/>
+      <geom type="box" size="0.1 0.1 0.1" group="3" mass="8"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        self.assertAlmostEqual(builder.body_mass[0], 0.5, places=6)
+        np.testing.assert_allclose(
+            np.array(builder.body_inertia[0]).reshape(3, 3),
+            np.diag([0.002, 0.002, 0.002]),
+            atol=1e-7,
+            rtol=1e-6,
+        )
+
+    def test_compiler_inertiafromgeom_modes(self):
+        """Test inertiafromgeom modes with and without an inertial element."""
+        expected_properties = {
+            "auto": (1.0, [0.1, 0.2, 0.3], [0.01, 0.02, 0.03]),
+            "false": (1.0, [0.1, 0.2, 0.3], [0.01, 0.02, 0.03]),
+            "true": (2.0, [-0.2, 0.4, 0.1], [0.008, 0.008, 0.008]),
+        }
+        for mode, (expected_mass, expected_com, expected_inertia) in expected_properties.items():
+            with self.subTest(mode=mode):
+                mjcf = f"""<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiafromgeom="{mode}"/>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <inertial pos="0.1 0.2 0.3" mass="1" diaginertia="0.01 0.02 0.03"/>
+      <geom type="sphere" size="0.1" pos="-0.2 0.4 0.1" mass="2"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+
+                self.assertAlmostEqual(builder.body_mass[0], expected_mass, places=6)
+                np.testing.assert_allclose(builder.body_com[0], expected_com, atol=1e-7)
+                np.testing.assert_allclose(
+                    np.array(builder.body_inertia[0]).reshape(3, 3),
+                    np.diag(expected_inertia),
+                    atol=1e-7,
+                )
+
+        mjcf_missing_inertial = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiafromgeom="false"/>
+  <worldbody>
+    <body name="missing_inertial">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="2"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        with self.assertRaisesRegex(ValueError, "requires an <inertial> element"):
+            newton.ModelBuilder().add_mjcf(mjcf_missing_inertial)
+
+        mjcf_fixed_missing_inertial = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiafromgeom="false"/>
+  <worldbody>
+    <body name="fixed_root">
+      <geom type="sphere" size="0.1"/>
+    </body>
+    <body name="moving_parent">
+      <joint type="hinge"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      <body name="fixed_child">
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_fixed_missing_inertial)
+        fixed_body_indices = [
+            index for index, label in enumerate(builder.body_label) if label.endswith(("fixed_root", "fixed_child"))
+        ]
+        self.assertEqual(len(fixed_body_indices), 2)
+        for body_index in fixed_body_indices:
+            self.assertEqual(builder.body_mass[body_index], 0.0)
+
+    def test_inertial_locks_body_against_frame_geom_mass(self):
+        """Regression: explicit <inertial> must lock body mass/COM against later frame geoms.
+
+        When a body has an explicit <inertial> element, MuJoCo ignores all
+        geom-based mass contributions.  In Newton's MJCF importer, child
+        <frame> elements with geoms are processed *after* <inertial>, so
+        without locking body_lock_inertia, those frame geoms shift body_com
+        away from the correct value.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="inertial_lock_test">
+    <worldbody>
+        <body name="test_body" pos="0 0 1">
+            <freejoint/>
+            <inertial pos="0.1 0.2 0.3" mass="5.0" diaginertia="0.01 0.02 0.03"/>
+            <geom type="sphere" size="0.05" pos="0 0 0"/>
+            <frame pos="0.5 0.5 0.5">
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </frame>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_visuals=True)
+        body_idx = next(i for i, label in enumerate(builder.body_label) if label.endswith("test_body"))
+        com = builder.body_com[body_idx]
+        np.testing.assert_allclose(
+            [float(com[0]), float(com[1]), float(com[2])],
+            [0.1, 0.2, 0.3],
+            atol=1e-6,
+            err_msg="body_com must match <inertial> pos, not be shifted by frame geoms",
+        )
+        self.assertAlmostEqual(builder.body_mass[body_idx], 5.0, places=5)
+
+    def test_inertial_locks_body_against_frame_geom_explicit_mass(self):
+        """Regression: explicit <inertial> must also block frame geoms with mass= attributes.
+
+        The explicit-mass code path in parse_shapes calls _update_body_mass
+        directly, so it must also check body_lock_inertia.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="inertial_lock_explicit_mass_test">
+    <worldbody>
+        <body name="test_body" pos="0 0 1">
+            <freejoint/>
+            <inertial pos="0.1 0.2 0.3" mass="5.0" diaginertia="0.01 0.02 0.03"/>
+            <geom type="sphere" size="0.05" pos="0 0 0"/>
+            <frame pos="0.5 0.5 0.5">
+                <geom type="box" size="0.1 0.1 0.1" mass="2.0"/>
+            </frame>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_visuals=True)
+        body_idx = next(i for i, label in enumerate(builder.body_label) if label.endswith("test_body"))
+        com = builder.body_com[body_idx]
+        np.testing.assert_allclose(
+            [float(com[0]), float(com[1]), float(com[2])],
+            [0.1, 0.2, 0.3],
+            atol=1e-6,
+            err_msg="body_com must match <inertial> pos, not be shifted by frame geoms with explicit mass",
+        )
+        self.assertAlmostEqual(builder.body_mass[body_idx], 5.0, places=5)
+
+    # ------------------------------------------------------------------
+    # Mesh fitting (type="box|sphere|capsule" mesh="...")
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_box_stl(path, hx=1.0, hy=0.5, hz=2.0, cx=0.0, cy=0.0, cz=0.0):
+        """Write a binary STL box with given half-extents centred at (cx, cy, cz)."""
+        # 12 triangles for an axis-aligned box
+        tris = []
+        for sign in (-1, 1):
+            for axis in range(3):
+                v = [None, None, None, None]
+                # Build a face perpendicular to *axis* at *sign* distance.
+                u, w = (axis + 1) % 3, (axis + 2) % 3
+                c = [cx, cy, cz]
+                h = [hx, hy, hz]
+                for i, (su, sw) in enumerate([(1, 1), (-1, 1), (-1, -1), (1, -1)]):
+                    v[i] = [c[0], c[1], c[2]]
+                    v[i][axis] = c[axis] + sign * h[axis]
+                    v[i][u] = c[u] + su * h[u]
+                    v[i][w] = c[w] + sw * h[w]
+                if sign > 0:
+                    tris.append((v[0], v[1], v[2]))
+                    tris.append((v[0], v[2], v[3]))
+                else:
+                    tris.append((v[0], v[2], v[1]))
+                    tris.append((v[0], v[3], v[2]))
+        with open(path, "wb") as f:
+            f.write(b"\0" * 80)
+            f.write(struct.pack("<I", len(tris)))
+            for tri in tris:
+                f.write(struct.pack("<fff", 0, 0, 0))
+                for v in tri:
+                    f.write(struct.pack("<fff", *v))
+                f.write(struct.pack("<H", 0))
+
+    def test_fit_box_to_mesh_aabb(self):
+        """type='box' mesh='...' with fitaabb='true' produces a box matching the mesh AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            # shape_scale stores (hx, hy, hz)
+            s = builder.shape_scale[0]
+            np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
+
+    def test_fit_sphere_to_mesh_aabb(self):
+        """type='sphere' mesh='...' with fitaabb='true' uses max half-extent as radius."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="sphere" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.SPHERE)
+            # Sphere radius = max(1.0, 0.5, 2.0) = 2.0
+            s = builder.shape_scale[0]
+            self.assertAlmostEqual(s[0], 2.0, places=4)
+
+    def test_fit_capsule_to_mesh_aabb(self):
+        """type='capsule' mesh='...' with fitaabb='true' fits capsule to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="capsule" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.CAPSULE)
+            s = builder.shape_scale[0]
+            # radius = max(1.0, 0.5) = 1.0, half_height = 2.0 - 1.0 = 1.0
+            self.assertAlmostEqual(s[0], 1.0, places=4)
+            self.assertAlmostEqual(s[1], 1.0, places=4)
+
+    def test_fit_box_to_mesh_inertia(self):
+        """type='box' mesh='...' with fitaabb='false' (default) uses equivalent inertia box."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            # Asymmetric box offset from the origin to exercise axis ordering
+            # and COM translation.
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0, cx=3.0, cy=0.0, cz=0.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            s = builder.shape_scale[0]
+            # Half-extents are sorted ascending: (0.5, 1.0, 2.0)
+            np.testing.assert_allclose([s[0], s[1], s[2]], [0.5, 1.0, 2.0], atol=0.05)
+            # Shape transform should include the COM offset (3, 0, 0)
+            t = builder.shape_transform[0]
+            self.assertAlmostEqual(t.p[0], 3.0, places=1)
+
+    def test_fit_box_to_mesh_inertia_rotated(self):
+        """Inertia-box fitting aligns the primitive to the principal axes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "rotated.stl")
+            # Write an axis-aligned box and then rotate its vertices 45 deg
+            # around Z so the principal axes are no longer axis-aligned.
+            hx, hy, hz = 2.0, 0.5, 1.0
+            angle = np.pi / 4.0
+            cos_a, sin_a = np.cos(angle), np.sin(angle)
+            tris = []
+            for sign in (-1, 1):
+                for axis in range(3):
+                    v = [None, None, None, None]
+                    u, w = (axis + 1) % 3, (axis + 2) % 3
+                    h = [hx, hy, hz]
+                    for i, (su, sw) in enumerate([(1, 1), (-1, 1), (-1, -1), (1, -1)]):
+                        p = [0.0, 0.0, 0.0]
+                        p[axis] = sign * h[axis]
+                        p[u] = su * h[u]
+                        p[w] = sw * h[w]
+                        # Rotate around Z.
+                        rx = cos_a * p[0] - sin_a * p[1]
+                        ry = sin_a * p[0] + cos_a * p[1]
+                        v[i] = [rx, ry, p[2]]
+                    if sign > 0:
+                        tris.append((v[0], v[1], v[2]))
+                        tris.append((v[0], v[2], v[3]))
+                    else:
+                        tris.append((v[0], v[2], v[1]))
+                        tris.append((v[0], v[3], v[2]))
+            with open(stl_path, "wb") as f:
+                f.write(b"\0" * 80)
+                f.write(struct.pack("<I", len(tris)))
+                for tri in tris:
+                    f.write(struct.pack("<fff", 0, 0, 0))
+                    for vert in tri:
+                        f.write(struct.pack("<fff", *vert))
+                    f.write(struct.pack("<H", 0))
+
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="rot" file="rotated.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="rot"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            s = builder.shape_scale[0]
+            # Sorted half-extents should match the original box dims.
+            np.testing.assert_allclose(sorted([s[0], s[1], s[2]]), [0.5, 1.0, 2.0], atol=0.05)
+            # Eigenvector signs are platform-dependent, so just verify the
+            # rotation is non-trivial.  Warp XYZW identity = [0, 0, 0, 1].
+            t = builder.shape_transform[0]
+            q = t.q
+            q_np = np.array([q[0], q[1], q[2], q[3]])
+            self.assertFalse(
+                np.allclose(np.abs(q_np), [0, 0, 0, 1], atol=0.1),
+                "Expected non-identity rotation for rotated mesh",
+            )
+
+    def test_fit_with_fitscale(self):
+        """fitscale attribute scales the fitted primitive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box" fitscale="2.0"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.BOX)
+            s = builder.shape_scale[0]
+            np.testing.assert_allclose([s[0], s[1], s[2]], [2.0, 1.0, 4.0], atol=1e-4)
+
+    def test_fit_cylinder_to_mesh_aabb(self):
+        """type='cylinder' mesh='...' with fitaabb='true' fits cylinder to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="cylinder" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.CYLINDER)
+            s = builder.shape_scale[0]
+            # radius = max(1.0, 0.5) = 1.0, half_height = 2.0 (no cap subtraction)
+            self.assertAlmostEqual(s[0], 1.0, places=4)
+            self.assertAlmostEqual(s[1], 2.0, places=4)
+
+    def test_fit_ellipsoid_to_mesh_aabb(self):
+        """type='ellipsoid' mesh='...' with fitaabb='true' fits ellipsoid to AABB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="ellipsoid" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.ELLIPSOID)
+            s = builder.shape_scale[0]
+            # Ellipsoid uses AABB half-extents directly: (1.0, 0.5, 2.0)
+            np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
+
+    def test_mesh_without_explicit_type_stays_mesh(self):
+        """A geom with mesh= but no type= should still be treated as a mesh shape."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=1.0, hz=1.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="box" file="box.stl"/></asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            self.assertEqual(builder.shape_type[0], GeoType.MESH)
 
 
 class TestImportMjcfSolverParams(unittest.TestCase):
@@ -2254,32 +3970,34 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder.add_mjcf(mjcf_content, up_axis="Z")
 
         self.assertEqual(builder.shape_count, 3)
-        self.assertAlmostEqual(builder.shape_thickness[0], 0.003, places=6)
-        self.assertAlmostEqual(builder.shape_thickness[1], 0.01, places=6)
+        self.assertAlmostEqual(builder.shape_margin[0], 0.003, places=6)
+        self.assertAlmostEqual(builder.shape_margin[1], 0.01, places=6)
         # geom3 has no margin, should use ShapeConfig default (0.0)
-        self.assertAlmostEqual(builder.shape_thickness[2], 0.0, places=8)
+        self.assertAlmostEqual(builder.shape_margin[2], 0.0, places=8)
 
         # Verify scale is applied to margin
         builder_scaled = newton.ModelBuilder()
         builder_scaled.add_mjcf(mjcf_content, up_axis="Z", scale=2.0)
-        self.assertAlmostEqual(builder_scaled.shape_thickness[0], 0.006, places=6)
-        self.assertAlmostEqual(builder_scaled.shape_thickness[1], 0.02, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_margin[0], 0.006, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_margin[1], 0.02, places=6)
 
     def test_mjcf_geom_solref_parsing(self):
-        """Test MJCF geom solref parsing for contact stiffness/damping.
+        """MJCF ``solref`` is captured into ``mujoco.solref`` + ``mujoco.solref_mode``.
 
-        MuJoCo solref format: [timeconst, dampratio]
-        - Standard mode (timeconst > 0): ke = 1/(tc^2 * dr^2), kd = 2/tc
-        - Direct mode (both negative): ke = -tc, kd = -dr
+        Issue #2009: the importer previously converted ``solref`` into
+        Newton's force-space ``shape_material_ke`` / ``shape_material_kd``
+        via the lossy ``solref_to_stiffness_damping`` formula, storing
+        acceleration-space values in fields documented as force space.
+        The raw ``solref`` is now preserved verbatim in the
+        MuJoCo-namespaced custom attribute and ``shape_material_ke`` /
+        ``shape_material_kd`` retain their builder defaults.
         """
         mjcf_content = """
         <mujoco>
             <worldbody>
                 <body name="test_body">
                     <geom name="geom_default" type="box" size="0.1 0.1 0.1"/>
-                    <!-- Custom solref [0.04, 1.0] -> ke=625, kd=50 -->
                     <geom name="geom_custom" type="sphere" size="0.1" solref="0.04 1.0"/>
-                    <!-- Direct mode solref [-1000, -50] -> ke=1000, kd=50 -->
                     <geom name="geom_direct" type="capsule" size="0.1 0.2" solref="-1000 -50"/>
                 </body>
             </worldbody>
@@ -2287,6 +4005,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         """
 
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content, up_axis="Z")
 
         self.assertEqual(builder.shape_count, 3)
@@ -2294,14 +4013,30 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         # No solref specified -> Newton defaults: ke=2500 (ShapeConfig.ke), kd=100 (ShapeConfig.kd)
         self.assertAlmostEqual(builder.shape_material_ke[0], 2500.0, places=1)
         self.assertAlmostEqual(builder.shape_material_kd[0], 100.0, places=1)
-
         # Custom solref [0.04, 1.0]: ke = 1/(0.04^2 * 1^2) = 625, kd = 2/0.04 = 50
         self.assertAlmostEqual(builder.shape_material_ke[1], 625.0, places=1)
         self.assertAlmostEqual(builder.shape_material_kd[1], 50.0, places=1)
-
         # Direct mode solref [-1000, -50]: ke = 1000, kd = 50
         self.assertAlmostEqual(builder.shape_material_ke[2], 1000.0, places=1)
         self.assertAlmostEqual(builder.shape_material_kd[2], 50.0, places=1)
+
+        # ``mjc:solref`` is *also* preserved verbatim in the per-shape
+        # ``mujoco.solref`` custom attribute. ``mujoco.solref_mode``
+        # distinguishes the unauthored default geom (MJCF_DEFAULT — value
+        # stays at the sentinel and is missing from the sparse values
+        # dict) from the two authored geoms (RAW). The MuJoCo solver
+        # uses ``mujoco.solref`` for ``SOLREF_MODE_RAW`` shapes,
+        # bypassing the legacy ``shape_material_ke`` round-trip.
+        solref_values = builder.custom_attributes["mujoco:solref"].values
+        solref_mode_values = builder.custom_attributes["mujoco:solref_mode"].values
+        self.assertNotIn(0, solref_values)
+        self.assertEqual(int(solref_mode_values[0]), SOLREF_MODE_MJCF_DEFAULT)
+        self.assertAlmostEqual(float(solref_values[1][0]), 0.04)
+        self.assertAlmostEqual(float(solref_values[1][1]), 1.0)
+        self.assertEqual(int(solref_mode_values[1]), SOLREF_MODE_RAW)
+        self.assertAlmostEqual(float(solref_values[2][0]), -1000.0, places=1)
+        self.assertAlmostEqual(float(solref_values[2][1]), -50.0, places=1)
+        self.assertEqual(int(solref_mode_values[2]), SOLREF_MODE_RAW)
 
     def test_mjcf_gravcomp(self):
         """Test parsing of gravcomp from MJCF"""
@@ -2373,14 +4108,13 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
-        self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
-        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
-        joint_damping = model.mujoco.dof_passive_damping.numpy()
+        mujoco_joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
+        joint_damping = model.joint_damping.numpy()
 
         prefix = "stiffness_damping_comprehensive_test/worldbody"
         expected_values = {
@@ -2393,10 +4127,83 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         for joint_name, expected in expected_values.items():
             joint_idx = joint_names.index(joint_name)
             dof_idx = joint_qd_start[joint_idx]
-            self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
+            self.assertAlmostEqual(mujoco_joint_stiffness[dof_idx], expected["stiffness"], places=4)
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+    def test_joint_damping_deprecated_mujoco_alias(self):
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="joint_damping_alias_test">
+    <worldbody>
+        <body name="body" pos="0 0 1">
+            <joint name="hinge" type="hinge" axis="0 0 1" damping="0.75"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[0]), 0.75, places=6)
+
+        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
+            deprecated_damping = model.mujoco.dof_passive_damping
+        self.assertIs(deprecated_damping, model.joint_damping)
+
+        updated_damping = np.array([1.25], dtype=np.float32)
+        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
+            model.mujoco.dof_passive_damping = updated_damping
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[0]), 1.25, places=6)
+
+    def test_joint_damping_deprecated_mujoco_alias_rejects_canonical_conflict(self):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        parent = builder.add_body()
+        child = builder.add_body()
+        builder.add_joint_revolute(
+            parent,
+            child,
+            damping=2.0,
+            custom_attributes={"mujoco:dof_passive_damping": 3.0},
+        )
+
+        with self.assertRaisesRegex(ValueError, "dof_passive_damping.*joint_damping"):
+            builder.finalize()
+
+    def test_joint_damping_deprecated_mujoco_alias_skips_copy_when_canonical_matches(self):
+        class JointDampingNoCopySentinel:
+            def __init__(self):
+                self.numpy_called = False
+                self.assign_called = False
+
+            def numpy(self):
+                self.numpy_called = True
+                raise AssertionError("joint_damping.numpy() should not be called for matching alias values")
+
+            def assign(self, _value):
+                self.assign_called = True
+                raise AssertionError("joint_damping.assign() should not be called for matching alias values")
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.joint_damping = [0.75, 0.0]
+        custom_attr = builder.custom_attributes["mujoco:dof_passive_damping"]
+        custom_attr.values = {0: np.float32(0.75), 1: np.float32(0.0)}
+
+        model = newton.Model()
+        sentinel = JointDampingNoCopySentinel()
+        model.joint_damping = sentinel
+
+        finalizer = builder._custom_attribute_model_finalizers["mujoco:dof_passive_damping"]
+        finalizer(builder, model, custom_attr)
+
+        self.assertFalse(sentinel.numpy_called)
+        self.assertFalse(sentinel.assign_called)
+        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
+            self.assertIs(model.mujoco.dof_passive_damping, sentinel)
 
     def test_jnt_actgravcomp_parsing(self):
         """Test parsing of actuatorgravcomp from MJCF"""
@@ -2563,6 +4370,32 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         self.assertEqual(model3.joint_count, 1)
         joint_type3 = model3.joint_type.numpy()[0]
         self.assertEqual(joint_type3, newton.JointType.FREE)
+
+    def test_geom_group_parsing(self):
+        """Test parsing of geom visualization groups from MJCF."""
+        mjcf_content = """<mujoco>
+    <default>
+        <default class="group3">
+            <geom group="3"/>
+        </default>
+    </default>
+    <worldbody>
+        <body name="body">
+            <freejoint/>
+            <geom type="sphere" size="0.1" class="group3"/>
+            <geom type="box" size="0.1 0.1 0.1" group="1"/>
+            <geom type="capsule" size="0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model.mujoco, "geom_group"))
+        np.testing.assert_array_equal(model.mujoco.geom_group.numpy(), [3, 1, 0])
 
     def test_geom_priority_parsing(self):
         """Test parsing of geom priority from MJCF"""
@@ -2871,8 +4704,8 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             actual = geom_solmix[shape_idx].tolist()
             self.assertAlmostEqual(actual, expected, places=4)
 
-    def test_geom_gap_parsing(self):
-        """Test that geom_gap attribute is parsed correctly from MJCF."""
+    def test_shape_gap_from_mjcf(self):
+        """Test that MJCF gap attribute is parsed into shape_gap."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
@@ -2896,22 +4729,97 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
-        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
-
-        geom_gap = model.mujoco.geom_gap.numpy()
+        shape_gap = model.shape_gap.numpy()
         self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
 
-        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
         expected_values = {
             0: 0.1,
-            1: 0.0,  # default
+            1: builder.rigid_gap,  # default gap when not specified in MJCF
             2: 0.2,
         }
 
         for shape_idx, expected in expected_values.items():
-            actual = geom_gap[shape_idx].tolist()
+            actual = float(shape_gap[shape_idx])
             self.assertAlmostEqual(actual, expected, places=4)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        geom_to_shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        geom_gap = solver.mjw_model.geom_gap.numpy()[0]
+        for geom_idx, shape_idx in enumerate(geom_to_shape):
+            if shape_idx >= 0:
+                self.assertAlmostEqual(float(geom_gap[geom_idx]), float(shape_gap[shape_idx]), places=4)
+
+    def test_margin_gap_combined_conversion(self):
+        """Test MuJoCo 3.9 identity import when both margin and gap are set.
+
+        MuJoCo 3.9 semantics: shape_margin = mj_margin, shape_gap = mj_gap.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom name="both" type="box" size="0.1 0.1 0.1" margin="0.5" gap="0.2"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom name="margin_only" type="sphere" size="0.05" margin="0.3"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom name="gap_only" type="capsule" size="0.05 0.1" gap="0.15"/>
+        </body>
+        <body name="body4">
+            <freejoint/>
+            <geom name="neither" type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+        self.assertEqual(model.shape_count, 4)
+
+        # geom "both": margin=0.5, gap=0.2 -> shape_margin=0.5, shape_gap=0.2
+        self.assertAlmostEqual(float(shape_margin[0]), 0.5, places=5)
+        self.assertAlmostEqual(float(shape_gap[0]), 0.2, places=5)
+
+        # geom "margin_only": margin=0.3, gap absent -> shape_margin=0.3, gap=default
+        self.assertAlmostEqual(float(shape_margin[1]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[1]), builder.rigid_gap, places=5)
+
+        # geom "gap_only": margin absent, gap=0.15 -> margin=default(0.0), gap=0.15
+        self.assertAlmostEqual(float(shape_margin[2]), 0.0, places=5)
+        self.assertAlmostEqual(float(shape_gap[2]), 0.15, places=5)
+
+        # geom "neither": both absent -> defaults
+        self.assertAlmostEqual(float(shape_margin[3]), 0.0, places=5)
+        self.assertAlmostEqual(float(shape_gap[3]), builder.rigid_gap, places=5)
+
+    def test_mjcf_legacy_margin_gap_subtracts(self):
+        """legacy_margin_gap=True restores pre-3.9 import behavior:
+        newton_margin = mj_margin - mj_gap."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom name="both" type="box" size="0.1 0.1 0.1" margin="0.5" gap="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, legacy_margin_gap=True)
+        model = builder.finalize()
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+        self.assertAlmostEqual(float(shape_margin[0]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[0]), 0.2, places=5)
 
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
@@ -2949,8 +4857,87 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         else:
             self.fail("Model should have mujoco.condim attribute")
 
+    def test_explicit_class_replaces_childclass(self):
+        """Use an explicit class without retaining sibling childclass defaults."""
+        mjcf = """
+<mujoco>
+    <default>
+        <default class="ambient">
+            <geom friction="0.7 0.1 0.01"/>
+        </default>
+        <default class="explicit">
+            <geom size="0.2"/>
+        </default>
+    </default>
+    <worldbody>
+        <body childclass="ambient">
+            <geom class="explicit"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        self.assertAlmostEqual(builder.shape_scale[0][0], 0.2)
+        self.assertAlmostEqual(builder.shape_material_mu[0], 1.0)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[0], 0.005)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[0], 0.0001)
+
 
 class TestImportMjcfActuatorsFrames(unittest.TestCase):
+    def test_multiple_actuator_sections(self):
+        """Import actuators from every top-level actuator section."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="link">
+            <joint name="joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <motor name="first" joint="joint"/>
+    </actuator>
+    <actuator>
+        <motor name="second" joint="joint"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(len(model.mujoco.actuator_trntype), 2)
+
+    def test_multiple_equality_sections(self):
+        """Import constraints from every top-level equality section."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="first">
+            <joint name="first_joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="second">
+            <joint name="second_joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <equality>
+        <joint name="first_equality" joint1="first_joint" joint2="second_joint"/>
+    </equality>
+    <equality>
+        <joint name="second_equality" joint1="second_joint"/>
+    </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -3060,14 +5047,14 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
         self.assertTrue(hasattr(model.mujoco, "eq_solref"), "Model should have eq_solref attribute")
 
         eq_solref = model.mujoco.eq_solref.numpy()
-        self.assertEqual(model.equality_constraint_count, 3, "Should have 3 equality constraints")
+        self.assertEqual(model.mujoco.equality_constraint_count, 3, "Should have 3 equality constraints")
 
         # Note: Newton parses equality constraints in type order: connect, then weld, then joint
         # So the order is: connect (default), weld (0.03, 0.8), weld (0.05, 1.2)
@@ -3081,6 +5068,165 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             actual = eq_solref[eq_idx].tolist()
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
+
+    def test_eq_solref_from_default(self):
+        """Regression test: <default><equality solref="..."/></default> attributes propagate.
+
+        Before the fix, equality constraints that didn't specify solref inline
+        fell back to MuJoCo's hardcoded [0.02, 1] instead of the class default.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <default>
+        <equality solref="0.005 1"/>
+    </default>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+    <equality>
+        <connect body1="body1" body2="body2" anchor="0 0 0"/>
+    </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        eq_solref = model.mujoco.eq_solref.numpy()[0].tolist()
+        self.assertAlmostEqual(eq_solref[0], 0.005, places=6)
+        self.assertAlmostEqual(eq_solref[1], 1.0, places=6)
+
+    def test_mjc_equality_conversion_roundtrips_to_mujoco(self):
+        """Converted MJC equalities preserve enough metadata to recreate MuJoCo equalities."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="eq_lossless">
+    <worldbody>
+        <body name="base">
+            <joint name="root" type="hinge" axis="0 0 1"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="1 0 0"/>
+                <geom type="sphere" size="0.05"/>
+                <body name="link2" pos="0 0 1">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.05"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <connect name="pin" body1="link1" body2="link2" anchor="0.1 0.2 0.3"
+                 solref="0.04 0.7" solimp="0.8 0.9 0.002 0.6 3"/>
+        <weld name="lock_to_world" body1="link2" relpose="0.2 0.3 0.4 0.9238795 0 0 0.3826834"
+              torquescale="2.5" active="false"
+              solref="0.05 1.2" solimp="0.7 0.8 0.003 0.4 2"/>
+        <joint name="couple" joint1="j2" joint2="j1" polycoef="0.5 1.5 0.1 0.05 0.02"
+               solref="0.03 0.8" solimp="0.6 0.7 0.004 0.5 1.5"/>
+    </equality>
+</mujoco>
+"""
+
+        legacy_builder = newton.ModelBuilder()
+        legacy_builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
+        legacy_model = legacy_builder.finalize()
+        legacy_solver = SolverMuJoCo(legacy_model)
+
+        converted_builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
+            converted_builder.add_mjcf(mjcf)
+        converted_model = converted_builder.finalize()
+        converted_solver = SolverMuJoCo(converted_model)
+
+        self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
+        self.assertEqual(converted_model.constraint_mimic_count, 1)
+        np.testing.assert_array_equal(
+            converted_model.mujoco.equality_constraint_type.numpy(),
+            np.array(
+                [
+                    int(newton.solvers.SolverMuJoCo.EqType.CONNECT),
+                    int(newton.solvers.SolverMuJoCo.EqType.WELD),
+                    int(newton.solvers.SolverMuJoCo.EqType.JOINT),
+                ]
+            ),
+        )
+        np.testing.assert_array_equal(
+            converted_model.mujoco.equality_constraint_target_kind.numpy(),
+            np.array(
+                [
+                    int(MjcEqualityTargetKind.JOINT),
+                    int(MjcEqualityTargetKind.JOINT),
+                    int(MjcEqualityTargetKind.MIMIC),
+                ]
+            ),
+        )
+        np.testing.assert_allclose(
+            converted_model.mujoco.equality_constraint_polycoef.numpy()[2],
+            np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
+        )
+
+        self.assertEqual(converted_solver.mj_model.neq, legacy_solver.mj_model.neq)
+        np.testing.assert_array_equal(converted_solver.mj_model.eq_type, legacy_solver.mj_model.eq_type)
+        np.testing.assert_array_equal(converted_solver.mj_model.eq_active0, legacy_solver.mj_model.eq_active0)
+        np.testing.assert_array_equal(converted_solver.mj_model.eq_obj1id, legacy_solver.mj_model.eq_obj1id)
+        np.testing.assert_array_equal(converted_solver.mj_model.eq_obj2id, legacy_solver.mj_model.eq_obj2id)
+        np.testing.assert_allclose(converted_solver.mj_model.eq_data, legacy_solver.mj_model.eq_data, atol=1e-6)
+        np.testing.assert_allclose(converted_solver.mj_model.eq_solref, legacy_solver.mj_model.eq_solref, atol=1e-6)
+        np.testing.assert_allclose(converted_solver.mj_model.eq_solimp, legacy_solver.mj_model.eq_solimp, atol=1e-6)
+
+    def test_parse_mjcf_registers_converted_equality_attributes(self):
+        """Direct parse_mjcf() calls register MuJoCo preservation attributes."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="base">
+            <joint name="root" type="hinge" axis="0 0 1"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="1 0 0"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <connect name="pin" body1="base" body2="link" anchor="0.1 0.2 0.3"/>
+        <weld name="lock" body1="link" active="false" torquescale="2.5"/>
+        <joint name="couple" joint1="j1" joint2="root" polycoef="0.5 1.5 0.1 0.05 0.02"/>
+    </equality>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
+            parse_mjcf(builder, mjcf)
+        model = builder.finalize()
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
+        self.assertEqual(model.constraint_mimic_count, 1)
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "equality_constraint_target_kind"))
+        self.assertTrue(hasattr(model.mujoco, "equality_constraint_target"))
+        np.testing.assert_array_equal(
+            model.mujoco.equality_constraint_target_kind.numpy(),
+            np.array(
+                [
+                    int(MjcEqualityTargetKind.JOINT),
+                    int(MjcEqualityTargetKind.JOINT),
+                    int(MjcEqualityTargetKind.MIMIC),
+                ]
+            ),
+        )
+        np.testing.assert_allclose(
+            model.mujoco.equality_constraint_polycoef.numpy()[2],
+            np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
+        )
 
     def test_parse_mujoco_options_disabled(self):
         """Test that solver options from <option> tag are not parsed when parse_mujoco_options=False."""
@@ -3224,8 +5370,8 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
 
     def test_actuator_mode_inference_from_actuator_type(self):
-        """Test that ActuatorMode is correctly inferred from MJCF actuator types."""
-        from newton._src.sim.joints import ActuatorMode  # noqa: PLC0415
+        """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
+        from newton._src.sim.enums import JointTargetMode  # noqa: PLC0415
 
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_actuator_modes">
@@ -3277,20 +5423,20 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             joint_idx = b.joint_label.index(joint_name)
             return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
 
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jm)], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jp)], int(ActuatorMode.POSITION))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jv)], int(ActuatorMode.VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jpv)], int(ActuatorMode.POSITION_VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jpa)], int(ActuatorMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jm)], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jp)], int(JointTargetMode.POSITION))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jv)], int(JointTargetMode.VELOCITY))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jpv)], int(JointTargetMode.POSITION_VELOCITY))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jpa)], int(JointTargetMode.NONE))
 
         builder2 = newton.ModelBuilder()
         builder2.add_mjcf(mjcf_content, ctrl_direct=True)
 
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jm)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jp)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jv)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jpv)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jpa)], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jm)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jp)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jv)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jpv)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jpa)], int(JointTargetMode.NONE))
 
     def test_frame_transform_composition_geoms(self):
         """Test that frame transforms are correctly composed with child geom positions.
@@ -4209,6 +6355,32 @@ class TestImportMjcfComposition(unittest.TestCase):
         model = builder.finalize()
         joint_articulation = model.joint_articulation.numpy()
         self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
+
+    def test_self_collision_filter_pairs_reference_only_colliding_shapes(self):
+        mjcf = """
+        <mujoco>
+          <worldbody>
+            <body name="b1">
+              <joint type="hinge" axis="0 0 1"/>
+              <geom type="sphere" size="0.1"/>
+              <geom type="sphere" size="0.1" contype="0" conaffinity="0"/>
+              <body name="b2">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.1"/>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, enable_self_collisions=False)
+
+        colliding = {i for i in range(builder.shape_count) if builder.shape_flags[i] & newton.ShapeFlags.COLLIDE_SHAPES}
+        self.assertEqual(len(colliding), 2)
+        filter_pairs = set(builder.shape_collision_filter_pairs)
+        self.assertIn(tuple(sorted(colliding)), filter_pairs)
+        for pair in filter_pairs:
+            self.assertLessEqual(set(pair), colliding)
 
     def test_exclude_tag(self):
         """Test that <exclude> tags properly filter collisions between specified body pairs."""
@@ -5556,7 +7728,7 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.785, places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.524, places=4)
         self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
-        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5.0, places=4)
+        self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 5.0, places=4)
 
     def test_dof_angle_conversion_slide_joint(self):
         """Test DOF attributes for slide joints are not converted regardless of angle setting."""
@@ -5586,7 +7758,7 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.5, places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.1, places=4)
         self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 100.0, places=4)
-        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 10.0, places=4)
 
     def test_dof_angle_conversion_degrees(self):
         """Test DOF attributes are converted from degrees when compiler.angle='degree' (default)."""
@@ -5616,9 +7788,10 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], np.deg2rad(45), places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], np.deg2rad(30), places=4)
 
-        # stiffness/damping: converted from Nm/deg to Nm/rad (10 Nm/deg -> 10 * 180/pi Nm/rad)
-        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10 * (180 / np.pi), places=2)
-        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5 * (180 / np.pi), places=2)
+        # stiffness/damping: MuJoCo stores these in Nm/rad and Nm*s/rad regardless of
+        # compiler.angle (velocity is always rad/s internally), so values pass through unchanged.
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 5.0, places=4)
 
 
 class TestMjcfMultipleWorldbody(unittest.TestCase):
@@ -5951,7 +8124,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         cls.model = cls.builder.finalize()
 
     def test_shape_defaults(self):
-        """SHAPE: condim, priority, solmix, gap, solimp."""
+        """SHAPE: condim, priority, solmix, solimp (custom attrs), gap (shape_gap)."""
         m = self.model.mujoco
         wb = "worldbody/b_default"
         idx = self.builder.shape_label.index
@@ -5960,14 +8133,14 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(m.condim.numpy()[g_def], 4)
         self.assertEqual(m.geom_priority.numpy()[g_def], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_def]), 2.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_def]), 0.01, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_def]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
 
         g_cls = idx(f"{wb}/b_class/g_class")
         self.assertEqual(m.condim.numpy()[g_cls], 6)
         self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_cls]), 0.01, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_cls]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_cls], [0.7, 0.85, 0.005, 0.3, 1.5], atol=1e-4)
 
         g_ovr = idx(f"{wb}/b_class/b_override/g_override")
@@ -5977,7 +8150,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(m.condim.numpy()[g_child], 6)
         self.assertEqual(m.geom_priority.numpy()[g_child], 99)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_child]), 0.05, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_child]), 0.05, places=5)
 
     def test_body_defaults(self):
         """BODY: gravcomp."""
@@ -6001,16 +8174,16 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         np.testing.assert_allclose(m.solimplimit.numpy()[j_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
         np.testing.assert_allclose(m.solreffriction.numpy()[j_def], [0.05, 2.0], atol=1e-4)
         np.testing.assert_allclose(m.solimpfriction.numpy()[j_def], [0.7, 0.85, 0.02, 0.3, 1.5], atol=1e-4)
-        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0 * self.RAD2DEG, places=2)
-        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_def]), 3.0 * self.RAD2DEG, places=2)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0, places=5)
+        self.assertAlmostEqual(float(self.model.joint_damping.numpy()[j_def]), 3.0, places=5)
         self.assertAlmostEqual(float(m.dof_springref.numpy()[j_def]), 45.0 * self.DEG2RAD, places=4)
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_def]), 30.0 * self.DEG2RAD, places=4)
         self.assertEqual(bool(m.jnt_actgravcomp.numpy()[j_def]), True)
 
         j_cls = idx(f"{wb}/b_class/j_class")
         self.assertAlmostEqual(float(m.limit_margin.numpy()[j_cls]), 10.0, places=5)
-        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0 * self.RAD2DEG, places=1)
-        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_cls]), 30.0 * self.RAD2DEG, places=1)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0, places=5)
+        self.assertAlmostEqual(float(self.model.joint_damping.numpy()[j_cls]), 30.0, places=5)
         self.assertAlmostEqual(float(m.dof_springref.numpy()[j_cls]), 90.0 * self.DEG2RAD, places=4)
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_cls]), 60.0 * self.DEG2RAD, places=4)
 
@@ -6143,7 +8316,6 @@ class TestActuatorShortcutTypeDefaults(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(cls.builder)
         cls.builder.add_mjcf(cls.MJCF, ctrl_direct=True)
         cls.model = cls.builder.finalize()
 
@@ -6185,6 +8357,129 @@ class TestActuatorShortcutTypeDefaults(unittest.TestCase):
         np.testing.assert_array_equal(compiled, [1, 1, 0, 1])
 
 
+class TestMjcfPositionDampratioParsing(unittest.TestCase):
+    """Verify MJCF position actuator dampratio encoding in biasprm[2]."""
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="base">
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="pos_dampratio" joint="j1" kp="100" dampratio="0.7"/>
+            <position name="pos_kv_wins" joint="j1" kp="50" kv="3.0" dampratio="0.9"/>
+        </actuator>
+    </mujoco>
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        cls.model = builder.finalize()
+
+    def test_dampratio_encoded_in_biasprm(self):
+        """dampratio should be stored as unresolved biasprm[2] > 0."""
+        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        self.assertAlmostEqual(float(biasprm[0, 2]), 0.7, places=6)
+
+    def test_kv_wins_over_dampratio(self):
+        """kv should override dampratio and set biasprm[2] negative."""
+        biasprm = self.model.mujoco.actuator_biasprm.numpy()
+        self.assertAlmostEqual(float(biasprm[1, 2]), -3.0, places=6)
+
+
+class TestActuatorDefaultKpKv(unittest.TestCase):
+    """Regression: position/velocity actuators must default kp=1/kv=1.
+
+    MuJoCo defaults kp=1 for position and kv=1 for velocity actuators.
+    Newton previously defaulted both to 0, producing zero biasprm and
+    effectively disabling position/velocity feedback when the MJCF (or
+    class defaults) omitted the kp/kv attribute.
+    """
+
+    def test_position_actuator_default_kp(self):
+        """Position actuator without explicit kp must use kp=1."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="b">
+            <joint name="j" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="act" joint="j"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        biasprm = model.mujoco.actuator_biasprm.numpy()[0]
+        gainprm = model.mujoco.actuator_gainprm.numpy()[0]
+        self.assertAlmostEqual(gainprm[0], 1.0, places=5, msg="default kp must be 1")
+        self.assertAlmostEqual(biasprm[1], -1.0, places=5, msg="default biasprm[1] must be -kp=-1")
+
+    def test_velocity_actuator_default_kv(self):
+        """Velocity actuator without explicit kv must use kv=1."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="b">
+            <joint name="j" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <velocity name="act" joint="j"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        biasprm = model.mujoco.actuator_biasprm.numpy()[0]
+        gainprm = model.mujoco.actuator_gainprm.numpy()[0]
+        self.assertAlmostEqual(gainprm[0], 1.0, places=5, msg="default kv must be 1")
+        self.assertAlmostEqual(biasprm[2], -1.0, places=5, msg="default biasprm[2] must be -kv=-1")
+
+    def test_position_actuator_class_without_kp(self):
+        """Position actuator using a class that omits kp must still default to kp=1."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <default>
+        <default class="no_kp">
+            <position ctrlrange="-1 1" forcerange="-5 5"/>
+        </default>
+    </default>
+    <worldbody>
+        <body name="b">
+            <joint name="j" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="act" joint="j" class="no_kp"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        biasprm = model.mujoco.actuator_biasprm.numpy()[0]
+        self.assertAlmostEqual(biasprm[1], -1.0, places=5, msg="class without kp must still default to -1")
+
+
 class TestMjcfIncludeOptionMerge(unittest.TestCase):
     """Tests for <option> attribute merging across multiple elements after include expansion."""
 
@@ -6212,7 +8507,6 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
                 f.write(main)
 
             builder = newton.ModelBuilder()
-            SolverMuJoCo.register_custom_attributes(builder)
             builder.add_mjcf(main_path)
 
             iters = builder.custom_attributes["mujoco:iterations"].values
@@ -6247,7 +8541,6 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
                 f.write(main)
 
             builder = newton.ModelBuilder()
-            SolverMuJoCo.register_custom_attributes(builder)
             builder.add_mjcf(main_path)
 
             iters = builder.custom_attributes["mujoco:iterations"].values
@@ -6282,7 +8575,6 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
                 f.write(main)
 
             builder = newton.ModelBuilder()
-            SolverMuJoCo.register_custom_attributes(builder)
             builder.add_mjcf(main_path)
 
             iters = builder.custom_attributes["mujoco:iterations"].values
@@ -6295,6 +8587,186 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
 
 class TestContypeConaffinityZero(unittest.TestCase):
     """Verify MJCF geoms with contype=conaffinity=0 get collision_group=0."""
+
+    def test_asymmetric_masks_compile_exact_newton_pairs(self):
+        """Compile asymmetric MuJoCo masks into the exact Newton pair matrix."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <geom name="floor" type="plane" size="1 1 0.1" contype="0" conaffinity="1"/>
+                <body name="sphere_a">
+                    <freejoint/>
+                    <geom name="sphere_a" type="sphere" size="0.1" contype="1" conaffinity="0"/>
+                </body>
+                <body name="sphere_b">
+                    <freejoint/>
+                    <geom name="sphere_b" type="sphere" size="0.1" contype="1" conaffinity="0"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        model = builder.finalize(device="cpu")
+
+        labels = {label.rsplit("/", 1)[-1]: shape for shape, label in enumerate(builder.shape_label)}
+        actual = set(map(tuple, model.shape_contact_pairs.numpy().tolist()))
+        expected = {
+            tuple(sorted((labels["floor"], labels["sphere_a"]))),
+            tuple(sorted((labels["floor"], labels["sphere_b"]))),
+        }
+        self.assertEqual(actual, expected)
+
+    def test_solver_forwards_preserved_masks(self):
+        """Forward effective imported masks instead of regenerating them from groups."""
+        mjcf = """<mujoco>
+            <default><geom contype="2" conaffinity="4"/></default>
+            <worldbody>
+                <body name="a">
+                    <freejoint/>
+                    <geom name="a" type="sphere" size="0.1"/>
+                </body>
+                <body name="b">
+                    <freejoint/>
+                    <geom name="b" type="sphere" size="0.1" contype="8" conaffinity="16"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        contype = builder.custom_attributes["mujoco:contype"]
+        conaffinity = builder.custom_attributes["mujoco:conaffinity"]
+        self.assertEqual([contype.values[index] for index in range(2)], [2, 8])
+        self.assertEqual([conaffinity.values[index] for index in range(2)], [4, 16])
+
+        # Preserved source masks are authoritative for native MuJoCo contacts.
+        builder.shape_collision_group[0] = 0
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
+        np.testing.assert_array_equal(solver.mj_model.geom_contype, [2, 8])
+        np.testing.assert_array_equal(solver.mj_model.geom_conaffinity, [4, 16])
+
+    def test_solver_combines_preserved_masks_with_partial_filter(self):
+        """Honor a Newton pair filter that narrows preserved imported masks."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <body name="a">
+                    <freejoint/>
+                    <geom name="a0" type="sphere" size="0.1"/>
+                    <geom name="a1" type="sphere" size="0.1"/>
+                </body>
+                <body name="b">
+                    <freejoint/>
+                    <geom name="b0" type="sphere" size="0.1"/>
+                    <geom name="b1" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        shapes = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.shape_label)}
+        builder.add_shape_collision_filter_pair(shapes["a0"], shapes["b0"])
+
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
+        shape_to_geom = {
+            int(shape): geom for geom, shape in enumerate(solver.mjc_geom_to_newton_shape.numpy()[0]) if shape >= 0
+        }
+
+        def masks_allow(shape_a, shape_b):
+            geom_a = shape_to_geom[shape_a]
+            geom_b = shape_to_geom[shape_b]
+            contype = solver.mj_model.geom_contype
+            conaffinity = solver.mj_model.geom_conaffinity
+            return bool(
+                (int(contype[geom_a]) & int(conaffinity[geom_b])) or (int(contype[geom_b]) & int(conaffinity[geom_a]))
+            )
+
+        for name_a in ("a0", "a1"):
+            for name_b in ("b0", "b1"):
+                expected = (name_a, name_b) != ("a0", "b0")
+                self.assertEqual(masks_allow(shapes[name_a], shapes[name_b]), expected)
+
+    def test_solver_combines_separate_import_mask_domains(self):
+        """Combine independent MJCF mask domains before exporting contacts."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <geom name="floor" type="plane" size="1 1 0.1" contype="0" conaffinity="1"/>
+                <body name="sphere_a">
+                    <freejoint/>
+                    <geom name="sphere_a" type="sphere" size="0.1" contype="1" conaffinity="0"/>
+                </body>
+                <body name="sphere_b">
+                    <freejoint/>
+                    <geom name="sphere_b" type="sphere" size="0.1" contype="1" conaffinity="0"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        first_import_shape_count = builder.shape_count
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        model = builder.finalize(device="cpu")
+        expected_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy().tolist()}
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        mapping = solver.mjc_geom_to_newton_shape.numpy()[0]
+        shape_body = model.shape_body.numpy()
+        contype = solver.mj_model.geom_contype
+        conaffinity = solver.mj_model.geom_conaffinity
+        actual_cross_import_pairs = set()
+        expected_cross_import_pairs = set()
+
+        for geom_a in range(solver.mj_model.ngeom - 1):
+            shape_a = int(mapping[geom_a])
+            for geom_b in range(geom_a + 1, solver.mj_model.ngeom):
+                shape_b = int(mapping[geom_b])
+                shapes_share_import = (shape_a < first_import_shape_count) == (shape_b < first_import_shape_count)
+                if shapes_share_import or shape_body[shape_a] == shape_body[shape_b]:
+                    continue
+                pair = tuple(sorted((shape_a, shape_b)))
+                if pair in expected_pairs:
+                    expected_cross_import_pairs.add(pair)
+                if (int(contype[geom_a]) & int(conaffinity[geom_b])) or (
+                    int(contype[geom_b]) & int(conaffinity[geom_a])
+                ):
+                    actual_cross_import_pairs.add(pair)
+
+        self.assertEqual(len(expected_cross_import_pairs), 8)
+        self.assertEqual(actual_cross_import_pairs, expected_cross_import_pairs)
+
+    def test_solver_combines_independently_parsed_builders(self):
+        """Keep MJCF mask domains distinct when merging builders."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <body name="body">
+                    <freejoint/>
+                    <geom name="shape" type="sphere" size="0.1" contype="0" conaffinity="1"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        source_a = newton.ModelBuilder()
+        source_a.add_mjcf(mjcf, parse_visuals=False)
+        source_b = newton.ModelBuilder()
+        source_b.add_mjcf(mjcf, parse_visuals=False)
+
+        builder = newton.ModelBuilder()
+        builder.add_builder(source_a, label_prefix="a")
+        builder.add_builder(source_b, label_prefix="b")
+        model = builder.finalize(device="cpu")
+
+        domains = model.mujoco.collision_mask_domain.numpy()
+        self.assertNotEqual(int(domains[0]), int(domains[1]))
+        np.testing.assert_array_equal(model.shape_contact_pairs.numpy(), [[0, 1]])
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        mapping = solver.mjc_geom_to_newton_shape.numpy()[0]
+        shape_to_geom = {int(shape): geom for geom, shape in enumerate(mapping)}
+        geom_a = shape_to_geom[0]
+        geom_b = shape_to_geom[1]
+        contype = solver.mj_model.geom_contype
+        conaffinity = solver.mj_model.geom_conaffinity
+        masks_allow_pair = (int(contype[geom_a]) & int(conaffinity[geom_b])) or (
+            int(contype[geom_b]) & int(conaffinity[geom_a])
+        )
+        self.assertTrue(masks_allow_pair)
 
     def test_collision_group_zero_for_zero_contype(self):
         """Collision-class geoms with contype=conaffinity=0 get collision_group=0."""
@@ -6367,7 +8839,6 @@ class TestContypeConaffinityZero(unittest.TestCase):
             </worldbody>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -6399,7 +8870,6 @@ class TestContypeConaffinityZero(unittest.TestCase):
             </worldbody>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -6434,7 +8904,6 @@ class TestContypeConaffinityZero(unittest.TestCase):
             </contact>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -6443,6 +8912,245 @@ class TestContypeConaffinityZero(unittest.TestCase):
         self.assertEqual(solver.mj_model.npair, 1, "Explicit pair should be in MuJoCo spec")
         solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         self.assertGreater(solver.mj_data.ncon, 0, "Explicit <pair> should generate contacts")
+
+    def test_explicit_pair_inherits_default_class(self):
+        """Apply global and named pair defaults before explicit pair overrides."""
+        mjcf = """
+<mujoco>
+    <default>
+        <pair friction="0.1 0.2 0.3 0.4 0.5" margin="0.1" condim="4" solref="0.03 0.8"/>
+        <default class="soft">
+            <pair friction="0.2 0.3 0.4 0.5 0.6" solimp="0.7 0.8 0.01 0.4 1.5"/>
+        </default>
+    </default>
+    <worldbody>
+        <geom name="a" type="sphere" size="0.1"/>
+        <geom name="b" type="sphere" size="0.1" pos="0 0 1"/>
+        <geom name="c" type="sphere" size="0.1" pos="0 0 2"/>
+        <geom name="d" type="sphere" size="0.1" pos="0 0 3"/>
+    </worldbody>
+    <contact>
+        <pair geom1="a" geom2="b"/>
+        <pair class="soft" geom1="a" geom2="c"/>
+        <pair
+            class="soft"
+            geom1="a"
+            geom2="d"
+            friction="0.9 0.8 0.7 0.6 0.5"
+            margin="0.4"
+            solref="0.05 1.2"
+        />
+    </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(
+            model.mujoco.pair_friction.numpy(),
+            [
+                [0.1, 0.2, 0.3, 0.4, 0.5],
+                [0.2, 0.3, 0.4, 0.5, 0.6],
+                [0.9, 0.8, 0.7, 0.6, 0.5],
+            ],
+        )
+        np.testing.assert_allclose(model.mujoco.pair_margin.numpy(), [0.1, 0.1, 0.4])
+        np.testing.assert_array_equal(model.mujoco.pair_condim.numpy(), [4, 4, 4])
+        np.testing.assert_allclose(
+            model.mujoco.pair_solref.numpy(),
+            [[0.03, 0.8], [0.03, 0.8], [0.05, 1.2]],
+        )
+        np.testing.assert_allclose(
+            model.mujoco.pair_solimp.numpy(),
+            [
+                [0.9, 0.95, 0.001, 0.5, 2.0],
+                [0.7, 0.8, 0.01, 0.4, 1.5],
+                [0.7, 0.8, 0.01, 0.4, 1.5],
+            ],
+        )
+
+    def test_explicit_pair_scales_inherited_distances(self):
+        """Scale contact pair distances inherited from a named default."""
+        mjcf = """
+<mujoco>
+    <default>
+        <default class="scaled_pair">
+            <pair geom1="a" geom2="b" margin="0.1" gap="0.02"/>
+        </default>
+    </default>
+    <worldbody>
+        <geom name="a" type="sphere" size="0.1"/>
+        <geom name="b" type="sphere" size="0.1" pos="0 0 1"/>
+    </worldbody>
+    <contact>
+        <pair class="scaled_pair"/>
+    </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, scale=10.0)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.mujoco.pair_margin.numpy(), [1.0])
+        np.testing.assert_allclose(model.mujoco.pair_gap.numpy(), [0.2])
+
+    def test_explicit_pair_retains_unclassified_geoms_without_visuals(self):
+        """Pair-referenced zero-mask geoms survive parse_visuals=False."""
+        mjcf = """<mujoco>
+            <default><geom contype="0" conaffinity="0"/></default>
+            <worldbody>
+                <geom name="floor_geom" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.05">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="ball_geom" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor_geom" geom2="ball_geom" condim="3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(builder.shape_count, 2)
+        self.assertEqual(builder.shape_collision_group, [0, 0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model)
+
+        self.assertEqual(solver.mj_model.npair, 1)
+        solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        self.assertGreater(solver.mj_data.ncon, 0)
+
+    def test_default_pair_retains_unclassified_geoms_without_visuals(self):
+        """Retain zero-mask geoms referenced only by inherited pair endpoints."""
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="endpoint_pair">
+                    <pair geom1="floor_geom" geom2="ball_geom"/>
+                </default>
+            </default>
+            <worldbody>
+                <geom name="floor_geom" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.05">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="ball_geom" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair class="endpoint_pair" condim="3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(builder.shape_count, 2)
+        self.assertEqual(builder.shape_collision_group, [0, 0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.npair, 1)
+
+    def test_explicit_pairs_across_contact_sections_without_visuals(self):
+        """Pairs and excludes are parsed from every top-level contact section."""
+        mjcf = """<mujoco>
+            <default><geom contype="0" conaffinity="0"/></default>
+            <worldbody>
+                <body name="body1" pos="0 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom1" type="sphere" size="0.1"/>
+                </body>
+                <body name="body2" pos="1 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom2" type="sphere" size="0.1"/>
+                </body>
+                <body name="body3" pos="2 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom3" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="geom1" geom2="geom2"/>
+            </contact>
+            <contact>
+                <pair geom1="geom2" geom2="geom3"/>
+                <exclude body1="body1" body2="body3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(builder.shape_count, 3)
+        self.assertEqual(builder.shape_collision_group, [0, 0, 0])
+
+        model = builder.finalize(device="cpu")
+        geom1_idx = builder.shape_label.index("worldbody/body1/geom1")
+        geom3_idx = builder.shape_label.index("worldbody/body3/geom3")
+        filter_pairs = set(model.shape_collision_filter_pairs)
+        self.assertTrue((geom1_idx, geom3_idx) in filter_pairs or (geom3_idx, geom1_idx) in filter_pairs)
+
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.npair, 2)
+
+    def test_explicit_pair_hierarchical_labels_without_visuals(self):
+        """Pair-referenced geoms match their hierarchical Newton labels."""
+        mjcf = """<mujoco model="hierarchical_pair">
+            <default><geom contype="0" conaffinity="0"/></default>
+            <worldbody>
+                <body name="body1">
+                    <geom name="geom1" type="sphere" size="0.1"/>
+                </body>
+                <body name="body2">
+                    <geom name="geom2" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair
+                    geom1="hierarchical_pair/worldbody/body1/geom1"
+                    geom2="hierarchical_pair/worldbody/body2/geom2"
+                />
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(
+            builder.shape_label,
+            [
+                "hierarchical_pair/worldbody/body1/geom1",
+                "hierarchical_pair/worldbody/body2/geom2",
+            ],
+        )
+        self.assertEqual(builder.shape_collision_group, [0, 0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.npair, 1)
+
+
+class TestMjcfPlaneInfinite(unittest.TestCase):
+    """Verify MJCF plane geoms are imported as infinite planes."""
+
+    def test_plane_scale_is_zero(self):
+        """MuJoCo plane size is visual-only; imported plane should have zero extents (infinite)."""
+        mjcf = """<mujoco><worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        scale = model.shape_scale.numpy()[0]
+        np.testing.assert_allclose(
+            scale, [0.0, 0.0, 0.0], atol=1e-7, err_msg="MJCF plane should be infinite (zero extents)"
+        )
 
 
 class TestJointFrictionloss(unittest.TestCase):
@@ -6459,7 +9167,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 5.0, atol=1e-6)
@@ -6475,7 +9182,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 2.5, atol=1e-6)
@@ -6491,7 +9197,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 0.0, atol=1e-6)
@@ -6507,7 +9212,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -6530,7 +9234,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </worldbody>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 3.3, atol=1e-5)
@@ -6599,6 +9302,272 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                 for v in tri:
                     f.write(struct.pack("<fff", *v))
                 f.write(struct.pack("<H", 0))  # attribute
+
+    def _create_png(self, path):
+        """Write a minimal 1x1 PNG image.
+
+        Args:
+            path: Filesystem path for the PNG output.
+        """
+        sig = b"\x89PNG\r\n\x1a\n"
+        ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data)
+        ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
+        raw = zlib.compress(b"\x00\xff\x00\x00")
+        idat_crc = zlib.crc32(b"IDAT" + raw)
+        idat = struct.pack(">I", len(raw)) + b"IDAT" + raw + struct.pack(">I", idat_crc)
+        iend_crc = zlib.crc32(b"IEND")
+        iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
+        with open(path, "wb") as f:
+            f.write(sig + ihdr + idat + iend)
+
+    def test_assetdir_resolves_meshes_and_textures(self):
+        """Load mesh, texture, and heightfield files through compiler assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            texture_path = os.path.join(assets_dir, "checker.png")
+            self._create_png(texture_path)
+            hfield_path = os.path.join(assets_dir, "terrain.bin")
+            with open(hfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <texture name="checker" type="2d" file="checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube" material="checker"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            root, _ = _load_and_expand_mjcf(model_path)
+            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(assets_dir, "cube.stl"))
+            self.assertEqual(root.find(".//texture").get("file"), texture_path)
+            self.assertEqual(root.find(".//hfield").get("file"), hfield_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path, parse_visuals=True)
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_assetdir_uses_custom_resolver_for_xml_string(self):
+        """Resolve a relative assetdir through a custom resolver without a base path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            with open(os.path.join(assets_dir, "terrain.bin"), "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            resolved_paths = []
+
+            def resolve(base_dir, file_path):
+                resolved_paths.append((base_dir, file_path))
+                return os.path.join(tmpdir, file_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf, path_resolver=resolve)
+
+            self.assertEqual(
+                resolved_paths,
+                [
+                    (None, os.path.join("assets", "cube.stl")),
+                    (None, os.path.join("assets", "terrain.bin")),
+                ],
+            )
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_absolute_heightfield_uses_custom_resolver_once(self):
+        """Remap an authored absolute heightfield path exactly once."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            heightfield_path = os.path.join(tmpdir, "terrain.bin")
+            with open(heightfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            authored_path = "/virtual/assets/terrain.bin"
+            mjcf = f"""\
+<mujoco>
+    <asset>
+        <hfield name="terrain" file="{authored_path}" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            resolved_paths = []
+
+            def resolve(base_dir, file_path):
+                resolved_paths.append((base_dir, file_path))
+                self.assertEqual(file_path, authored_path)
+                return heightfield_path
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf, path_resolver=resolve)
+
+            self.assertEqual(resolved_paths, [(None, authored_path)])
+            self.assertEqual(builder.shape_count, 1)
+
+    def test_assetdir_honors_strippath_for_all_file_assets(self):
+        """Strip authored directories before applying assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            mesh_path = os.path.join(assets_dir, "cube.stl")
+            texture_path = os.path.join(assets_dir, "checker.png")
+            heightfield_path = os.path.join(assets_dir, "terrain.bin")
+            self._create_cube_stl(mesh_path)
+            self._create_png(texture_path)
+            with open(heightfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets" strippath="true"/>
+    <asset>
+        <mesh name="cube" file="../vendor/cube.stl"/>
+        <texture name="checker" type="2d" file="../vendor/checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="../vendor/terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube" material="checker"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            root, _ = _load_and_expand_mjcf(model_path)
+            self.assertEqual(root.find(".//mesh").get("file"), mesh_path)
+            self.assertEqual(root.find(".//texture").get("file"), texture_path)
+            self.assertEqual(root.find(".//hfield").get("file"), heightfield_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path, parse_visuals=True)
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_assetdir_xml_string_preserves_default_resolver_fallback(self):
+        """Resolve XML-string assets relative to the working directory by default."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            with open(os.path.join(assets_dir, "terrain.bin"), "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_explicit_asset_directories_override_assetdir(self):
+        """Prefer meshdir and texturedir over their shared assetdir fallback."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cases = (
+                ('assetdir="common" meshdir="meshes"', "meshes", "common"),
+                ('assetdir="common" texturedir="textures"', "common", "textures"),
+            )
+            for index, (compiler_attrib, expected_meshdir, expected_texturedir) in enumerate(cases):
+                mjcf = f"""\
+<mujoco>
+    <compiler {compiler_attrib}/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <texture name="checker" type="2d" file="checker.png"/>
+    </asset>
+</mujoco>"""
+                model_path = os.path.join(tmpdir, f"model_{index}.xml")
+                with open(model_path, "w") as f:
+                    f.write(mjcf)
+
+                root, _ = _load_and_expand_mjcf(model_path)
+                with self.subTest(compiler_attrib=compiler_attrib):
+                    self.assertEqual(
+                        root.find(".//mesh").get("file"),
+                        os.path.join(tmpdir, expected_meshdir, "cube.stl"),
+                    )
+                    self.assertEqual(
+                        root.find(".//texture").get("file"),
+                        os.path.join(tmpdir, expected_texturedir, "checker.png"),
+                    )
+
+    def test_include_with_assetdir(self):
+        """Resolve an included file's assets relative to its own assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            models_dir = os.path.join(tmpdir, "models")
+            assets_dir = os.path.join(models_dir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+
+            included_content = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+    </asset>
+    <worldbody>
+        <body name="robot">
+            <geom type="mesh" mesh="cube"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(models_dir, "robot.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            main_content = """\
+<mujoco model="test">
+    <include file="models/robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(assets_dir, "cube.stl"))
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+            self.assertEqual(builder.shape_count, 1)
 
     def test_include_with_meshdir(self):
         """Test that meshdir in included file is used to resolve mesh paths."""
@@ -6717,27 +9686,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             # Create texture directory with a dummy PNG
             tex_dir = os.path.join(tmpdir, "textures")
             os.makedirs(tex_dir)
-            # Minimal 1x1 PNG
-
-            def _make_png(path):
-                """Write a minimal 1x1 PNG image.
-
-                Args:
-                    path: Filesystem path for the PNG output.
-                """
-                sig = b"\x89PNG\r\n\x1a\n"
-                ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
-                ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data)
-                ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
-                raw = zlib.compress(b"\x00\xff\x00\x00")
-                idat_crc = zlib.crc32(b"IDAT" + raw)
-                idat = struct.pack(">I", len(raw)) + b"IDAT" + raw + struct.pack(">I", idat_crc)
-                iend_crc = zlib.crc32(b"IEND")
-                iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
-                with open(path, "wb") as f:
-                    f.write(sig + ihdr + idat + iend)
-
-            _make_png(os.path.join(tex_dir, "checker.png"))
+            self._create_png(os.path.join(tex_dir, "checker.png"))
             self._create_cube_stl(os.path.join(tmpdir, "cube.stl"))
 
             included_content = """\
@@ -6906,3 +9855,643 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 2)
+
+
+class TestMjcfMultiRootArticulations(unittest.TestCase):
+    """Tests for issue #736: MJCF importer should create separate articulations per root body."""
+
+    def test_multi_root_bodies_separate_articulations(self):
+        """Multiple root bodies under worldbody should each get their own articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="multi_root">
+    <worldbody>
+        <body name="robot_a" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link_a" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+        <body name="robot_b" pos="2 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link_b" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False)
+        model = builder.finalize()
+
+        # Should have 2 articulations, one per root body
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # Each articulation has 2 joints (fixed base + hinge)
+        self.assertEqual(model.joint_count, 4)
+
+        # Joints from different root bodies should be in different articulations
+        joint_art = model.joint_articulation.numpy()
+        self.assertEqual(joint_art[0], joint_art[1])  # robot_a joints together
+        self.assertEqual(joint_art[2], joint_art[3])  # robot_b joints together
+        self.assertNotEqual(joint_art[0], joint_art[2])  # different articulations
+
+    def test_multi_root_bodies_with_free_joints(self):
+        """Root bodies with <freejoint> should each get their own articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="free_bodies">
+    <worldbody>
+        <body name="box_a" pos="0 0 1">
+            <freejoint name="free_a"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="box_b" pos="1 0 1">
+            <freejoint name="free_b"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="box_c" pos="2 0 1">
+            <freejoint name="free_c"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Should have 3 articulations
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 3)
+
+        # Each articulation has 1 free joint
+        self.assertEqual(model.joint_count, 3)
+
+        # Each joint in its own articulation
+        joint_art = model.joint_articulation.numpy()
+        self.assertEqual(len(set(joint_art)), 3)
+
+    def test_multi_root_articulation_labels(self):
+        """Multi-root articulations should get model_name/body_name labels."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <worldbody>
+        <body name="robot1" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="robot2" pos="1 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False)
+        model = builder.finalize()
+
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+        self.assertEqual(model.articulation_label[0], "scene/robot1")
+        self.assertEqual(model.articulation_label[1], "scene/robot2")
+
+    def test_multi_root_with_floating_option(self):
+        """floating=True with multiple roots: each gets own free-joint articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="floating_multi">
+    <worldbody>
+        <body name="obj_a" pos="0 0 1">
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="obj_b" pos="1 0 1">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=True)
+        model = builder.finalize()
+
+        # Should have 2 separate articulations
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # Each has 1 free joint
+        self.assertEqual(model.joint_count, 2)
+
+    def test_multi_root_with_parent_body_keeps_single_articulation(self):
+        """Hierarchical composition (parent_body != -1) should keep all joints in one articulation."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        attachment_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="attachment">
+    <worldbody>
+        <body name="part_a" pos="0 0 0">
+            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+        </body>
+        <body name="part_b" pos="0.5 0 0">
+            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        base_idx = builder.body_label.index("robot/worldbody/base")
+
+        # Attach multi-root MJCF to existing body
+        builder.add_mjcf(attachment_mjcf, parent_body=base_idx, floating=False)
+        model = builder.finalize()
+
+        # All joints should be in one articulation (hierarchical composition)
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 1)
+
+    def test_multi_root_with_ignore_classes(self):
+        """ignore_classes should correctly interact with multi-root articulation splitting."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <worldbody>
+        <body name="robot" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+        <body name="visual_marker" childclass="visual" pos="1 0 0">
+            <geom type="sphere" size="0.05" mass="0.1"/>
+        </body>
+        <body name="obstacle" pos="2 0 0">
+            <geom type="box" size="0.2 0.2 0.2" mass="2.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Ignore the "visual" class — only robot and obstacle should produce articulations
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False, ignore_classes=["visual"])
+        model = builder.finalize()
+
+        # visual_marker is ignored, so 2 articulations (robot + obstacle)
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # visual_marker body should not exist
+        self.assertNotIn("scene/worldbody/visual_marker", builder.body_label)
+        self.assertIn("scene/worldbody/robot", builder.body_label)
+        self.assertIn("scene/worldbody/obstacle", builder.body_label)
+
+
+class TestFromtoCapsuleOrientation(unittest.TestCase):
+    """Verify fromto capsules/cylinders get the correct position and orientation.
+
+    MuJoCo computes fromto orientation by aligning Z with (start - end) via
+    mjuu_z2quat. Position is the midpoint and half_height is half the length.
+    """
+
+    MJCF = """<mujoco>
+        <worldbody>
+            <body name="b" pos="0 0 1">
+                <freejoint/>
+                <geom type="sphere" size="0.1" mass="1"/>
+                <geom name="cap_diag" type="capsule" size="0.03"
+                      fromto="0.02 0 -0.4 -0.02 0 0.02"/>
+                <geom name="cap_down" type="capsule" size="0.03"
+                      fromto="0 0 0 0 0 -0.4"/>
+                <geom name="cap_up" type="capsule" size="0.03"
+                      fromto="0 0 -0.4 0 0 0"/>
+                <geom name="cyl_diag" type="cylinder" size="0.03"
+                      fromto="0.02 0 -0.4 -0.02 0 0.02"/>
+            </body>
+        </worldbody>
+    </mujoco>"""
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(cls.MJCF)
+        cls.model = builder.finalize()
+
+    def _get_shape_transform(self, substring):
+        for i in range(self.model.shape_count):
+            if substring in self.model.shape_label[i]:
+                tf = self.model.shape_transform.numpy()[i]
+                pos = wp.vec3(tf[0], tf[1], tf[2])
+                quat = wp.quat(tf[3], tf[4], tf[5], tf[6])
+                return pos, quat
+        self.fail(f"No shape matching '{substring}'")
+
+    def _assert_z_aligned(self, quat, expected_dir, msg=""):
+        """Assert the shape's Z axis (long axis) aligns with expected direction."""
+        rotated_z = wp.quat_rotate(quat, wp.vec3(0.0, 0.0, 1.0))
+        np.testing.assert_allclose([*rotated_z], [*expected_dir], atol=1e-4, err_msg=msg)
+
+    def test_diagonal_capsule(self):
+        """Align a diagonal capsule's Z axis from the second endpoint to the first."""
+        pos, quat = self._get_shape_transform("cap_diag")
+        np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
+        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        self._assert_z_aligned(quat, expected)
+
+    def test_downward_capsule(self):
+        """Align a downward capsule's Z axis with its endpoint order."""
+        pos, quat = self._get_shape_transform("cap_down")
+        np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
+        self._assert_z_aligned(quat, wp.vec3(0, 0, 1))
+
+    def test_upward_capsule(self):
+        """Align an upward capsule's Z axis with its endpoint order."""
+        pos, quat = self._get_shape_transform("cap_up")
+        np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
+        self._assert_z_aligned(quat, wp.vec3(0, 0, -1))
+
+    def test_diagonal_cylinder(self):
+        """Diagonal fromto cylinder: same code path as capsule, verify it works for cylinders too."""
+        pos, quat = self._get_shape_transform("cyl_diag")
+        np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
+        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        self._assert_z_aligned(quat, expected)
+
+
+class TestSiteFromto(unittest.TestCase):
+    """Verify sites honor MuJoCo's fromto transform and size semantics."""
+
+    def test_site_fromto_supported_types(self):
+        """Import fromto transforms and sizes for every supported site type."""
+        mjcf = """
+<mujoco model="site_fromto">
+    <worldbody>
+        <site name="capsule" type="capsule" size="0.1 0.2 0.3" fromto="0 0 0 0 0 2"/>
+        <site name="cylinder" type="cylinder" size="0.1 0.2 0.3" fromto="0 0 0 0 0 2"/>
+        <site name="ellipsoid" type="ellipsoid" size="0.1 0.2 0.3" fromto="0 0 0 0 0 2"/>
+        <site name="box" type="box" size="0.1 0.2 0.3" fromto="0 0 0 0 0 2"/>
+        <site name="box_diag" type="box" size="0.1" fromto="0.2 -0.1 0.3 -0.4 0.5 1.1"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sites=True)
+
+        for name in ("capsule", "cylinder", "ellipsoid", "box"):
+            shape_idx = builder.shape_label.index(f"site_fromto/worldbody/{name}")
+            shape_xform = builder.shape_transform[shape_idx]
+            np.testing.assert_allclose(shape_xform[:3], [0.0, 0.0, 1.0], atol=1.0e-6)
+
+            shape_quat = wp.quat(*shape_xform[3:])
+            rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))
+            np.testing.assert_allclose(rotated_z, [0.0, 0.0, -1.0], atol=1.0e-6)
+
+        np.testing.assert_allclose(
+            builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/capsule")],
+            [0.1, 1.0, 0.3],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/cylinder")],
+            [0.1, 1.0, 0.3],
+            atol=1.0e-6,
+        )
+        model = builder.finalize(device="cpu")
+        cylinder_idx = builder.shape_label.index("site_fromto/worldbody/cylinder")
+        np.testing.assert_allclose(
+            model.shape_collision_aabb_lower.numpy()[cylinder_idx],
+            [-0.1, -0.1, -1.0],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            model.shape_collision_aabb_upper.numpy()[cylinder_idx],
+            [0.1, 0.1, 1.0],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/ellipsoid")],
+            [0.1, 0.1, 1.0],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/box")],
+            [0.1, 0.1, 1.0],
+            atol=1.0e-6,
+        )
+        box_diag_idx = builder.shape_label.index("site_fromto/worldbody/box_diag")
+        box_diag_xform = builder.shape_transform[box_diag_idx]
+        np.testing.assert_allclose(box_diag_xform[:3], [-0.1, 0.2, 0.7], atol=1.0e-6)
+        box_diag_quat = wp.quat(*box_diag_xform[3:])
+        box_diag_z = wp.quat_rotate(box_diag_quat, wp.vec3(0.0, 0.0, 1.0))
+        np.testing.assert_allclose(
+            box_diag_z,
+            wp.normalize(wp.vec3(0.6, -0.6, -0.8)),
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            builder.shape_scale[box_diag_idx],
+            [0.1, 0.1, 0.58309519],
+            atol=1.0e-6,
+        )
+
+    def test_site_fromto_inherits_defaults_inside_frame(self):
+        """Compose an inherited fromto site with its containing frame."""
+        mjcf = """
+<mujoco model="site_fromto_frame">
+    <default>
+        <default class="segment">
+            <site type="cylinder" size="0.2" fromto="0 0 0 0 2 0"/>
+        </default>
+    </default>
+    <worldbody>
+        <frame pos="1 2 3">
+            <site name="site" class="segment"/>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sites=True)
+
+        shape_idx = builder.shape_label.index("site_fromto_frame/worldbody/site")
+        shape_xform = builder.shape_transform[shape_idx]
+        np.testing.assert_allclose(shape_xform[:3], [1.0, 3.0, 3.0], atol=1.0e-6)
+        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.2, 1.0, 0.005], atol=1.0e-6)
+
+        shape_quat = wp.quat(*shape_xform[3:])
+        rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))
+        np.testing.assert_allclose(rotated_z, [0.0, -1.0, 0.0], atol=1.0e-6)
+
+    def test_site_fromto_rejects_zero_length(self):
+        """Reject a site whose fromto endpoints coincide."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <site name="site" type="cylinder" size="0.1" fromto="1 2 3 1 2 3"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "zero-length fromto"):
+            builder.add_mjcf(mjcf, parse_sites=True)
+
+    def test_site_fromto_rejects_pos(self):
+        """Reject explicit or inherited positions combined with fromto."""
+        mjcf_cases = (
+            """
+<mujoco>
+    <worldbody>
+        <site name="site" type="cylinder" size="0.1" pos="1 2 3" fromto="0 0 0 0 0 1"/>
+    </worldbody>
+</mujoco>
+""",
+            """
+<mujoco>
+    <default>
+        <default class="positioned">
+            <site pos="1 2 3"/>
+        </default>
+    </default>
+    <worldbody>
+        <site name="site" class="positioned" type="cylinder" size="0.1" fromto="0 0 0 0 0 1"/>
+    </worldbody>
+</mujoco>
+""",
+        )
+        for mjcf in mjcf_cases:
+            with self.subTest(mjcf=mjcf):
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(ValueError, "both pos and fromto"):
+                    builder.add_mjcf(mjcf, parse_sites=True)
+
+
+class TestOverrideRootXform(unittest.TestCase):
+    """Tests for override_root_xform parameter in the MJCF importer."""
+
+    MJCF_WITH_ROOT_OFFSET = """
+<mujoco>
+  <worldbody>
+    <body name="base" pos="10 20 30">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+    def test_default_xform_is_relative(self):
+        """With override_root_xform=False (default), xform composes with root body position."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        # xform (5,0,0) composed with root body pos (10,20,30) => (15, 20, 30)
+        np.testing.assert_allclose(body_q[base_idx, :3], [15.0, 20.0, 30.0], atol=1e-4)
+
+    def test_override_places_at_xform(self):
+        """With override_root_xform=True, root body is placed at exactly xform."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        # Root body should be at (5, 0, 0) — root's original pos (10, 20, 30) is ignored
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+
+    def test_override_preserves_child_offset(self):
+        """With override_root_xform=True, child body keeps its relative offset from root."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        child_idx = builder.body_label.index("worldbody/base/child")
+        # Child is at pos="0 0 1" relative to root, root is at (5,0,0) => child at (5,0,1)
+        np.testing.assert_allclose(body_q[child_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    def test_override_with_rotation(self):
+        """override_root_xform=True with a non-identity rotation correctly rotates the articulation."""
+        angle = np.pi / 2
+        quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_WITH_ROOT_OFFSET,
+            xform=wp.transform((5.0, 0.0, 0.0), quat),
+            override_root_xform=True,
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("worldbody/base")
+        child_idx = builder.body_label.index("worldbody/base/child")
+
+        np.testing.assert_allclose(body_q[base_idx, :3], [5.0, 0.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(body_q[base_idx, 3:], [*quat], atol=1e-4)
+        # Child is at pos="0 0 1" relative to root; Z-rotation doesn't affect Z offset
+        np.testing.assert_allclose(body_q[child_idx, :3], [5.0, 0.0, 1.0], atol=1e-4)
+
+    def test_override_cloning(self):
+        """Cloning the same MJCF at different positions with override_root_xform=True."""
+        builder = newton.ModelBuilder()
+        positions = [(0.0, 0.0, 0.0), (3.0, 0.0, 0.0), (6.0, 0.0, 0.0)]
+        for pos in positions:
+            builder.add_mjcf(
+                self.MJCF_WITH_ROOT_OFFSET,
+                xform=wp.transform(pos, wp.quat_identity()),
+                override_root_xform=True,
+            )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_indices = [j for j, lbl in enumerate(builder.body_label) if lbl.endswith("/base")]
+        for i, expected_pos in enumerate(positions):
+            np.testing.assert_allclose(
+                body_q[base_indices[i], :3],
+                list(expected_pos),
+                atol=1e-4,
+                err_msg=f"Clone {i} not at expected position",
+            )
+
+    MJCF_TWO_ARTICULATIONS = """
+<mujoco>
+  <worldbody>
+    <body name="robotA" pos="10 0 0">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+    <body name="robotB" pos="0 20 0">
+      <geom type="sphere" size="0.1" mass="1"/>
+      <joint type="free"/>
+      <body name="child" pos="0 0 1">
+        <geom type="sphere" size="0.1" mass="0.5"/>
+        <joint type="hinge" axis="1 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+    def test_override_without_xform_raises(self):
+        """override_root_xform=True without providing xform should raise a ValueError."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.add_mjcf(self.MJCF_WITH_ROOT_OFFSET, override_root_xform=True)
+
+    def test_multiple_articulations_default_keeps_relative(self):
+        """Without override, multiple articulations keep their relative positions shifted by xform."""
+        shift = (1.0, 2.0, 3.0)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            self.MJCF_TWO_ARTICULATIONS,
+            xform=wp.transform(shift, wp.quat_identity()),
+        )
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        offsets = {"robotA": (10.0, 0.0, 0.0), "robotB": (0.0, 20.0, 0.0)}
+        for name, offset in offsets.items():
+            idx = builder.body_label.index(f"worldbody/{name}")
+            expected = [shift[k] + offset[k] for k in range(3)]
+            np.testing.assert_allclose(
+                body_q[idx, :3],
+                expected,
+                atol=1e-4,
+                err_msg=f"{name} should be at xform + original offset",
+            )
+
+
+class TestMjcfPrimitiveColors(unittest.TestCase):
+    def test_named_material_colors_primitives(self):
+        """Verify named MJCF materials color every primitive shape."""
+        mjcf = """
+<mujoco model="primitive_materials">
+    <asset>
+        <material name="dark" rgba="0.2 0.3 0.4 1"/>
+    </asset>
+    <worldbody>
+        <geom name="sphere" type="sphere" size="0.1" material="dark" contype="0" conaffinity="0"/>
+        <geom name="box" type="box" size="0.1 0.2 0.3" material="dark" contype="0" conaffinity="0"/>
+        <geom name="capsule" type="capsule" size="0.1 0.2" material="dark" contype="0" conaffinity="0"/>
+        <geom name="cylinder" type="cylinder" size="0.1 0.2" material="dark" contype="0" conaffinity="0"/>
+        <geom name="ellipsoid" type="ellipsoid" size="0.1 0.2 0.3" material="dark" contype="0" conaffinity="0"/>
+        <geom name="plane" type="plane" size="1 1 0.1" material="dark" contype="0" conaffinity="0"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        self.assertEqual(builder.shape_count, 6)
+        for color in builder.shape_color:
+            np.testing.assert_allclose(color, [0.2, 0.3, 0.4], atol=1.0e-6)
+
+    def test_inline_rgba_overrides_primitive_material(self):
+        """Verify inline MJCF RGBA overrides a primitive's named material."""
+        mjcf = """
+<mujoco model="primitive_rgba">
+    <asset>
+        <material name="red" rgba="1 0 0 1"/>
+    </asset>
+    <worldbody>
+        <geom
+            name="sphere"
+            type="sphere"
+            size="0.1"
+            material="red"
+            rgba="0 1 0 1"
+            contype="0"
+            conaffinity="0"
+        />
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        np.testing.assert_allclose(builder.shape_color[0], [0.0, 1.0, 0.0], atol=1.0e-6)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
