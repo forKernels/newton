@@ -22,6 +22,24 @@ cd /path/to/newton/agent-harness
 pip install -e .
 ```
 
+## Sessions and `--dry-run`
+
+The REPL keeps a `Session` - loaded scene, solver, frame counter, history. It
+is **in-memory by default and lost on exit**. To persist it:
+
+```bash
+cli-anything-newton --session run.json          # auto-saves after mutations
+cli-anything-newton --session run.json --dry-run  # never writes
+```
+
+Inside the REPL, `save [path]` writes on demand. With `--session` set, `solver`
+and `step` auto-save, and quitting with unsaved changes saves rather than
+discarding. Without it, quitting while modified prints a warning naming the
+flag instead of losing the work silently.
+
+`--dry-run` suppresses every write while leaving the rest of the behaviour
+identical, so a mutation can be rehearsed before it touches the file.
+
 ## Command Groups
 
 ### `scene` — Load and inspect scenes
