@@ -11,6 +11,51 @@ from __future__ import annotations
 
 import time
 
+# newton does NOT publish a constant default for rigid_contact_max: it
+# ESTIMATES one per model, and the estimate is small - 1000 for a single box on
+# a ground plane. Overflowing it does not raise. It prints
+#
+#     Warning: Contact buffer overflowed 17580 > 11000.
+#
+# and DROPS the excess contacts, so the symptom is a body passing through
+# something it should have hit, at a threshold that moves with scene size.
+#
+# The Blender add-on that consumes this engine sizes it explicitly, and a
+# harness that does not is measuring a world no consumer runs. That mistake
+# produced four confident, reproducible and entirely fictional findings in one
+# session: "the contact buffer overflows at 200 bricks", "more substeps is
+# worse", "HULL beats BOX", and "the metric is hopelessly noisy". All four
+# evaporated once the pipeline was sized the way the product sizes it.
+CONTACT_MAX_FLOOR = 16384
+CONTACT_MAX_PER_BODY = 512
+
+
+def contact_capacity(model):
+    """How many rigid contacts to make room for. Matches the add-on's rule."""
+    bodies = int(getattr(model, "body_count", 0) or 0)
+    return max(CONTACT_MAX_FLOOR, bodies * CONTACT_MAX_PER_BODY)
+
+
+def make_pipeline(newton, model, **kwargs):
+    """A CollisionPipeline sized for the scene, with the model told to match.
+
+    Both halves matter. The pipeline allocates the contact buffer; the model
+    field is what a solver reads when sizing its own. Use this instead of
+    newton.CollisionPipeline - see CONTACT_MAX_FLOOR.
+    """
+    capacity = contact_capacity(model)
+    try:
+        model.rigid_contact_max = capacity
+    except AttributeError:
+        pass
+    try:
+        return newton.CollisionPipeline(
+            model, rigid_contact_max=capacity, **kwargs)
+    except TypeError:
+        # An older build without the keyword still gets the model field.
+        return newton.CollisionPipeline(model, **kwargs)
+
+
 SOLVER_TYPES = {
     "vbd": "SolverVBD",
     "xpbd": "SolverXPBD",
@@ -84,10 +129,8 @@ def run_simulation(
     state_1 = model.state()
     control = model.control()
 
-    collision_pipeline = newton.CollisionPipeline(
-        model,
-        soft_contact_margin=collision_margin,
-    )
+    collision_pipeline = make_pipeline(
+        newton, model, soft_contact_margin=collision_margin)
     contacts = collision_pipeline.contacts()
 
     if viewer:

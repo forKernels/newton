@@ -451,6 +451,80 @@ def example_run(ctx, name, frames, viewer, output_path):
 # ══════════════════════════════════════════════════════════════════════
 
 
+@cli.command("signature")
+@click.argument("targets", nargs=-1)
+@click.option("--accepts", default=None,
+              help="Comma-separated keywords: would each one REACH this build, "
+                   "or be silently dropped?")
+@click.option("--list", "list_known", is_flag=True,
+              help="List the well-known targets and exit.")
+@pass_ctx
+def signature(ctx, targets, accepts, list_known):
+    """Accepted keyword names of any newton API, read off the real build.
+
+    Newton's keyword lists move between versions and an unaccepted keyword is
+    DROPPED rather than refused, so a wrong name produces a working call that
+    ignores the setting. `density=` moved onto ShapeConfig exactly this way and
+    every rigid body silently used the default for a whole release.
+
+    Never guess a keyword against this engine. Ask it.
+
+        newton-cli signature ModelBuilder.add_shape_mesh
+        newton-cli signature solvers.SolverMuJoCo --accepts njmax,nconmax
+    """
+    from cli_anything.newton.core import signature as sig
+
+    if list_known:
+        data = {"well_known": sig.WELL_KNOWN,
+                "note": "any dotted path under the newton module also works"}
+        if ctx.json_mode:
+            ctx.output(data)
+        else:
+            for name in sig.WELL_KNOWN:
+                click.echo(name)
+        return
+
+    if not targets:
+        targets = ("ModelBuilder.ShapeConfig",)
+
+    try:
+        import newton
+    except ImportError as exc:
+        msg = f"newton is not importable in this interpreter: {exc}"
+        if ctx.json_mode:
+            ctx.output({"error": msg})
+        else:
+            click.echo(msg, err=True)
+        sys.exit(1)
+
+    probe = [k for k in (accepts or "").split(",") if k.strip()]
+    results = sig.signatures(newton, list(targets), accepts=probe)
+
+    if ctx.json_mode:
+        ctx.output({"newton": getattr(newton, "__version__", "?"),
+                    "results": results})
+        return
+
+    for entry in results:
+        if not entry.get("resolved"):
+            click.echo(f"{entry['target']}: {entry['error']}", err=True)
+            continue
+        click.echo(f"{entry['target']}  [{entry['kind']}]")
+        if not entry["introspectable"]:
+            click.echo(f"  not introspectable: {entry['error']}")
+            continue
+        if entry["required"]:
+            # These cannot be rescued by dropping them - omitting one raises.
+            click.echo(f"  required: {', '.join(entry['required'])}")
+        click.echo(f"  keywords: {', '.join(entry['keywords']) or '(none)'}")
+        if entry["accepts_var_keyword"]:
+            click.echo("  takes **kwargs - nothing is dropped, and nothing "
+                       "is validated either")
+        if "accepts" in entry:
+            for name, ok in entry["accepts"].items():
+                click.echo(f"    {name}: {'ACCEPTED' if ok else 'WOULD BE DROPPED'}")
+
+
 @cli.command("info")
 @pass_ctx
 def info(ctx):
