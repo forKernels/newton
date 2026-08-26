@@ -84,7 +84,6 @@ def _ensure_newton():
     )
 
 
-
 def _axis(newton, name):
     """A string like "y" as newton's Axis enum.
 
@@ -105,7 +104,7 @@ def _axis(newton, name):
     stated.
     """
     axis = getattr(newton, "Axis", None)
-    if axis is None:                       # a build without the enum
+    if axis is None:  # a build without the enum
         return str(name).upper()
     from_any = getattr(axis, "from_any", None)
     if from_any is not None:

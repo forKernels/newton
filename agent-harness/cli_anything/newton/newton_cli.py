@@ -435,7 +435,7 @@ def example_run(ctx, name, frames, viewer, output_path):
     if not ctx.json_mode:
         click.echo(f"Running example: {name}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
 
     if ctx.json_mode:
         ctx.output(
@@ -542,11 +542,10 @@ def preview_latest(ctx, recipe, scene):
 
 @cli.command("signature")
 @click.argument("targets", nargs=-1)
-@click.option("--accepts", default=None,
-              help="Comma-separated keywords: would each one REACH this build, "
-                   "or be silently dropped?")
-@click.option("--list", "list_known", is_flag=True,
-              help="List the well-known targets and exit.")
+@click.option(
+    "--accepts", default=None, help="Comma-separated keywords: would each one REACH this build, or be silently dropped?"
+)
+@click.option("--list", "list_known", is_flag=True, help="List the well-known targets and exit.")
 @pass_ctx
 def signature(ctx, targets, accepts, list_known):
     """Accepted keyword names of any newton API, read off the real build.
@@ -564,8 +563,7 @@ def signature(ctx, targets, accepts, list_known):
     from cli_anything.newton.core import signature as sig
 
     if list_known:
-        data = {"well_known": sig.WELL_KNOWN,
-                "note": "any dotted path under the newton module also works"}
+        data = {"well_known": sig.WELL_KNOWN, "note": "any dotted path under the newton module also works"}
         if ctx.json_mode:
             ctx.output(data)
         else:
@@ -590,8 +588,7 @@ def signature(ctx, targets, accepts, list_known):
     results = sig.signatures(newton, list(targets), accepts=probe)
 
     if ctx.json_mode:
-        ctx.output({"newton": getattr(newton, "__version__", "?"),
-                    "results": results})
+        ctx.output({"newton": getattr(newton, "__version__", "?"), "results": results})
         return
 
     for entry in results:
@@ -607,8 +604,7 @@ def signature(ctx, targets, accepts, list_known):
             click.echo(f"  required: {', '.join(entry['required'])}")
         click.echo(f"  keywords: {', '.join(entry['keywords']) or '(none)'}")
         if entry["accepts_var_keyword"]:
-            click.echo("  takes **kwargs - nothing is dropped, and nothing "
-                       "is validated either")
+            click.echo("  takes **kwargs - nothing is dropped, and nothing is validated either")
         if "accepts" in entry:
             for name, ok in entry["accepts"].items():
                 click.echo(f"    {name}: {'ACCEPTED' if ok else 'WOULD BE DROPPED'}")
@@ -685,20 +681,20 @@ def repl(ctx):
             skin.error(f"could not save session to {session.session_path}: {exc}")
 
     commands = {
-        "help":      "Show this help",
-        "info":      "Show Newton backend info",
-        "load":      "Load a scene file (load <path>)",
-        "status":    "Show current session status",
-        "solver":    "Set solver (solver <type> [iterations])",
-        "solvers":   "List available solvers",
-        "step":      "Advance simulation by N frames (step [N])",
-        "run":       "Run full simulation (run <frames>)",
-        "export":    "Export state (export <path>)",
-        "mesh":      "Inspect mesh (mesh inspect <path>)",
-        "stitch":    "Stitch mesh (stitch <path> [threshold])",
-        "examples":  "List built-in examples",
-        "save":      "Save the session (save [path])",
-        "quit":      "Exit the REPL",
+        "help": "Show this help",
+        "info": "Show Newton backend info",
+        "load": "Load a scene file (load <path>)",
+        "status": "Show current session status",
+        "solver": "Set solver (solver <type> [iterations])",
+        "solvers": "List available solvers",
+        "step": "Advance simulation by N frames (step [N])",
+        "run": "Run full simulation (run <frames>)",
+        "export": "Export state (export <path>)",
+        "mesh": "Inspect mesh (mesh inspect <path>)",
+        "stitch": "Stitch mesh (stitch <path> [threshold])",
+        "examples": "List built-in examples",
+        "save": "Save the session (save [path])",
+        "quit": "Exit the REPL",
     }
 
     while True:

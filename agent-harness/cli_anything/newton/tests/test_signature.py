@@ -15,14 +15,11 @@ newton is stubbed here so these run anywhere; whether the answers match the
 real engine is what `cli-anything-newton signature` is for.
 """
 
-import inspect
 import types
 
-import pytest
-
 from cli_anything.newton.core import signature as sig
-from cli_anything.newton.core.simulation import (
-    CONTACT_MAX_FLOOR, contact_capacity, make_pipeline)
+from cli_anything.newton.core.scene import _axis
+from cli_anything.newton.core.simulation import CONTACT_MAX_FLOOR, contact_capacity, make_pipeline
 
 
 class FakeShapeConfig:
@@ -41,8 +38,7 @@ def takes_anything(model, **kwargs):
 def fake_newton():
     n = types.ModuleType("newton")
     n.__version__ = "1.6.0.dev0"
-    builder = types.SimpleNamespace(
-        add_shape_box=add_shape_box, ShapeConfig=FakeShapeConfig)
+    builder = types.SimpleNamespace(add_shape_box=add_shape_box, ShapeConfig=FakeShapeConfig)
     n.ModelBuilder = builder
     n.solvers = types.SimpleNamespace(SolverAnything=takes_anything)
     return n
@@ -52,9 +48,8 @@ def test_a_moved_keyword_is_reported_as_dropped():
     """The density bug, in one assertion. It is not on the shape call and is
     on ShapeConfig, and the answer has to distinguish them."""
     box, cfg = sig.signatures(
-        fake_newton(),
-        ["ModelBuilder.add_shape_box", "ModelBuilder.ShapeConfig"],
-        accepts=["density"])
+        fake_newton(), ["ModelBuilder.add_shape_box", "ModelBuilder.ShapeConfig"], accepts=["density"]
+    )
     assert box["would_be_dropped"] == ["density"]
     assert cfg["accepts"]["density"] is True
     assert cfg["would_be_dropped"] == []
@@ -63,7 +58,7 @@ def test_a_moved_keyword_is_reported_as_dropped():
 def test_a_class_is_described_by_its_init():
     """A caller of SolverVBD(model, ...) needs __init__'s parameters, not the
     class's, and the result must SAY which it gave."""
-    cfg, = sig.signatures(fake_newton(), ["ModelBuilder.ShapeConfig"])
+    (cfg,) = sig.signatures(fake_newton(), ["ModelBuilder.ShapeConfig"])
     assert cfg["kind"] == "class (__init__)"
     assert "self" not in cfg["keywords"]
     assert "density" in cfg["keywords"]
@@ -72,8 +67,7 @@ def test_a_class_is_described_by_its_init():
 def test_var_keyword_is_flagged_because_it_validates_nothing():
     """Anything taking **kwargs swallows every keyword, so nothing is dropped
     and nothing is checked either. A silent success there means less."""
-    e, = sig.signatures(fake_newton(), ["solvers.SolverAnything"],
-                        accepts=["nonsense"])
+    (e,) = sig.signatures(fake_newton(), ["solvers.SolverAnything"], accepts=["nonsense"])
     assert e["accepts_var_keyword"] is True
     assert e["accepts"]["nonsense"] is True
     assert e["would_be_dropped"] == []
@@ -82,18 +76,18 @@ def test_var_keyword_is_flagged_because_it_validates_nothing():
 def test_required_keywords_are_separated():
     """A required one cannot be rescued by dropping it - add_cloth_mesh(vel=)
     has no default, so omitting it raises rather than degrading."""
-    e, = sig.signatures(fake_newton(), ["ModelBuilder.add_shape_box"])
+    (e,) = sig.signatures(fake_newton(), ["ModelBuilder.add_shape_box"])
     assert e["required"] == ["body"]
 
 
 def test_an_unknown_path_reports_what_it_found():
-    e, = sig.signatures(fake_newton(), ["ModelBuilder.add_shape_nonsense"])
+    (e,) = sig.signatures(fake_newton(), ["ModelBuilder.add_shape_nonsense"])
     assert e["resolved"] is False
     assert "has no attribute" in e["error"]
 
 
 def test_a_wrong_path_suggests_near_names():
-    e, = sig.signatures(fake_newton(), ["ModelBuilder.add_shape_bo"])
+    (e,) = sig.signatures(fake_newton(), ["ModelBuilder.add_shape_bo"])
     assert "add_shape_box" in e["error"]
 
 
@@ -101,11 +95,12 @@ def test_the_well_known_list_is_only_a_shortcut():
     """Any dotted path resolves; the list exists so a caller need not know
     newton's module layout to ask a question."""
     assert "ModelBuilder.ShapeConfig" in sig.WELL_KNOWN
-    e, = sig.signatures(fake_newton(), ["solvers.SolverAnything"])
+    (e,) = sig.signatures(fake_newton(), ["solvers.SolverAnything"])
     assert e["resolved"] is True
 
 
 # --- contact buffer -------------------------------------------------------
+
 
 class FakeModel:
     def __init__(self, bodies):
@@ -144,6 +139,7 @@ def test_the_model_is_told_too_not_just_the_pipeline():
 def test_a_build_without_the_keyword_still_gets_the_model_field():
     """An older newton that does not take rigid_contact_max must not crash the
     harness - it degrades to setting the model field alone."""
+
     def CollisionPipeline(model, **kw):
         if "rigid_contact_max" in kw:
             raise TypeError("unexpected keyword")
@@ -158,6 +154,7 @@ def test_a_build_without_the_keyword_still_gets_the_model_field():
 
 # --- up_axis --------------------------------------------------------------
 
+
 def test_up_axis_becomes_an_enum_not_a_string():
     """`builder.up_axis` is an Axis and assigning "Y" to it does not raise.
 
@@ -169,7 +166,6 @@ def test_up_axis_becomes_an_enum_not_a_string():
     which points at the engine while the cause is in the harness. That is
     exactly why it sat unnoticed and read as API drift.
     """
-    from cli_anything.newton.core.scene import _axis
 
     class Axis:
         X, Y, Z = "AXIS_X", "AXIS_Y", "AXIS_Z"
@@ -186,7 +182,6 @@ def test_up_axis_becomes_an_enum_not_a_string():
 
 def test_up_axis_falls_back_without_from_any():
     """An older build may expose Axis without the from_any helper."""
-    from cli_anything.newton.core.scene import _axis
 
     class Axis:
         X, Y, Z = 0, 1, 2
@@ -200,6 +195,4 @@ def test_up_axis_falls_back_without_from_any():
 
 def test_up_axis_survives_a_build_with_no_axis_enum():
     """Degrade to the old string rather than crash on import."""
-    from cli_anything.newton.core.scene import _axis
-
     assert _axis(types.ModuleType("newton"), "y") == "Y"

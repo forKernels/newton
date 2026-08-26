@@ -63,13 +63,8 @@ def resolve(newton, path):
     for part in path.split("."):
         nxt = getattr(obj, part, None)
         if nxt is None:
-            available = sorted(
-                n for n in dir(obj)
-                if not n.startswith("_")
-                and n.lower().startswith(part[:3].lower())
-            )
-            hint = (f" Nearest names under {walked}: {', '.join(available[:12])}"
-                    if available else "")
+            available = sorted(n for n in dir(obj) if not n.startswith("_") and n.lower().startswith(part[:3].lower()))
+            hint = f" Nearest names under {walked}: {', '.join(available[:12])}" if available else ""
             raise AttributeError(f"{walked} has no attribute {part!r}.{hint}")
         obj = nxt
         walked = f"{walked}.{part}"
@@ -102,9 +97,13 @@ def describe(obj, path):
         signature = inspect.signature(target)
     except (TypeError, ValueError) as exc:
         return {
-            "target": path, "kind": kind, "introspectable": False,
+            "target": path,
+            "kind": kind,
+            "introspectable": False,
             "error": f"{type(exc).__name__}: {exc}",
-            "parameters": [], "keywords": [], "required": [],
+            "parameters": [],
+            "keywords": [],
+            "required": [],
             "accepts_var_keyword": False,
         }
 
@@ -117,16 +116,15 @@ def describe(obj, path):
             var_keyword = True
             continue
         has_default = param.default is not inspect.Parameter.empty
-        parameters.append({
-            "name": name,
-            "kind": param.kind.name,
-            "has_default": has_default,
-            "default": _safe(param.default) if has_default else None,
-            "annotation": (
-                None if param.annotation is inspect.Parameter.empty
-                else str(param.annotation)
-            ),
-        })
+        parameters.append(
+            {
+                "name": name,
+                "kind": param.kind.name,
+                "has_default": has_default,
+                "default": _safe(param.default) if has_default else None,
+                "annotation": (None if param.annotation is inspect.Parameter.empty else str(param.annotation)),
+            }
+        )
         if param.kind is not inspect.Parameter.VAR_POSITIONAL:
             keywords.append(name)
         if not has_default and param.kind is not inspect.Parameter.VAR_POSITIONAL:
@@ -165,20 +163,15 @@ def signatures(newton, targets, accepts=()):
         try:
             obj, walked = resolve(newton, path)
         except AttributeError as exc:
-            results.append({"target": path, "resolved": False,
-                            "error": str(exc)})
+            results.append({"target": path, "resolved": False, "error": str(exc)})
             continue
         entry = describe(obj, walked)
         entry["resolved"] = True
         if probe:
             accepted = set(entry["keywords"])
-            entry["accepts"] = {
-                name: (name in accepted or entry["accepts_var_keyword"])
-                for name in probe
-            }
+            entry["accepts"] = {name: (name in accepted or entry["accepts_var_keyword"]) for name in probe}
             entry["would_be_dropped"] = [
-                name for name in probe
-                if name not in accepted and not entry["accepts_var_keyword"]
+                name for name in probe if name not in accepted and not entry["accepts_var_keyword"]
             ]
         results.append(entry)
     return results

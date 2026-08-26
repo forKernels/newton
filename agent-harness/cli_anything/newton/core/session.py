@@ -14,6 +14,8 @@ import os
 import time
 from pathlib import Path
 
+from cli_anything.newton.core.simulation import make_pipeline
+
 
 def _locked_save_json(path, data, **dump_kwargs) -> None:
     """Atomically write JSON with exclusive file locking."""
@@ -122,13 +124,10 @@ class Session:
         if not self.is_loaded:
             raise RuntimeError("No scene loaded.")
 
+        # Sized, not default - see simulation.make_pipeline.
         import newton
 
-        # Sized, not default - see simulation.make_pipeline.
-        from cli_anything.newton.core.simulation import make_pipeline
-
-        self.collision_pipeline = make_pipeline(
-            newton, self.model, soft_contact_margin=margin)
+        self.collision_pipeline = make_pipeline(newton, self.model, soft_contact_margin=margin)
         self.contacts = self.collision_pipeline.contacts()
 
     def step(self, substeps: int = 8, dt: float = 1.0 / 60.0):
