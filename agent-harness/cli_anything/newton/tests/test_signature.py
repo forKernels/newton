@@ -154,3 +154,52 @@ def test_a_build_without_the_keyword_still_gets_the_model_field():
     model = FakeModel(4)
     assert make_pipeline(n, model) == "old-pipeline"
     assert model.rigid_contact_max == CONTACT_MAX_FLOOR
+
+
+# --- up_axis --------------------------------------------------------------
+
+def test_up_axis_becomes_an_enum_not_a_string():
+    """`builder.up_axis` is an Axis and assigning "Y" to it does not raise.
+
+    It fails much later and somewhere else - newton's own builder calls
+    self.up_axis.to_vector() and dies with
+
+        AttributeError: 'str' object has no attribute 'to_vector'
+
+    which points at the engine while the cause is in the harness. That is
+    exactly why it sat unnoticed and read as API drift.
+    """
+    from cli_anything.newton.core.scene import _axis
+
+    class Axis:
+        X, Y, Z = "AXIS_X", "AXIS_Y", "AXIS_Z"
+
+        @staticmethod
+        def from_any(name):
+            return getattr(Axis, name)
+
+    n = types.ModuleType("newton")
+    n.Axis = Axis
+    assert _axis(n, "y") == "AXIS_Y"
+    assert _axis(n, "Z") == "AXIS_Z"
+
+
+def test_up_axis_falls_back_without_from_any():
+    """An older build may expose Axis without the from_any helper."""
+    from cli_anything.newton.core.scene import _axis
+
+    class Axis:
+        X, Y, Z = 0, 1, 2
+
+    n = types.ModuleType("newton")
+    n.Axis = Axis
+    assert _axis(n, "y") == 1
+    # An unknown name must not explode; Z is the sane default here.
+    assert _axis(n, "w") == 2
+
+
+def test_up_axis_survives_a_build_with_no_axis_enum():
+    """Degrade to the old string rather than crash on import."""
+    from cli_anything.newton.core.scene import _axis
+
+    assert _axis(types.ModuleType("newton"), "y") == "Y"

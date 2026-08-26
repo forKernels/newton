@@ -84,6 +84,35 @@ def _ensure_newton():
     )
 
 
+
+def _axis(newton, name):
+    """A string like "y" as newton's Axis enum.
+
+    `builder.up_axis` is an Axis, not a string, and assigning the string "Y"
+    to it does not raise - it fails much later and somewhere else, inside
+    newton's own builder:
+
+        AttributeError: 'str' object has no attribute 'to_vector'
+
+    because the builder eventually calls `self.up_axis.to_vector()`. The
+    traceback points at newton and the cause is here, which is why this went
+    unnoticed: it looked like engine API drift.
+
+    Passed to the CONSTRUCTOR rather than assigned afterwards. up_axis
+    participates in how the builder derives gravity and shape orientation, so
+    setting it post-hoc is a second chance to be inconsistent - and the old
+    code only set it for "y" at all, leaving "z" to rely on a default it never
+    stated.
+    """
+    axis = getattr(newton, "Axis", None)
+    if axis is None:                       # a build without the enum
+        return str(name).upper()
+    from_any = getattr(axis, "from_any", None)
+    if from_any is not None:
+        return from_any(str(name).upper())
+    return getattr(axis, str(name).upper(), axis.Z)
+
+
 def load_scene(
     scene_path: str,
     device: str = "cuda:0",
@@ -117,11 +146,7 @@ def load_scene(
 
     newton = _ensure_newton()
 
-    builder = newton.ModelBuilder()
-
-    # Set up axis (gravity is a scalar magnitude, up_axis defines direction)
-    if up_axis.lower() == "y":
-        builder.up_axis = "Y"
+    builder = newton.ModelBuilder(up_axis=_axis(newton, up_axis))
 
     scene_info = {
         "path": str(path),
