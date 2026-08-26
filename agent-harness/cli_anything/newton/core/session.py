@@ -117,9 +117,12 @@ class Session:
             raise RuntimeError("No scene loaded.")
 
         import newton
-        self.collision_pipeline = newton.CollisionPipeline(
-            self.model, soft_contact_margin=margin,
-        )
+
+        # Sized, not default - see simulation.make_pipeline.
+        from cli_anything.newton.core.simulation import make_pipeline
+
+        self.collision_pipeline = make_pipeline(
+            newton, self.model, soft_contact_margin=margin)
         self.contacts = self.collision_pipeline.contacts()
 
     def step(self, substeps: int = 8, dt: float = 1.0 / 60.0):
