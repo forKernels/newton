@@ -14,6 +14,8 @@ import os
 import time
 from pathlib import Path
 
+from cli_anything.newton.core.simulation import make_pipeline
+
 
 def _locked_save_json(path, data, **dump_kwargs) -> None:
     """Atomically write JSON with exclusive file locking."""
@@ -26,6 +28,7 @@ def _locked_save_json(path, data, **dump_kwargs) -> None:
         _locked = False
         try:
             import fcntl
+
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             _locked = True
         except (ImportError, OSError):
@@ -38,6 +41,7 @@ def _locked_save_json(path, data, **dump_kwargs) -> None:
         finally:
             if _locked:
                 import fcntl
+
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
@@ -89,11 +93,13 @@ class Session:
         self.control = self.model.control()
         self.frame = 0
         self.modified = True
-        self.history.append({
-            "action": "load_scene",
-            "path": scene_path,
-            "time": time.time(),
-        })
+        self.history.append(
+            {
+                "action": "load_scene",
+                "path": scene_path,
+                "time": time.time(),
+            }
+        )
 
     def set_solver(self, solver_type: str = "xpbd", iterations: int = 10, **kwargs):
         """Create and set the solver for this session."""
@@ -104,25 +110,24 @@ class Session:
 
         self.solver = create_solver(self.model, solver_type, iterations, **kwargs)
         self.solver_type = solver_type
-        self.history.append({
-            "action": "set_solver",
-            "solver_type": solver_type,
-            "iterations": iterations,
-            "time": time.time(),
-        })
+        self.history.append(
+            {
+                "action": "set_solver",
+                "solver_type": solver_type,
+                "iterations": iterations,
+                "time": time.time(),
+            }
+        )
 
     def setup_collision(self, margin: float = 0.01):
         """Initialize the collision pipeline."""
         if not self.is_loaded:
             raise RuntimeError("No scene loaded.")
 
+        # Sized, not default - see simulation.make_pipeline.
         import newton
 
-        # Sized, not default - see simulation.make_pipeline.
-        from cli_anything.newton.core.simulation import make_pipeline
-
-        self.collision_pipeline = make_pipeline(
-            newton, self.model, soft_contact_margin=margin)
+        self.collision_pipeline = make_pipeline(newton, self.model, soft_contact_margin=margin)
         self.contacts = self.collision_pipeline.contacts()
 
     def step(self, substeps: int = 8, dt: float = 1.0 / 60.0):
@@ -152,12 +157,14 @@ class Session:
             "modified": self.modified,
         }
         if self.is_loaded:
-            status.update({
-                "body_count": self.model.body_count,
-                "joint_count": self.model.joint_count,
-                "shape_count": self.model.shape_count,
-                "particle_count": self.model.particle_count,
-            })
+            status.update(
+                {
+                    "body_count": self.model.body_count,
+                    "joint_count": self.model.joint_count,
+                    "shape_count": self.model.shape_count,
+                    "particle_count": self.model.particle_count,
+                }
+            )
         return status
 
     def save(self, path: str | None = None):

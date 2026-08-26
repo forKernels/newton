@@ -86,8 +86,8 @@ def stitch_mesh(
         raise FileNotFoundError(f"Mesh file not found: {path}")
 
     try:
-        import trimesh
         import numpy as np
+        import trimesh
     except ImportError:
         raise RuntimeError("trimesh and numpy are required: pip install trimesh numpy")
 
@@ -178,8 +178,8 @@ def check_connectivity(mesh_path: str) -> dict:
         raise FileNotFoundError(f"Mesh file not found: {path}")
 
     try:
-        import trimesh
         import numpy as np
+        import trimesh
     except ImportError:
         raise RuntimeError("trimesh and numpy are required: pip install trimesh numpy")
 

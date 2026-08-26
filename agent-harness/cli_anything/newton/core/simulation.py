@@ -49,8 +49,7 @@ def make_pipeline(newton, model, **kwargs):
     except AttributeError:
         pass
     try:
-        return newton.CollisionPipeline(
-            model, rigid_contact_max=capacity, **kwargs)
+        return newton.CollisionPipeline(model, rigid_contact_max=capacity, **kwargs)
     except TypeError:
         # An older build without the keyword still gets the model field.
         return newton.CollisionPipeline(model, **kwargs)
@@ -122,15 +121,14 @@ def run_simulation(
     Returns:
         Dict with simulation results: timing, final state stats, etc.
     """
+
     import newton
-    import numpy as np
 
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
 
-    collision_pipeline = make_pipeline(
-        newton, model, soft_contact_margin=collision_margin)
+    collision_pipeline = make_pipeline(newton, model, soft_contact_margin=collision_margin)
     contacts = collision_pipeline.contacts()
 
     if viewer:
@@ -210,6 +208,5 @@ def list_solvers() -> list[dict]:
     }
 
     return [
-        {"name": name, "class": cls, "description": descriptions.get(name, "")}
-        for name, cls in SOLVER_TYPES.items()
+        {"name": name, "class": cls, "description": descriptions.get(name, "")} for name, cls in SOLVER_TYPES.items()
     ]
