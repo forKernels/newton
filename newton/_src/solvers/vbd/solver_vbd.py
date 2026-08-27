@@ -3306,12 +3306,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.particle_displacements.zero_()
 
         self.trimesh_collision_detector.refit(current_state.particle_q)
-        self.trimesh_collision_detector.vertex_triangle_collision_detection_with_resize(
+        self.trimesh_collision_detector.vertex_triangle_collision_detection(
             self.particle_self_contact_margin,
             min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
             min_distance_filtering_ref_pos=self.particle_q_rest,
         )
-        self.trimesh_collision_detector.edge_edge_collision_detection_with_resize(
+        self.trimesh_collision_detector.edge_edge_collision_detection(
             self.particle_self_contact_margin,
             min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
             min_distance_filtering_ref_pos=self.particle_q_rest,

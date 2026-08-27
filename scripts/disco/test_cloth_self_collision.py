@@ -211,6 +211,7 @@ def main():
             builder.color()
 
         model = finalize_cloth_model(builder, solver_type=args.solver)
+        model.set_gravity((0.0, 0.0, -9.81))
 
         # WORKAROUND: Known Newton bug — some particles get zero/tiny mass
         # and behave as pinned/kinematic. Two independent checks in VBD:
@@ -306,7 +307,10 @@ def main():
 
         if viewer:
             print("\n  Simulation complete. Press Enter in the terminal to close the viewer...")
-            input()
+            try:
+                input()
+            except EOFError:
+                pass
             viewer.close()
 
         pq = state_0.particle_q.numpy()
