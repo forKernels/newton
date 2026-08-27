@@ -448,6 +448,88 @@ def example_run(ctx, name, frames, viewer, output_path):
                 click.echo(result.stderr, err=True)
 
 
+# ═════════════════════════════════════════════════════════════════════
+#  preview — publish bundles of a real simulation (PRODUCER)
+# ═════════════════════════════════════════════════════════════════════
+
+
+@cli.group()
+def preview():
+    """Publish preview bundles. Inspect them with `cli-hub previews`.
+
+    Producer and consumer are separate roles on purpose: this half talks to the
+    real backend and writes bundles; `cli-hub previews inspect|html|watch|open`
+    reads them and never renders.
+    """
+
+
+@preview.command("recipes")
+@pass_ctx
+def preview_recipes(ctx):
+    """What each recipe produces, and what it costs."""
+    from cli_anything.newton.core.preview import list_recipes
+    rs = list_recipes()
+    ctx.output({"recipes": rs})
+    if not ctx.json_mode:
+        for r in rs:
+            click.echo(f"{r['name']:>8}  {r['frames']:>4} frames  "
+                       f"usd={str(r['usd']):<5}  {r['description']}")
+
+
+@preview.command("capture")
+@click.argument("scene", type=click.Path(exists=True), required=False)
+@click.option("--procedural", "scene_type",
+              type=click.Choice(["ground", "cloth_grid", "pendulum"]),
+              help="build a scene instead of loading one")
+@click.option("--recipe", default="quick", help="quick | usd | settle")
+@click.option("--solver", "solver_type", default="xpbd",
+              help="mujoco is unavailable in this checkout: MuJoCo Warp 3.9.1 "
+                   "removed ls_parallel and SolverMuJoCo still calls it")
+@click.option("--force", is_flag=True, help="re-render even on a cache hit")
+@pass_ctx
+def preview_capture(ctx, scene, scene_type, recipe, solver_type, force):
+    """Run the real solver and publish an immutable bundle."""
+    from cli_anything.newton.core.preview import capture
+    if getattr(ctx, "dry_run", False):
+        ctx.output({"dry_run": True, "recipe": recipe,
+                    "would_capture": scene or f"procedural:{scene_type}"})
+        if not ctx.json_mode:
+            click.echo(f"dry-run: would capture {scene or scene_type} [{recipe}]")
+        return
+    try:
+        m = capture(scene_path=scene, scene_type=scene_type, recipe=recipe,
+                    solver_type=solver_type, device=ctx.device, force=force)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    ctx.output(m)
+    if not ctx.json_mode:
+        click.echo(f"{m.get('status','ok')}  {m['bundle_id']}"
+                   f"{'  (reused)' if m.get('reused') else ''}")
+        click.echo(f"  {m['_bundle_dir']}")
+        for a in m.get("artifacts", []):
+            click.echo(f"  {a['role']:>7}  {a['label']}")
+        for w in m.get("warnings") or []:
+            click.echo(f"  ! {w}")
+        click.echo(f"\n  inspect it:  cli-hub previews inspect {m['_bundle_dir']}")
+
+
+@preview.command("latest")
+@click.option("--recipe", default=None)
+@click.option("--scene", type=click.Path(), default=None)
+@pass_ctx
+def preview_latest(ctx, recipe, scene):
+    """The newest existing bundle. Never renders."""
+    from cli_anything.newton.core.preview import latest
+    m = latest(recipe=recipe, scene_path=scene)
+    ctx.output(m if m else {"found": False})
+    if not ctx.json_mode:
+        if not m:
+            click.echo("no bundle yet - run `preview capture`")
+        else:
+            click.echo(f"{m['bundle_id']}  {m.get('recipe')}  {m['_bundle_dir']}")
+            click.echo(f"  inspect it:  cli-hub previews inspect {m['_bundle_dir']}")
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  info — System and backend info
 # ══════════════════════════════════════════════════════════════════════
