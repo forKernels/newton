@@ -7,6 +7,15 @@ name: Push - AWS GPU
 
 on:
   push:
+    # This branch never runs GPU tests. The job below is already gated on
+    # `github.repository == 'newton-physics/newton'`, so on this fork it has
+    # only ever SKIPPED - no runner, no AWS GPU, no cost - but it still posted
+    # a run entry on every push. Ignoring the branch stops the entry as well.
+    #
+    # Deliberately NOT a repository-wide disable: this is a shared fork and
+    # other branches keep whatever behaviour they had.
+    branches-ignore:
+      - "Zhaocorp/cloth-dataset-pickup"
     paths-ignore:
       - "docs/**"
       - "**.md"
