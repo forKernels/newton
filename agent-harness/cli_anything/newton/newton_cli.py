@@ -26,6 +26,8 @@ class _Ctx:
 
     def __init__(self):
         self.json_mode = False
+        self.session_path = None
+        self.dry_run = False
 
     def output(self, data: dict):
         """Print data as JSON (if --json) or skip (human output handled inline)."""
@@ -44,8 +46,13 @@ pass_ctx = click.make_pass_decorator(_Ctx, ensure=True)
 @click.group(invoke_without_command=True)
 @click.option("--json", "json_mode", is_flag=True, help="Machine-readable JSON output.")
 @click.option("--device", default="cuda:0", help="Warp device (cuda:0, cpu, etc.).")
+@click.option("--session", "session_path", default=None, type=click.Path(),
+              help="Persist the REPL session to this JSON file. Without it the "
+                   "session is in-memory only and is lost on exit.")
+@click.option("--dry-run", is_flag=True,
+              help="Never write the session file, even when --session is set.")
 @click.pass_context
-def cli(ctx, json_mode, device):
+def cli(ctx, json_mode, device, session_path, dry_run):
     """Newton Physics Engine — CLI Harness.
 
     Headless, agent-driven interface to Newton's GPU-accelerated physics
@@ -54,6 +61,8 @@ def cli(ctx, json_mode, device):
     obj = _Ctx()
     obj.json_mode = json_mode
     obj.device = device
+    obj.session_path = session_path
+    obj.dry_run = dry_run
     ctx.ensure_object(dict)
     ctx.obj = obj
 
@@ -446,6 +455,86 @@ def example_run(ctx, name, frames, viewer, output_path):
                 click.echo(result.stderr, err=True)
 
 
+# ═════════════════════════════════════════════════════════════════════
+#  preview — publish bundles of a real simulation (PRODUCER)
+# ═════════════════════════════════════════════════════════════════════
+
+
+@cli.group()
+def preview():
+    """Publish preview bundles. Inspect them with `cli-hub previews`.
+
+    Producer and consumer are separate roles on purpose: this half talks to the
+    real backend and writes bundles; `cli-hub previews inspect|html|watch|open`
+    reads them and never renders.
+    """
+
+
+@preview.command("recipes")
+@pass_ctx
+def preview_recipes(ctx):
+    """What each recipe produces, and what it costs."""
+    from cli_anything.newton.core.preview import list_recipes
+    rs = list_recipes()
+    ctx.output({"recipes": rs})
+    if not ctx.json_mode:
+        for r in rs:
+            click.echo(f"{r['name']:>8}  {r['frames']:>4} frames  "
+                       f"usd={str(r['usd']):<5}  {r['description']}")
+
+
+@preview.command("capture")
+@click.argument("scene", type=click.Path(exists=True), required=False)
+@click.option("--procedural", "scene_type",
+              type=click.Choice(["ground", "cloth_grid", "pendulum"]),
+              help="build a scene instead of loading one")
+@click.option("--recipe", default="quick", help="quick | usd | settle")
+@click.option("--solver", "solver_type", default="mujoco")
+@click.option("--force", is_flag=True, help="re-render even on a cache hit")
+@pass_ctx
+def preview_capture(ctx, scene, scene_type, recipe, solver_type, force):
+    """Run the real solver and publish an immutable bundle."""
+    from cli_anything.newton.core.preview import capture
+    if getattr(ctx, "dry_run", False):
+        ctx.output({"dry_run": True, "recipe": recipe,
+                    "would_capture": scene or f"procedural:{scene_type}"})
+        if not ctx.json_mode:
+            click.echo(f"dry-run: would capture {scene or scene_type} [{recipe}]")
+        return
+    try:
+        m = capture(scene_path=scene, scene_type=scene_type, recipe=recipe,
+                    solver_type=solver_type, device=ctx.device, force=force)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    ctx.output(m)
+    if not ctx.json_mode:
+        click.echo(f"{m.get('status','ok')}  {m['bundle_id']}"
+                   f"{'  (reused)' if m.get('reused') else ''}")
+        click.echo(f"  {m['_bundle_dir']}")
+        for a in m.get("artifacts", []):
+            click.echo(f"  {a['role']:>7}  {a['label']}")
+        for w in m.get("warnings") or []:
+            click.echo(f"  ! {w}")
+        click.echo(f"\n  inspect it:  cli-hub previews inspect {m['_bundle_dir']}")
+
+
+@preview.command("latest")
+@click.option("--recipe", default=None)
+@click.option("--scene", type=click.Path(), default=None)
+@pass_ctx
+def preview_latest(ctx, recipe, scene):
+    """The newest existing bundle. Never renders."""
+    from cli_anything.newton.core.preview import latest
+    m = latest(recipe=recipe, scene_path=scene)
+    ctx.output(m if m else {"found": False})
+    if not ctx.json_mode:
+        if not m:
+            click.echo("no bundle yet - run `preview capture`")
+        else:
+            click.echo(f"{m['bundle_id']}  {m.get('recipe')}  {m['_bundle_dir']}")
+            click.echo(f"  inspect it:  cli-hub previews inspect {m['_bundle_dir']}")
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  info — System and backend info
 # ══════════════════════════════════════════════════════════════════════
@@ -570,23 +659,46 @@ def repl(ctx):
     skin = ReplSkin("newton", version="1.0.0")
     skin.print_banner()
 
-    session = Session()
+    session = Session(obj.session_path)
     pt_session = skin.create_prompt_session()
 
+    def autosave(what):
+        """Persist after a mutation, unless suppressed.
+
+        Session tracked `modified` and DISPLAYED it from the first commit, but
+        `Session(session_path)` was only ever constructed with no path, the
+        REPL had no save command, and there was no --session flag - so the
+        whole persistence path, file locking included, was unreachable. A user
+        could load a scene, step a hundred frames, watch the prompt say
+        modified, quit, and lose all of it silently. `modified` was a promise
+        the harness had no way to keep.
+        """
+        if obj.dry_run:
+            skin.status("dry-run", f"{what} not saved")
+            return
+        if not session.session_path:
+            return
+        try:
+            session.save()
+            skin.status("saved", session.session_path)
+        except Exception as exc:      # a failed save must be LOUD
+            skin.error(f"could not save session to {session.session_path}: {exc}")
+
     commands = {
-        "help": "Show this help",
-        "info": "Show Newton backend info",
-        "load": "Load a scene file (load <path>)",
-        "status": "Show current session status",
-        "solver": "Set solver (solver <type> [iterations])",
-        "solvers": "List available solvers",
-        "step": "Advance simulation by N frames (step [N])",
-        "run": "Run full simulation (run <frames>)",
-        "export": "Export state (export <path>)",
-        "mesh": "Inspect mesh (mesh inspect <path>)",
-        "stitch": "Stitch mesh (stitch <path> [threshold])",
-        "examples": "List built-in examples",
-        "quit": "Exit the REPL",
+        "help":      "Show this help",
+        "info":      "Show Newton backend info",
+        "load":      "Load a scene file (load <path>)",
+        "status":    "Show current session status",
+        "solver":    "Set solver (solver <type> [iterations])",
+        "solvers":   "List available solvers",
+        "step":      "Advance simulation by N frames (step [N])",
+        "run":       "Run full simulation (run <frames>)",
+        "export":    "Export state (export <path>)",
+        "mesh":      "Inspect mesh (mesh inspect <path>)",
+        "stitch":    "Stitch mesh (stitch <path> [threshold])",
+        "examples":  "List built-in examples",
+        "save":      "Save the session (save [path])",
+        "quit":      "Exit the REPL",
     }
 
     while True:
@@ -608,7 +720,24 @@ def repl(ctx):
 
         try:
             if cmd in ("quit", "exit", "q"):
+                if session.modified and not session.session_path:
+                    skin.error("unsaved changes and no --session path: this "
+                               "session is being discarded. Re-run with "
+                               "--session <file>, or use `save <path>`.")
+                elif session.modified:
+                    autosave("session")
                 break
+
+            elif cmd == "save":
+                target = args[0] if args else None
+                if obj.dry_run:
+                    skin.status("dry-run", "not saved")
+                    continue
+                try:
+                    skin.success(f"Saved: {session.save(target)}")
+                except ValueError:
+                    skin.error("No save path. Use `save <path>` or start the "
+                               "REPL with --session <file>.")
 
             elif cmd == "help":
                 skin.help(commands)
@@ -649,6 +778,7 @@ def repl(ctx):
                 iters = int(args[1]) if len(args) > 1 else 10
                 session.set_solver(solver_type, iters)
                 skin.success(f"Solver set: {solver_type} (iterations={iters})")
+                autosave("solver")
 
             elif cmd == "solvers":
                 from cli_anything.newton.core.simulation import list_solvers
@@ -661,6 +791,7 @@ def repl(ctx):
                 for i in range(n):
                     session.step()
                 skin.success(f"Advanced {n} frame(s). Now at frame {session.frame}")
+                autosave("step")
 
             elif cmd == "run":
                 if not args:

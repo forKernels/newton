@@ -22,6 +22,68 @@ cd /path/to/newton/agent-harness
 pip install -e .
 ```
 
+## Sessions and `--dry-run`
+
+The REPL keeps a `Session` - loaded scene, solver, frame counter, history. It
+is **in-memory by default and lost on exit**. To persist it:
+
+```bash
+cli-anything-newton --session run.json          # auto-saves after mutations
+cli-anything-newton --session run.json --dry-run  # never writes
+```
+
+Inside the REPL, `save [path]` writes on demand. With `--session` set, `solver`
+and `step` auto-save, and quitting with unsaved changes saves rather than
+discarding. Without it, quitting while modified prints a warning naming the
+flag instead of losing the work silently.
+
+`--dry-run` suppresses every write while leaving the rest of the behaviour
+identical, so a mutation can be rehearsed before it touches the file.
+
+## Preview: publish with this, inspect with `cli-hub`
+
+Producer and consumer are separate roles. This harness PUBLISHES bundles;
+`cli-hub previews` reads them and never renders.
+
+```bash
+cli-anything-newton preview recipes --json
+cli-anything-newton preview capture scene.usda --recipe usd --json
+cli-anything-newton preview capture --procedural pendulum --recipe quick --json
+cli-anything-newton preview latest --recipe usd --json
+
+cli-hub previews inspect /path/to/bundle          # the consumer half
+```
+
+Recipes, and what they cost:
+
+| recipe | frames | USD | for |
+|---|---|---|---|
+| `quick` | 30 | no | does this scene simulate at all |
+| `usd` | 60 | yes | the ordinary look |
+| `settle` | 180 | yes | piles - stacking failures do not show in 60 |
+
+**Everything in a bundle comes out of the real solver.** A recipe runs the same
+`run_simulation` loop `sim run` uses, with one of Newton's own viewers attached,
+and writes what the viewer writes. Nothing is plotted, reconstructed, or
+approximated. ViewerUSD and ViewerFile work headless; ViewerGL needs a display
+and is therefore not a preview path on a build machine.
+
+Artifact roles: `hero` is the time-sampled USD, `gallery` is the state and model
+summary. A recipe that promised USD and produced none publishes `status:
+partial` with a warning rather than `ok`, so a consumer never trusts a hero
+artifact that is not there.
+
+Bundles are immutable and content-addressed by a source fingerprint: a scene
+FILE by its bytes, so editing it invalidates the cache; a procedural scene by
+the parameters that generate it, since those are its source. Re-capturing an
+unchanged source returns the existing bundle marked `reused` rather than
+burning a GPU minute to produce the same bytes. `--force` overrides.
+
+`preview latest` is READ-ONLY and never renders. `--dry-run` suppresses all
+writes.
+
+The preview default solver is `mujoco`.
+
 ## Command Groups
 
 ### `scene` — Load and inspect scenes

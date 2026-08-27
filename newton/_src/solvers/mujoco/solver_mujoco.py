@@ -130,6 +130,33 @@ else:
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
+
+def _plain_scalars(params: dict) -> dict:
+    """Coerce numpy scalars to Python numbers for MjSpec.
+
+    MuJoCo 3.11 type-checks the keyword arguments of `add_joint` and rejects a
+    `numpy.float32` with "stiffness should be a numeric scalar or list." Every
+    one of these values is read out of a numpy array, so every one of them is a
+    numpy scalar - which made the check fire on the first joint with a spring
+    and took 56 tests with it.
+
+    Coerced at the CALL SITE rather than at the twenty-odd assignments that
+    build the dict: a new parameter added later is covered automatically, where
+    a fix applied per-assignment would silently miss it.
+    """
+    out = {}
+    for k, v in params.items():
+        if isinstance(v, np.generic):
+            out[k] = v.item()
+        elif isinstance(v, np.ndarray):
+            out[k] = v.tolist()
+        elif isinstance(v, tuple):
+            out[k] = tuple(x.item() if isinstance(x, np.generic) else x for x in v)
+        else:
+            out[k] = v
+    return out
+
+
 _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
     "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
     "Use Model.joint_damping instead."
@@ -3028,6 +3055,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             t.name = tendon_name
 
             # Set tendon properties (shared between fixed and spatial)
+            # stiffness and damping became VEC3 in MuJoCo 3.11 - a nonlinear
+            # spring profile whose first coefficient is the linear one.
+            # Measured: setting [k, 0, 0] and [k, k, k] both compile to
+            # tendon_stiffness == [k], so element 0 alone reproduces the scalar
+            # behaviour these lines had before. frictionloss stayed scalar, so
+            # it is left as it was rather than changed for symmetry.
             if tendon_stiffness_np is not None:
                 t.stiffness[0] = tendon_stiffness_np[i]
             if tendon_damping_np is not None:
@@ -6585,7 +6618,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         name=axname,
                         type=mujoco.mjtJoint.mjJNT_SLIDE,
                         axis=axis,
-                        **joint_params,
+                        **_plain_scalars(joint_params),
                     )
                     mjc_joint_names.append(axname)
                     # Map this DOF to the current MuJoCo joint index
@@ -6697,7 +6730,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         name=axname,
                         type=mujoco.mjtJoint.mjJNT_HINGE,
                         axis=axis,
-                        **joint_params,
+                        **_plain_scalars(joint_params),
                     )
                     mjc_joint_names.append(axname)
                     # Map this DOF to the current MuJoCo joint index
