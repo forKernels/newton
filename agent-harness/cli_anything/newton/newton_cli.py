@@ -482,9 +482,7 @@ def preview_recipes(ctx):
               type=click.Choice(["ground", "cloth_grid", "pendulum"]),
               help="build a scene instead of loading one")
 @click.option("--recipe", default="quick", help="quick | usd | settle")
-@click.option("--solver", "solver_type", default="xpbd",
-              help="mujoco is unavailable in this checkout: MuJoCo Warp 3.9.1 "
-                   "removed ls_parallel and SolverMuJoCo still calls it")
+@click.option("--solver", "solver_type", default="mujoco")
 @click.option("--force", is_flag=True, help="re-render even on a cache hit")
 @pass_ctx
 def preview_capture(ctx, scene, scene_type, recipe, solver_type, force):

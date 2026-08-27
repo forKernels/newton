@@ -93,7 +93,7 @@ def _source_fingerprint(scene_path: Optional[str], scene_type: Optional[str],
 
 
 def capture(scene_path: Optional[str] = None, scene_type: Optional[str] = None,
-            recipe: str = "quick", solver_type: str = "xpbd",
+            recipe: str = "quick", solver_type: str = "mujoco",
             device: str = "cuda:0", root_dir: Optional[str] = None,
             force: bool = False) -> Dict[str, Any]:
     """Run the real solver and publish one immutable bundle."""

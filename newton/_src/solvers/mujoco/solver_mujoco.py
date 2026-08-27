@@ -92,6 +92,32 @@ AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
 
+
+def _plain_scalars(params: dict) -> dict:
+    """Coerce numpy scalars to Python numbers for MjSpec.
+
+    MuJoCo 3.11 type-checks the keyword arguments of `add_joint` and rejects a
+    `numpy.float32` with "stiffness should be a numeric scalar or list." Every
+    one of these values is read out of a numpy array, so every one of them is a
+    numpy scalar - which made the check fire on the first joint with a spring
+    and took 56 tests with it.
+
+    Coerced at the CALL SITE rather than at the twenty-odd assignments that
+    build the dict: a new parameter added later is covered automatically, where
+    a fix applied per-assignment would silently miss it.
+    """
+    out = {}
+    for k, v in params.items():
+        if isinstance(v, np.generic):
+            out[k] = v.item()
+        elif isinstance(v, np.ndarray):
+            out[k] = v.tolist()
+        elif isinstance(v, tuple):
+            out[k] = tuple(x.item() if isinstance(x, np.generic) else x for x in v)
+        else:
+            out[k] = v
+    return out
+
 class SolverMuJoCo(SolverBase):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -2358,10 +2384,18 @@ class SolverMuJoCo(SolverBase):
             t.name = tendon_name
 
             # Set tendon properties (shared between fixed and spatial)
+            # stiffness and damping became VEC3 in MuJoCo 3.11 - a nonlinear
+            # spring profile whose first coefficient is the linear one.
+            # Measured: setting [k, 0, 0] and [k, k, k] both compile to
+            # tendon_stiffness == [k], so element 0 alone reproduces the scalar
+            # behaviour these lines had before. frictionloss stayed scalar, so
+            # it is left as it was rather than changed for symmetry.
             if tendon_stiffness_np is not None:
-                t.stiffness = float(tendon_stiffness_np[i])
+                t.stiffness = np.array(
+                    [float(tendon_stiffness_np[i]), 0.0, 0.0], dtype=np.float64)
             if tendon_damping_np is not None:
-                t.damping = float(tendon_damping_np[i])
+                t.damping = np.array(
+                    [float(tendon_damping_np[i]), 0.0, 0.0], dtype=np.float64)
             if tendon_frictionloss_np is not None:
                 t.frictionloss = float(tendon_frictionloss_np[i])
             if tendon_limited_np is not None:
@@ -4385,7 +4419,7 @@ class SolverMuJoCo(SolverBase):
                         name=axname,
                         type=mujoco.mjtJoint.mjJNT_SLIDE,
                         axis=axis,
-                        **joint_params,
+                        **_plain_scalars(joint_params),
                     )
                     mjc_joint_names.append(axname)
                     # Map this DOF to the current MuJoCo joint index
@@ -4491,7 +4525,7 @@ class SolverMuJoCo(SolverBase):
                         name=axname,
                         type=mujoco.mjtJoint.mjJNT_HINGE,
                         axis=axis,
-                        **joint_params,
+                        **_plain_scalars(joint_params),
                     )
                     mjc_joint_names.append(axname)
                     # Map this DOF to the current MuJoCo joint index
@@ -4968,7 +5002,31 @@ class SolverMuJoCo(SolverBase):
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
 
             # set mjwarp-only settings
-            self.mjw_model.opt.ls_parallel = ls_parallel
+            #
+            # `ls_parallel` was REMOVED in MuJoCo Warp 3.9.1, and its property
+            # raises AttributeError on both get and set rather than simply not
+            # existing. Assigning it unconditionally therefore made
+            # SolverMuJoCo unconstructible against any mjwarp >= 3.9.1 - not a
+            # degraded solver, a solver that raises before it can be used, and
+            # with it every caller: sim runs, examples, and any harness command
+            # that builds one.
+            #
+            # `hasattr` is the right probe precisely BECAUSE the property
+            # raises: hasattr swallows AttributeError and returns False, so
+            # this reads as "supported" on old builds and "absent" on new ones
+            # without needing a version comparison.
+            #
+            # Silent when the caller did not ask for it - the default is False,
+            # so nothing is lost. LOUD when they did, because a request that
+            # cannot be honoured must not look like one that was.
+            if hasattr(self.mjw_model.opt, "ls_parallel"):
+                self.mjw_model.opt.ls_parallel = ls_parallel
+            elif ls_parallel:
+                warnings.warn(
+                    "ls_parallel=True was requested but MuJoCo Warp removed the "
+                    "option in 3.9.1; continuing without parallel line search.",
+                    stacklevel=2,
+                )
 
             if separate_worlds:
                 nworld = model.world_count

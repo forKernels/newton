@@ -1640,7 +1640,12 @@ def update_geom_properties_kernel(
     mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
     geom_type: wp.array(dtype=int),
     GEOM_TYPE_MESH: int,
-    geom_dataid: wp.array(dtype=int),
+    # PER-WORLD in MuJoCo Warp. It is declared `array("*", "ngeom", int)` -
+    # the leading `*` is the world dimension - while geom_type, mesh_pos and
+    # mesh_quat all stayed 1D. Taking it as 1D here raised "expects an array
+    # with 1 dimension(s) but the passed array has 2" at LAUNCH, so the solver
+    # constructed fine and then died on the first step.
+    geom_dataid: wp.array2d(dtype=int),
     mesh_pos: wp.array(dtype=wp.vec3),
     mesh_quat: wp.array(dtype=wp.quat),
     shape_mu_torsional: wp.array(dtype=float),
@@ -1714,7 +1719,7 @@ def update_geom_properties_kernel(
 
     # check if this is a mesh geom and apply mesh transformation
     if geom_type[geom_idx] == GEOM_TYPE_MESH:
-        mesh_id = geom_dataid[geom_idx]
+        mesh_id = geom_dataid[world, geom_idx]
         mesh_p = mesh_pos[mesh_id]
         mesh_q = mesh_quat[mesh_id]
         mesh_tf = wp.transform(mesh_p, quat_wxyz_to_xyzw(mesh_q))

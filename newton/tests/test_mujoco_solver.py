@@ -16,6 +16,8 @@
 import time
 import unittest
 
+import warnings
+
 import numpy as np  # For numerical operations and random values
 import warp as wp
 
@@ -49,13 +51,30 @@ class TestMuJoCoSolver(unittest.TestCase):
         builder.add_articulation([joint])
         model = builder.finalize()
 
-        # Test with ls_parallel=True
-        solver = SolverMuJoCo(model, ls_parallel=True)
-        self.assertTrue(solver.mjw_model.opt.ls_parallel, "ls_parallel should be True when set to True")
+        # MuJoCo Warp REMOVED ls_parallel in 3.9.1, and its property raises
+        # AttributeError rather than being absent - so hasattr is the probe,
+        # and it returns False on new builds. What must be asserted differs by
+        # build, and asserting the old behaviour unconditionally would fail on
+        # every current install for a reason unrelated to the solver.
+        supported = hasattr(SolverMuJoCo(model).mjw_model.opt, "ls_parallel")
 
-        # Test with ls_parallel=False (default)
-        solver_default = SolverMuJoCo(model, ls_parallel=False)
-        self.assertFalse(solver_default.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
+        if supported:
+            solver = SolverMuJoCo(model, ls_parallel=True)
+            self.assertTrue(solver.mjw_model.opt.ls_parallel, "ls_parallel should be True when set to True")
+            solver_default = SolverMuJoCo(model, ls_parallel=False)
+            self.assertFalse(solver_default.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
+        else:
+            # The contract on a build without it: construction must SUCCEED
+            # (the default is False, so nothing is lost), and an explicit
+            # request must warn rather than pass silently.
+            SolverMuJoCo(model, ls_parallel=False)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                SolverMuJoCo(model, ls_parallel=True)
+            self.assertTrue(
+                any("ls_parallel" in str(c.message) for c in caught),
+                "an ls_parallel=True that cannot be honoured must warn",
+            )
 
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""

@@ -82,9 +82,7 @@ burning a GPU minute to produce the same bytes. `--force` overrides.
 `preview latest` is READ-ONLY and never renders. `--dry-run` suppresses all
 writes.
 
-**`--solver mujoco` does not work in this checkout.** MuJoCo Warp 3.9.1 removed
-`ls_parallel` and this Newton's `SolverMuJoCo` still calls it, so it raises on
-construction. The preview default is `xpbd`.
+The preview default solver is `mujoco`.
 
 ## Command Groups
 
