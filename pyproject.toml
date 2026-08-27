@@ -34,9 +34,30 @@ dependencies = [
 
 # Core simulation dependencies
 sim = [
-    # MuJoCo simulation
-    "mujoco-warp>=3.5.0",         # MuJoCo, warp-accelerated
-    "mujoco>=3.5.0",              # MuJoCo physics engine
+    # MuJoCo simulation.
+    #
+    # BOTH bounds matter, and the range is narrow on purpose.
+    #
+    # The UPPER bound exists because ">=3.5.0" with no cap admitted 3.11.0,
+    # which broke SolverMuJoCo in four separate places while continuing to
+    # satisfy the pin. The result was not a degraded solver but an
+    # unconstructible one - it raised before it could be used, taking sim runs,
+    # examples, the REPL and the preview producer with it, and surfacing as an
+    # AttributeError deep in a constructor rather than as a dependency
+    # resolution failure. A cap turns the next such break into the latter.
+    #
+    # The LOWER bound was raised at the same time and is not conservatism. The
+    # fixes for those breaks REQUIRE the new API and cannot run on the old one:
+    # geom_dataid is now read as a per-world wp.array2d, and tendon stiffness
+    # and damping are written as vec3. On 3.5-3.10 both would fail. Leaving the
+    # floor at 3.5.0 would have claimed a compatibility the code no longer has.
+    #
+    # 3.11.0 is the version this was verified against - 144 solver tests, zero
+    # failures. The intervening versions are untested rather than known-bad, so
+    # widening the floor needs a test run, not a guess about which release
+    # changed geom_dataid.
+    "mujoco-warp>=3.11.0,<3.12",  # MuJoCo, warp-accelerated
+    "mujoco>=3.11.0,<3.12",       # MuJoCo physics engine
 ]
 
 # Asset import and mesh processing dependencies
