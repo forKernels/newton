@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import sys
 import warnings
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -29,6 +30,14 @@ AttributeFrequency = Model.AttributeFrequency
 if TYPE_CHECKING:
     from ..geometry.types import TetMesh
     from ..sim.builder import ModelBuilder
+
+if sys.platform.startswith("win") and hasattr(os, "add_dll_directory"):
+    _usd_root = os.environ.get("OPENUSD_ROOT") or os.environ.get("USD_ROOT")
+    if _usd_root and os.path.isdir(_usd_root):
+        for _subdir in ("bin", "lib"):
+            _dll_dir = os.path.join(_usd_root, _subdir)
+            if os.path.isdir(_dll_dir):
+                os.add_dll_directory(_dll_dir)
 
 try:
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade

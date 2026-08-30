@@ -24,6 +24,7 @@ from .particle_surface import ParticleSurface, extract_particle_surface
 from .raycast import intersect_ray as intersect_ray
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
+from .tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
 from .types import (
     Gaussian,
     GeoType,
@@ -46,6 +47,8 @@ __all__ = [
     "ParticleSurface",
     "ShapeFlags",
     "TetMesh",
+    "TriMeshCollisionDetector",
+    "TriMeshCollisionInfo",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",

@@ -378,3 +378,150 @@ def solve_untangling_kernel(
         wp.atomic_add(forces, edge[1], force1)
         wp.atomic_add(hessian_diags, edge[0], hess0)
         wp.atomic_add(hessian_diags, edge[1], hess1)
+
+
+@wp.kernel
+def project_vertex_triangle_contacts_kernel(
+    thickness: float,
+    pos: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
+    tri_indices: wp.array2d[int],
+    broad_phase_vf: wp.array2d[int],
+):
+    """Hard contact projection: push penetrating vertices out of triangles."""
+    vid = wp.tid()
+    count = broad_phase_vf[0, vid]
+    if count <= 0:
+        return
+
+    p = pos[vid]
+    w_v = particle_inv_mass[vid]
+
+    for i in range(1, wp.min(count + 1, 32)):
+        tri_id = broad_phase_vf[i, vid]
+        if tri_id < 0:
+            continue
+
+        t0 = tri_indices[tri_id, 0]
+        t1 = tri_indices[tri_id, 1]
+        t2 = tri_indices[tri_id, 2]
+
+        A = pos[t0]
+        B = pos[t1]
+        C = pos[t2]
+
+        n = wp.cross(B - A, C - A)
+        ln = wp.length(n)
+        if ln < 1e-12:
+            continue
+        n = n / ln
+
+        # Signed distance
+        d = wp.dot(p - A, n)
+        abs_d = wp.abs(d)
+
+        if abs_d < thickness:
+            # Compute barycentric to verify containment
+            v0 = A - C
+            v1 = B - C
+            v2 = p - C
+            d00 = wp.dot(v0, v0)
+            d01 = wp.dot(v0, v1)
+            d11 = wp.dot(v1, v1)
+            d20 = wp.dot(v2, v0)
+            d21 = wp.dot(v2, v1)
+            denom = d00 * d11 - d01 * d01
+            if wp.abs(denom) < 1e-20:
+                continue
+            inv_denom = 1.0 / denom
+            bary_u = (d11 * d20 - d01 * d21) * inv_denom
+            bary_v = (d00 * d21 - d01 * d20) * inv_denom
+            bary_w = 1.0 - bary_u - bary_v
+
+            if bary_u < -0.01 or bary_v < -0.01 or bary_w < -0.01:
+                continue
+
+            # Push direction
+            sign_d = 1.0
+            if d < 0.0:
+                sign_d = -1.0
+            correction = sign_d * n * (thickness - abs_d)
+
+            # Inverse mass weighting
+            w_a = particle_inv_mass[t0] * bary_u * bary_u
+            w_b = particle_inv_mass[t1] * bary_v * bary_v
+            w_c = particle_inv_mass[t2] * bary_w * bary_w
+            w_sum = w_v + w_a + w_b + w_c
+            if w_sum < 1e-20:
+                continue
+
+            scale = 1.0 / w_sum
+            wp.atomic_add(pos, vid, correction * w_v * scale)
+            wp.atomic_add(pos, t0, -correction * particle_inv_mass[t0] * bary_u * scale)
+            wp.atomic_add(pos, t1, -correction * particle_inv_mass[t1] * bary_v * scale)
+            wp.atomic_add(pos, t2, -correction * particle_inv_mass[t2] * bary_w * scale)
+
+
+@wp.kernel
+def project_edge_edge_contacts_kernel(
+    thickness: float,
+    pos: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
+    edge_indices: wp.array2d[int],
+    broad_phase_ee: wp.array2d[int],
+    edge_parallel_epsilon: float,
+):
+    """Hard contact projection: push penetrating edges apart."""
+    eid = wp.tid()
+    count = broad_phase_ee[0, eid]
+    if count <= 0:
+        return
+
+    e1_v0 = edge_indices[eid, 2]
+    e1_v1 = edge_indices[eid, 3]
+
+    for i in range(1, wp.min(count + 1, 32)):
+        e2_id = broad_phase_ee[i, eid]
+        if e2_id < 0 or e2_id <= eid:
+            continue
+
+        e2_v0 = edge_indices[e2_id, 2]
+        e2_v1 = edge_indices[e2_id, 3]
+
+        # Skip shared vertices
+        if e1_v0 == e2_v0 or e1_v0 == e2_v1 or e1_v1 == e2_v0 or e1_v1 == e2_v1:
+            continue
+
+        p0 = pos[e1_v0]
+        p1 = pos[e1_v1]
+        q0 = pos[e2_v0]
+        q1 = pos[e2_v1]
+
+        st = wp.closest_point_edge_edge(p0, p1, q0, q1, edge_parallel_epsilon)
+        s = st[0]
+        t = st[1]
+
+        if s < 0.0 or s > 1.0 or t < 0.0 or t > 1.0:
+            continue
+
+        c1 = p0 + s * (p1 - p0)
+        c2 = q0 + t * (q1 - q0)
+        diff = c1 - c2
+        dist = wp.length(diff)
+
+        if dist < thickness and dist > 1e-8:
+            normal = diff / dist
+            correction = normal * (thickness - dist)
+
+            w_p0 = particle_inv_mass[e1_v0] * (1.0 - s) * (1.0 - s)
+            w_p1 = particle_inv_mass[e1_v1] * s * s
+            w_q0 = particle_inv_mass[e2_v0] * (1.0 - t) * (1.0 - t)
+            w_q1 = particle_inv_mass[e2_v1] * t * t
+            w_sum = w_p0 + w_p1 + w_q0 + w_q1
+
+            if w_sum > 1e-20:
+                scale = 1.0 / w_sum
+                wp.atomic_add(pos, e1_v0, correction * particle_inv_mass[e1_v0] * (1.0 - s) * scale)
+                wp.atomic_add(pos, e1_v1, correction * particle_inv_mass[e1_v1] * s * scale)
+                wp.atomic_add(pos, e2_v0, -correction * particle_inv_mass[e2_v0] * (1.0 - t) * scale)
+                wp.atomic_add(pos, e2_v1, -correction * particle_inv_mass[e2_v1] * t * scale)

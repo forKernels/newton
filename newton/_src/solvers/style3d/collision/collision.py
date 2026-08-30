@@ -10,6 +10,8 @@ from newton._src.solvers.style3d.collision.kernels import (
     handle_edge_edge_contacts_kernel,
     handle_vertex_triangle_contacts_kernel,
     hessian_multiply_kernel,
+    project_edge_edge_contacts_kernel,
+    project_vertex_triangle_contacts_kernel,
     solve_untangling_kernel,
 )
 
@@ -23,12 +25,14 @@ class Collision:
     Collision handler for cloth simulation.
     """
 
-    def __init__(self, model: Model):
+    def __init__(self, model: Model, enable_hard_contacts: bool = False, hard_contact_iterations: int = 1):
         """
         Initialize the collision handler, including BVHs and buffers.
 
         Args:
             model: The simulation model containing particle and geometry data.
+            enable_hard_contacts: Enable position projection for hard contact constraints.
+            hard_contact_iterations: Number of hard contact projection passes per frame.
         """
         self.model = model
         self.radius = 3e-3  # Contact radius
@@ -37,6 +41,8 @@ class Collision:
         self.stiff_ef = 1.0  # Stiffness coefficient for edge-face (EF) collision constraints
         self.friction_epsilon = 1e-2
         self.integrate_with_external_rigid_solver = True
+        self.enable_hard_contacts = enable_hard_contacts
+        self.hard_contact_iterations = hard_contact_iterations
         self.tri_bvh = BvhTri(model.tri_count, self.model.device)
         self.edge_bvh = BvhEdge(model.edge_count, self.model.device)
         self.body_contact_max = model.shape_count * model.particle_count
@@ -253,5 +259,67 @@ class Collision:
         pass
 
     def frame_end(self, pos: wp.array[wp.vec3], vel: wp.array[wp.vec3], dt: float):
-        """Apply post-processing"""
-        pass
+        """Apply hard contact projection to resolve remaining penetrations.
+
+        For each projection pass: refit BVH, re-run broad phase, and project
+        penetrating vertex-triangle and edge-edge contacts.
+        """
+        if not self.enable_hard_contacts:
+            return
+
+        thickness = 2.0 * self.radius
+
+        for _ in range(self.hard_contact_iterations):
+            self.refit_bvh(pos)
+
+            # Vertex-face broad phase
+            if self.stiff_vf > 0:
+                self.tri_bvh.triangle_vs_point(
+                    pos,
+                    pos,
+                    self.model.tri_indices,
+                    self.broad_phase_vf,
+                    True,
+                    self.radius * 3.0,
+                    self.radius,
+                )
+
+                wp.launch(
+                    project_vertex_triangle_contacts_kernel,
+                    dim=len(pos),
+                    inputs=[
+                        thickness,
+                        pos,
+                        self.model.particle_inv_mass,
+                        self.model.tri_indices,
+                        self.broad_phase_vf,
+                    ],
+                    device=self.model.device,
+                )
+
+            # Edge-edge broad phase
+            if self.stiff_ee > 0:
+                self.edge_bvh.edge_vs_edge(
+                    pos,
+                    self.model.edge_indices,
+                    pos,
+                    self.model.edge_indices,
+                    self.broad_phase_ee,
+                    True,
+                    self.radius * 3.0,
+                    self.radius,
+                )
+
+                wp.launch(
+                    project_edge_edge_contacts_kernel,
+                    dim=self.model.edge_indices.shape[0],
+                    inputs=[
+                        thickness,
+                        pos,
+                        self.model.particle_inv_mass,
+                        self.model.edge_indices,
+                        self.broad_phase_ee,
+                        1e-5,
+                    ],
+                    device=self.model.device,
+                )

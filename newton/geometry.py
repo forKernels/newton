@@ -20,6 +20,16 @@ from ._src.geometry import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
+from ._src.geometry.ccd import (
+    ccd_edge_edge,
+    ccd_vertex_triangle,
+    clamp_positions_to_toi,
+    compute_edge_aabbs_swept,
+    compute_tri_aabbs_swept,
+    edge_edge_ccd_kernel,
+    solve_cubic_roots_01,
+    vertex_triangle_ccd_kernel,
+)
 from ._src.geometry.contact_match import MATCH_BROKEN as _MATCH_BROKEN
 from ._src.geometry.contact_match import MATCH_NOT_FOUND as _MATCH_NOT_FOUND
 from ._src.geometry.inertia import compute_inertia_shape, transform_inertia
@@ -28,6 +38,8 @@ from ._src.geometry.narrow_phase import NarrowPhase
 from ._src.geometry.particle_surface import ParticleSurface, extract_particle_surface
 from ._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from ._src.geometry.sdf_utils import compute_offset_mesh, create_empty_sdf_data
+from ._src.geometry.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
+from ._src.geometry.utils import remesh_mesh
 
 __all__ = [
     "BroadPhaseAllPairs",
@@ -36,6 +48,11 @@ __all__ = [
     "HydroelasticSDF",
     "NarrowPhase",
     "ParticleSurface",
+    "TriMeshCollisionDetector",
+    "TriMeshCollisionInfo",
+    "ccd_edge_edge",
+    "ccd_vertex_triangle",
+    "clamp_positions_to_toi",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
@@ -48,10 +65,14 @@ __all__ = [
     "collide_sphere_capsule",
     "collide_sphere_cylinder",
     "collide_sphere_sphere",
+    "compute_edge_aabbs_swept",
     "compute_inertia_shape",
     "compute_offset_mesh",
+    "compute_tri_aabbs_swept",
     "create_empty_sdf_data",
     "extract_particle_surface",
+    "edge_edge_ccd_kernel",
+    "remesh_mesh",
     "sdf_box",
     "sdf_capsule",
     "sdf_cone",
@@ -59,7 +80,9 @@ __all__ = [
     "sdf_mesh",
     "sdf_plane",
     "sdf_sphere",
+    "solve_cubic_roots_01",
     "transform_inertia",
+    "vertex_triangle_ccd_kernel",
 ]
 
 _DEPRECATED_MATCH_CONSTANTS = {

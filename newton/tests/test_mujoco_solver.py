@@ -10,6 +10,8 @@ import unittest
 import warnings
 import xml.etree.ElementTree as ET
 
+import warnings
+
 import numpy as np  # For numerical operations and random values
 import warp as wp
 

@@ -131,6 +131,88 @@ AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
 
+def _plain_scalars(params: dict) -> dict:
+    """Coerce numpy scalars to Python numbers for MjSpec.
+
+    MuJoCo 3.11 type-checks the keyword arguments of `add_joint` and rejects a
+    `numpy.float32` with "stiffness should be a numeric scalar or list." Every
+    one of these values is read out of a numpy array, so every one of them is a
+    numpy scalar - which made the check fire on the first joint with a spring
+    and took 56 tests with it.
+
+    Coerced at the CALL SITE rather than at the twenty-odd assignments that
+    build the dict: a new parameter added later is covered automatically, where
+    a fix applied per-assignment would silently miss it.
+    """
+    out = {}
+    for k, v in params.items():
+        if isinstance(v, np.generic):
+            out[k] = v.item()
+        elif isinstance(v, np.ndarray):
+            out[k] = v.tolist()
+        elif isinstance(v, tuple):
+            out[k] = tuple(x.item() if isinstance(x, np.generic) else x for x in v)
+        else:
+            out[k] = v
+    return out
+
+
+_DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
+    "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
+    "Use Model.joint_damping instead."
+)
+
+
+def _finalize_deprecated_dof_passive_damping(
+    builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
+) -> None:
+    if custom_attr.values:
+        updated_joint_damping = None
+        if isinstance(custom_attr.values, dict):
+            damping_items = custom_attr.values.items()
+        else:
+            damping_items = enumerate(custom_attr.values)
+
+        for index, value in damping_items:
+            if value is None:
+                continue
+            damping_index = int(index)
+            canonical_value = builder.joint_damping[damping_index]
+            if canonical_value == value:
+                continue
+
+            alias_value = float(value)
+            canonical_value = float(canonical_value)
+            if canonical_value != 0.0 and not math.isclose(canonical_value, alias_value, rel_tol=1e-05, abs_tol=1e-08):
+                raise ValueError(
+                    "Model.mujoco.dof_passive_damping conflicts with Model.joint_damping "
+                    f"at DOF {damping_index}: {alias_value} != {canonical_value}."
+                )
+            if updated_joint_damping is None:
+                updated_joint_damping = list(builder.joint_damping)
+            updated_joint_damping[damping_index] = alias_value
+
+        if updated_joint_damping is not None:
+            model.joint_damping.assign(np.asarray(updated_joint_damping, dtype=np.float32))
+
+    if custom_attr.namespace is None:
+        raise ValueError(f"Deprecated attribute alias '{custom_attr.name}' requires a namespace")
+
+    if not hasattr(model, custom_attr.namespace):
+        setattr(model, custom_attr.namespace, Model.AttributeNamespace(custom_attr.namespace))
+
+    ns_obj = getattr(model, custom_attr.namespace)
+    ns_obj.add_deprecated_alias(
+        custom_attr.name,
+        lambda model=model: model.joint_damping,
+        _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE,
+    )
+    model._set_attribute_spec(
+        custom_attr.key,
+        Model.AttributeSpec(custom_attr.frequency, assignment=custom_attr.assignment),
+    )
+
+
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
     pattern = re.compile(rf"^{re.escape(package)}(?=[<>=!~])([^;]+)")
     for requirement in requirements:
@@ -3235,6 +3317,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             t.name = tendon_name
 
             # Set tendon properties (shared between fixed and spatial)
+            # stiffness and damping became VEC3 in MuJoCo 3.11 - a nonlinear
+            # spring profile whose first coefficient is the linear one.
+            # Measured: setting [k, 0, 0] and [k, k, k] both compile to
+            # tendon_stiffness == [k], so element 0 alone reproduces the scalar
+            # behaviour these lines had before. frictionloss stayed scalar, so
+            # it is left as it was rather than changed for symmetry.
             if tendon_stiffness_np is not None:
                 t.stiffness[0] = tendon_stiffness_np[i]
             if tendon_damping_np is not None:
@@ -6836,7 +6924,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         name=axname,
                         type=mujoco.mjtJoint.mjJNT_SLIDE,
                         axis=axis,
-                        **joint_params,
+                        **_plain_scalars(joint_params),
                     )
                     mjc_joint_names.append(axname)
                     # Map this DOF to the current MuJoCo joint index
@@ -6948,7 +7036,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         name=axname,
                         type=mujoco.mjtJoint.mjJNT_HINGE,
                         axis=axis,
-                        **joint_params,
+                        **_plain_scalars(joint_params),
                     )
                     mjc_joint_names.append(axname)
                     # Map this DOF to the current MuJoCo joint index

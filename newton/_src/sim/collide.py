@@ -810,6 +810,57 @@ def _infer_broad_phase_mode_from_instance(broad_phase: BroadPhaseAllPairs | Broa
     )
 
 
+@wp.kernel
+def create_particle_particle_contacts(
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    grid_id: wp.uint64,
+    max_radius: float,
+    contact_max: int,
+    # outputs
+    contact_count: wp.array[wp.int32],
+    contact_a: wp.array[wp.int32],
+    contact_b: wp.array[wp.int32],
+    contact_normal: wp.array[wp.vec3],
+    contact_dist: wp.array[float],
+):
+    """Generate particle-particle contacts using HashGrid spatial queries."""
+    pid = wp.tid()
+
+    if particle_flags[pid] & 1 == 0:  # ACTIVE flag
+        return
+
+    pos_i = particle_q[pid]
+    radius_i = particle_radius[pid]
+
+    # Query neighbors within interaction distance
+    query = wp.hash_grid_query(grid_id, pos_i, max_radius * 2.0)
+    neighbor = int(0)
+    while wp.hash_grid_query_next(query, neighbor):
+        if neighbor <= pid:
+            continue  # Avoid duplicates
+
+        if particle_flags[neighbor] & 1 == 0:
+            continue
+
+        pos_j = particle_q[neighbor]
+        radius_j = particle_radius[neighbor]
+
+        diff = pos_i - pos_j
+        dist = wp.length(diff)
+        combined_radius = radius_i + radius_j
+
+        if dist < combined_radius and dist > 1e-8:
+            normal = diff / dist
+            idx = wp.atomic_add(contact_count, 0, 1)
+            if idx < contact_max:
+                contact_a[idx] = pid
+                contact_b[idx] = neighbor
+                contact_normal[idx] = normal
+                contact_dist[idx] = dist
+
+
 def _world_compatible_pairs(
     feature_world: np.ndarray,
     shape_world: np.ndarray,
@@ -2193,6 +2244,32 @@ class CollisionPipeline:
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_tids,
+                ],
+                device=self.device,
+            )
+
+        # Generate particle-particle contacts if enabled
+        if contacts.particle_particle_contact_max > 0 and particle_count > 1 and model.particle_grid is not None:
+            search_radius = model.particle_max_radius * 2.0
+            with wp.ScopedDevice(self.device):
+                model.particle_grid.build(state.particle_q, radius=search_radius)
+            wp.launch(
+                kernel=create_particle_particle_contacts,
+                dim=particle_count,
+                inputs=[
+                    state.particle_q,
+                    model.particle_radius,
+                    model.particle_flags,
+                    model.particle_grid.id,
+                    model.particle_max_radius,
+                    contacts.particle_particle_contact_max,
+                ],
+                outputs=[
+                    contacts.particle_particle_contact_count,
+                    contacts.particle_particle_contact_a,
+                    contacts.particle_particle_contact_b,
+                    contacts.particle_particle_contact_normal,
+                    contacts.particle_particle_contact_dist,
                 ],
                 device=self.device,
             )

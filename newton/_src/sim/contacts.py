@@ -174,6 +174,7 @@ class Contacts:
         per_contact_shape_properties: bool = False,
         clear_buffers: bool = False,
         requested_attributes: set[str] | None = None,
+        particle_particle_contact_max: int = 0,
         contact_matching: bool = False,
         contact_report: bool = False,
     ):
@@ -413,6 +414,27 @@ class Contacts:
                 total_contacts = rigid_contact_max + soft_contact_max
                 self.force = wp.zeros(total_contacts, dtype=wp.spatial_vector, requires_grad=requires_grad)
 
+            # Particle-particle contacts (optional, for pipeline-based particle-particle)
+            self.particle_particle_contact_max = particle_particle_contact_max
+            if particle_particle_contact_max > 0:
+                self._pp_counter = wp.zeros(1, dtype=wp.int32)
+                self.particle_particle_contact_count = self._pp_counter[0:1]
+                self.particle_particle_contact_a = wp.full(particle_particle_contact_max, -1, dtype=int)
+                """Particle index A, shape (pp_max,), dtype int."""
+                self.particle_particle_contact_b = wp.full(particle_particle_contact_max, -1, dtype=int)
+                """Particle index B, shape (pp_max,), dtype int."""
+                self.particle_particle_contact_normal = wp.zeros(particle_particle_contact_max, dtype=wp.vec3)
+                """Contact normal A→B [unitless], shape (pp_max,), dtype vec3."""
+                self.particle_particle_contact_dist = wp.zeros(particle_particle_contact_max, dtype=float)
+                """Distance between particles [m], shape (pp_max,), dtype float."""
+            else:
+                self._pp_counter = None
+                self.particle_particle_contact_count = None
+                self.particle_particle_contact_a = None
+                self.particle_particle_contact_b = None
+                self.particle_particle_contact_normal = None
+                self.particle_particle_contact_dist = None
+
         self.requires_grad = requires_grad
 
         self.rigid_contact_max = rigid_contact_max
@@ -476,6 +498,14 @@ class Contacts:
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
+
+        # Clear particle-particle contacts
+        if self._pp_counter is not None:
+            self._pp_counter.zero_()
+            if self.clear_buffers:
+                self.particle_particle_contact_a.fill_(-1)
+                self.particle_particle_contact_b.fill_(-1)
+
         # else: Optimized path (default) - only counter clear needed
         #   Collision detection overwrites all active contacts [0, contact_count)
         #   Solvers only read [0, contact_count), so stale data is never accessed

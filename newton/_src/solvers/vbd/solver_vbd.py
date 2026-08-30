@@ -11,6 +11,13 @@ import warp as wp
 
 from ...core.types import override
 from ...geometry import ParticleFlags
+from ...geometry.ccd import (
+    clamp_positions_to_toi,
+    compute_edge_aabbs_swept,
+    compute_tri_aabbs_swept,
+    edge_edge_ccd_kernel,
+    vertex_triangle_ccd_kernel,
+)
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -307,6 +314,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_avbd_linear_beta: float | None = None,  # Legacy linear beta override
         rigid_avbd_angular_beta: float | None = None,  # Legacy angular beta override
         rigid_avbd_gamma: float = 0.999,  # Per-step decay for persisted lambda (and legacy penalty k)
+        particle_enable_ccd: bool = False,
+        particle_ccd_safety_factor: float = 0.9,
+        particle_enable_tri_tri_contact: bool = False,
         # Rigid body - contacts
         rigid_contact_hard: bool = True,  # Legacy body-body contact hard/soft mode
         rigid_contact_history: bool = False,  # Body-body contact numeric warm-start
@@ -625,6 +635,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             particle_rest_shape_contact_exclusion_radius,
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
+            particle_enable_ccd,
+            particle_ccd_safety_factor,
+            particle_enable_tri_tri_contact,
         )
 
         # Initialize rigid body system and rigid-particle (body-particle) interaction state
@@ -671,6 +684,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_rest_shape_contact_exclusion_radius: float,
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
+        particle_enable_ccd: bool = False,
+        particle_ccd_safety_factor: float = 0.9,
+        particle_enable_tri_tri_contact: bool = False,
     ):
         """Initialize particle-specific data structures and settings."""
         # Early exit if no particles
@@ -697,6 +713,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.particle_enable_self_contact = particle_enable_self_contact
         self.particle_self_contact_radius = particle_self_contact_radius
         self.particle_self_contact_margin = particle_self_contact_margin
+        self.particle_enable_ccd = particle_enable_ccd and particle_enable_self_contact
+        self.particle_ccd_safety_factor = particle_ccd_safety_factor
+        self.particle_enable_tri_tri_contact = particle_enable_tri_tri_contact and particle_enable_self_contact
         self.particle_q_rest = model.particle_q
 
         # Tile solve settings
@@ -735,6 +754,13 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
         else:
             self.particle_self_contact_evaluation_kernel_launch_size = None
+
+        # CCD buffers (only when both self-contact and CCD are enabled)
+        if self.particle_enable_ccd:
+            self.ccd_toi_vertices = wp.empty(self.model.particle_count, dtype=float, device=self.device)
+            self.ccd_contact_tri = wp.empty(self.model.particle_count, dtype=wp.int32, device=self.device)
+            self.ccd_toi_edges = wp.empty(self.model.edge_count, dtype=float, device=self.device)
+            self.ccd_contact_edge = wp.empty(self.model.edge_count, dtype=wp.int32, device=self.device)
 
         # Particle force and hessian storage
         self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
@@ -3561,6 +3587,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self.model.particle_count == 0:
             return
 
+        # CCD safety net: clamp positions to prevent tunneling
+        if self.particle_enable_ccd:
+            self._run_ccd_safety_net(state_out)
+
         wp.launch(
             kernel=update_velocity,
             inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
@@ -3636,6 +3666,91 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.particle_self_contact_margin,
             min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
             min_distance_filtering_ref_pos=self.particle_q_rest,
+        )
+        # Run triangle-triangle intersection detection if enabled
+        if self.particle_enable_tri_tri_contact:
+            self.trimesh_collision_detector.triangle_triangle_intersection_detection()
+
+        # Update solver's collision_info reference in case buffers were resized
+        self.trimesh_collision_info = wp.array(
+            [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
+        )
+
+    def _run_ccd_safety_net(self, state_out: State):
+        """Post-iteration CCD: detect tunneling between start-of-step and final positions, clamp if needed."""
+        pos_t0 = self.particle_q_prev
+        pos_t1 = state_out.particle_q
+        model = self.model
+        detector = self.trimesh_collision_detector
+        thickness = self.particle_self_contact_radius
+
+        # Refit BVH with swept AABBs
+        wp.launch(
+            kernel=compute_tri_aabbs_swept,
+            inputs=[pos_t0, pos_t1, model.tri_indices, thickness],
+            outputs=[detector.lower_bounds_tris, detector.upper_bounds_tris],
+            dim=model.tri_count,
+            device=self.device,
+        )
+        detector.bvh_tris.refit()
+
+        wp.launch(
+            kernel=compute_edge_aabbs_swept,
+            inputs=[pos_t0, pos_t1, model.edge_indices, thickness],
+            outputs=[detector.lower_bounds_edges, detector.upper_bounds_edges],
+            dim=model.edge_count,
+            device=self.device,
+        )
+        detector.bvh_edges.refit()
+
+        # Run V-F CCD
+        wp.launch(
+            kernel=vertex_triangle_ccd_kernel,
+            inputs=[
+                pos_t0,
+                pos_t1,
+                model.tri_indices,
+                thickness,
+                detector.bvh_tris.id,
+                detector.vertex_triangle_filtering_list,
+                detector.vertex_triangle_filtering_list_offsets,
+            ],
+            outputs=[self.ccd_toi_vertices, self.ccd_contact_tri],
+            dim=model.particle_count,
+            device=self.device,
+        )
+
+        # Run E-E CCD
+        wp.launch(
+            kernel=edge_edge_ccd_kernel,
+            inputs=[
+                pos_t0,
+                pos_t1,
+                model.edge_indices,
+                thickness,
+                detector.bvh_edges.id,
+                detector.edge_filtering_list,
+                detector.edge_filtering_list_offsets,
+            ],
+            outputs=[self.ccd_toi_edges, self.ccd_contact_edge],
+            dim=model.edge_count,
+            device=self.device,
+        )
+
+        # Clamp positions to prevent tunneling
+        wp.launch(
+            kernel=clamp_positions_to_toi,
+            inputs=[
+                pos_t0,
+                pos_t1,
+                self.ccd_toi_vertices,
+                self.ccd_toi_edges,
+                model.edge_indices,
+                self.particle_ccd_safety_factor,
+            ],
+            outputs=[state_out.particle_q],
+            dim=model.particle_count,
+            device=self.device,
         )
 
     def rebuild_bvh(self, state: State):
