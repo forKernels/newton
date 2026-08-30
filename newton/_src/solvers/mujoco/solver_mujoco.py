@@ -3754,6 +3754,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ccd_iterations: int | None = None,
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
+        sdf_shapes: Iterable[int] | None = None,
         solver: int | str | None = None,
         integrator: int | str | None = None,
         cone: int | str | None = None,
@@ -3795,6 +3796,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
             ccd_iterations: Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
+            sdf_shapes: Newton shape indices to export as MuJoCo SDF geoms instead of mesh
+                geoms. A mesh geom collides as its convex hull, so a concave collider loses
+                its cavities; an SDF geom samples the mesh octree and keeps them. Opt-in and
+                per-shape because the octree costs memory and only colliders whose concavity
+                matters need it. MESH and CONVEX_MESH shapes only; anything else is ignored.
             sdf_iterations: Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints: Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
             solver: Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
@@ -4103,6 +4109,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ccd_iterations=ccd_iterations,
                 sdf_iterations=sdf_iterations,
                 sdf_initpoints=sdf_initpoints,
+                sdf_shapes=sdf_shapes,
                 cone=cone,
                 jacobian=jacobian,
                 impratio=impratio,
@@ -5552,6 +5559,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ccd_iterations: int | None = None,
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
+        sdf_shapes: Iterable[int] | None = None,
         njmax: int | None = None,  # number of constraints per world
         nconmax: int | None = None,
         nvmax: int | None = None,
@@ -5984,6 +5992,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             JointType.REVOLUTE,
             JointType.D6,
         }
+
+        # Shapes to export as MuJoCo SDF geoms rather than mesh geoms.
+        #
+        # A MuJoCo mesh geom collides as its CONVEX HULL, so a concave collider
+        # loses every cavity it has - a prop dropped into a bowl or between two
+        # separated slabs rests on a surface the geometry does not have. An SDF
+        # geom does not: MuJoCo samples the mesh's own octree, so concavity
+        # survives.
+        #
+        # It is per-shape and opt-in because an octree is not free (a two-box
+        # slab compiles to ~63k nodes), and because a convex prop should stay a
+        # convex geom - this is for the colliders whose shape actually matters.
+        sdf_shape_set = set(sdf_shapes) if sdf_shapes is not None else set()
 
         geom_type_mapping = {
             GeoType.SPHERE: mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -6446,10 +6467,35 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         maxhullvert=maxhullvert,
                     )
                     geom_params["meshname"] = name
+
+                    if shape in sdf_shape_set:
+                        # mjGEOM_SDF backed by a MESH, which needs no plugin:
+                        # mujoco_warp's get_sdf_params takes its volume from
+                        # the mesh octree whenever mesh_dataid is set, and the
+                        # compiler builds that octree for an SDF geom.
+                        #
+                        # The geom TYPE is what matters and it is not optional.
+                        # mujoco_warp's _sdf_narrowphase returns immediately
+                        # unless the pair's second geom IS mjGEOM_SDF, so a
+                        # mesh geom never reaches the SDF path however its
+                        # octree was built.
+                        geom_params["type"] = mujoco.mjtGeom.mjGEOM_SDF
+
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
-                if np.any(size > 0.0):
+                if geom_params["type"] == mujoco.mjtGeom.mjGEOM_SDF:
+                    # An SDF geom's SIZE IS NOT A SIZE. mujoco_warp's
+                    # get_sdf_params copies g_size[0:3] straight into the SDF's
+                    # `attributes`, so writing a mesh's scale there feeds the
+                    # sampler three numbers that mean nothing to it and the
+                    # field evaluates wrongly - measured, a prop froze in mid
+                    # air over the cavity and fell through the solid part, i.e.
+                    # exactly inverted. The mesh octree already carries the
+                    # geometry and its extent, so leave size at MuJoCo's
+                    # default and let the octree speak for itself.
+                    pass
+                elif np.any(size > 0.0):
                     # duplicate nonzero entries at places where size is 0
                     nonzero = size[size > 0.0][0]
                     size[size == 0.0] = nonzero
