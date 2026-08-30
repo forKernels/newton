@@ -2435,6 +2435,7 @@ def update_geom_properties_kernel(
     mjc_geom_to_newton_shape: wp.array2d[wp.int32],
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
+    GEOM_TYPE_SDF: int,
     geom_dataid: wp.array2d[int],
     mesh_pos: wp.array[wp.vec3],
     mesh_quat: wp.array[wp.quat],
@@ -2524,7 +2525,14 @@ def update_geom_properties_kernel(
     tf = shape_transform[shape_idx]
 
     # check if this is a mesh geom and apply mesh transformation
-    if geom_type[geom_idx] == GEOM_TYPE_MESH:
+    # SDF geoms take this too, and leaving them out is a silent, inverted
+    # collider. MuJoCo RECENTRES a mesh asset and puts the compensation in
+    # geom_pos/geom_quat; an SDF geom is mesh-BACKED, and its octree is built
+    # in that same recentred frame. Composing the compensation for
+    # GEOM_TYPE_MESH alone left the field evaluated in the wrong place -
+    # measured, a prop hung in mid air over a cavity on 40 contacts against
+    # its own underside and fell through solid material.
+    if geom_type[geom_idx] == GEOM_TYPE_MESH or geom_type[geom_idx] == GEOM_TYPE_SDF:
         mesh_id = geom_dataid[world % geom_dataid.shape[0], geom_idx]
         mesh_p = mesh_pos[mesh_id]
         mesh_q = mesh_quat[mesh_id]
