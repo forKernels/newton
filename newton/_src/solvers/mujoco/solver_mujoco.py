@@ -6484,18 +6484,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
-                if geom_params["type"] == mujoco.mjtGeom.mjGEOM_SDF:
-                    # An SDF geom's SIZE IS NOT A SIZE. mujoco_warp's
-                    # get_sdf_params copies g_size[0:3] straight into the SDF's
-                    # `attributes`, so writing a mesh's scale there feeds the
-                    # sampler three numbers that mean nothing to it and the
-                    # field evaluates wrongly - measured, a prop froze in mid
-                    # air over the cavity and fell through the solid part, i.e.
-                    # exactly inverted. The mesh octree already carries the
-                    # geometry and its extent, so leave size at MuJoCo's
-                    # default and let the octree speak for itself.
-                    pass
-                elif np.any(size > 0.0):
+                # NOTE for anyone reading get_sdf_params and worrying about
+                # geom_size: on the MESH-BACKED SDF path it is never read.
+                #
+                #     elif type == GeomType.SDF:
+                #         if sdf_type == -1: sample_volume_sdf(p, volume_data)
+                #         else:              user_sdf(p, attr, sdf_type)
+                #
+                # `attr` is geom_size, and it reaches only the PLUGIN branch.
+                # We have no plugin, so sdf_type is -1 and the sampler reads
+                # the octree instead. Size is therefore written here, and
+                # overwritten again at runtime by update_geom_properties_kernel,
+                # and neither matters.
+                #
+                # This carried a special case that skipped size for SDF geoms,
+                # with a comment blaming size for an inverted field. That was
+                # wrong: the inversion was the missing mesh-recentring
+                # compensation, fixed separately in the kernel. Skipping size
+                # was measured to change nothing, which is exactly what the
+                # code above predicts. Removed rather than left as dead code
+                # with a false measurement attached to it.
+                if np.any(size > 0.0):
                     # duplicate nonzero entries at places where size is 0
                     nonzero = size[size > 0.0][0]
                     size[size == 0.0] = nonzero
