@@ -269,7 +269,7 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
 
 
 class _ShapeCollisionFilterPairsAttribute:
-    """Set of canonical shape index pairs that should not collide.
+    """Set of explicit canonical shape index pairs that should not collide.
 
     Mutating or reassigning this finalized-model set is deprecated. Configure
     collision filters on :class:`ModelBuilder` before calling
@@ -498,6 +498,7 @@ class Model:
         "shape_source_ptr": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_scale": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_color": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE),
@@ -544,6 +545,8 @@ class Model:
         "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE),
         "edge_indices": AttributeSpec(
             AttributeFrequency.EDGE,
             references=AttributeFrequency.PARTICLE,
@@ -865,6 +868,8 @@ class Model:
         """Shape 3D scale, shape [shape_count], vec3."""
         self.shape_color: wp.array[wp.vec3] | None = None
         """Shape display colors [0, 1], shape [shape_count], vec3."""
+        self.shape_opacity: wp.array[wp.float32] | None = None
+        """Shape display opacity [0, 1], shape [shape_count], float."""
         self.shape_filter: wp.array[wp.int32] | None = None
         """Shape filter group, shape [shape_count], int."""
 
@@ -1025,6 +1030,10 @@ class Model:
         Stored per-element; kernels multiply by rest area internally."""
         self.tri_areas: wp.array[wp.float32] | None = None
         """Triangle element rest areas [m²], shape [tri_count], float."""
+        self.tri_color: wp.array[wp.vec3] | None = None
+        """Triangle surface display colors [0, 1], shape [tri_count], vec3."""
+        self.tri_opacity: wp.array[wp.float32] | None = None
+        """Triangle surface display opacity [0, 1], shape [tri_count], float."""
 
         self.edge_indices: wp.array[wp.int32] | None = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""
@@ -1265,6 +1274,11 @@ class Model:
         """
         self.articulation_end: wp.array[wp.int32] | None = None
         """Exclusive end index of regular tree joints per articulation, shape [articulation_count], int."""
+        self._fk_articulation_level_start: wp.array[wp.int32] | None = None
+        self._fk_level_joint_start: wp.array[wp.int32] | None = None
+        self._fk_level_joints: wp.array[wp.int32] | None = None
+        self._fk_level_parent_pos: wp.array[wp.int32] | None = None
+        self._fk_level_capacity: int = 0
         self.articulation_label: list[str] = []
         """Articulation labels, shape [articulation_count], str."""
         self.articulation_world: wp.array[wp.int32] | None = None

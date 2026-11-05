@@ -470,7 +470,7 @@ class TestModelMesh(unittest.TestCase):
             lower_angle_threshold_rad=0.0,
             upper_angle_threshold_rad=np.pi,
             enable_box_absorption=False,
-            enable_inward_filter=False,
+            edge_concave_filter=False,
             sign_method="normal",
             half_normal=0.0,
             half_lateral=0.0,
@@ -829,44 +829,32 @@ class TestModelMesh(unittest.TestCase):
             np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
         )
 
-    def test_mesh_adjacency_public_deprecated(self):
+    def test_mesh_adjacency_public(self):
+        """Assert public construction is warning-free and eagerly builds the vectorized edge tables."""
         tris = [[0, 1, 2], [0, 2, 3]]
-        # Construction from triangle indices is supported (no warning) and eager.
-        adj = newton.utils.MeshAdjacency(tris)
+        # The supported ctor path must not warn (the deprecated aliases that warned here are gone).
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            adj = newton.utils.MeshAdjacency(tris)
         self.assertEqual(adj.edge_indices.shape, (5, 4))
         self.assertEqual(adj.edge_tri_indices.shape, (5, 2))
         self.assertEqual(adj.tri_edge_indices.shape, (2, 3))
-        # The legacy .edges dict stays available but is deprecated.
-        with self.assertWarns(DeprecationWarning):
-            edges = adj.edges
-        self.assertEqual(len(edges), 5)
-        shared = edges[(0, 2)]
-        self.assertEqual({shared.f0, shared.f1}, {0, 1})
+        # The shared edge (0, 2) maps to both triangles in edge_tri_indices.
+        (shared,) = np.flatnonzero(
+            (np.minimum(adj.edge_indices[:, 2], adj.edge_indices[:, 3]) == 0)
+            & (np.maximum(adj.edge_indices[:, 2], adj.edge_indices[:, 3]) == 2)
+        )
+        self.assertEqual(set(adj.edge_tri_indices[shared].tolist()), {0, 1})
 
-    def test_mesh_adjacency_indices_deprecated_alias(self):
-        tris = [[0, 1, 2], [0, 2, 3]]
-        # `indices` is a deprecated alias for `tri_indices` and builds the same tables.
-        with self.assertWarns(DeprecationWarning):
-            adj = newton.utils.MeshAdjacency(indices=tris)
-        np.testing.assert_array_equal(adj.edge_indices, newton.utils.MeshAdjacency(tri_indices=tris).edge_indices)
-        # Passing both names with conflicting values is rejected.
-        with self.assertRaises(ValueError):
-            newton.utils.MeshAdjacency(tri_indices=tris, indices=[[0, 1, 2]])
-
-    def test_mesh_adjacency_add_edge_deprecated(self):
-        adj = newton.utils.MeshAdjacency()
-        # add_edge is a deprecated incremental shim; it updates edge_indices / edge_tri_indices.
-        with self.assertWarns(DeprecationWarning):
-            adj.add_edge(0, 1, 2, 0)
-        self.assertEqual(adj.edge_indices.shape, (1, 4))
-        self.assertEqual(adj.edge_tri_indices.shape, (1, 2))
-        with self.assertWarns(DeprecationWarning):
-            adj.add_edge(1, 0, 3, 1)  # second adjacent triangle (endpoints reversed)
-        np.testing.assert_array_equal(adj.edge_indices[0], [2, 3, 0, 1])
-        np.testing.assert_array_equal(adj.edge_tri_indices[0], [0, 1])
-        with self.assertWarns(DeprecationWarning):
-            edges = adj.edges
-        self.assertEqual({edges[(0, 1)].f0, edges[(0, 1)].f1}, {0, 1})
+    def test_mesh_adjacency_legacy_api_removed(self):
+        # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
+        # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
+        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
+        self.assertFalse(hasattr(adj, "edges"))
+        self.assertFalse(hasattr(adj, "add_edge"))
+        self.assertFalse(hasattr(newton.utils.MeshAdjacency, "Edge"))
+        with self.assertRaises(TypeError):
+            newton.utils.MeshAdjacency(indices=[[0, 1, 2]])
 
     def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
         # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
@@ -1415,7 +1403,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertNotIsInstance(builder._shape_collision_filter_pairs, list)  # pyright: ignore[reportPrivateUsage]
 
                 filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
-                self.assertIn(tuple(sorted((shape, extra_shape))), filter_pairs)
+                self.assertNotIn(tuple(sorted((shape, extra_shape))), filter_pairs)
                 parent_pair = tuple(sorted((parent_shape, extra_shape)))
                 self.assertEqual(parent_pair in filter_pairs, collision_filter_parent)
 
@@ -1624,6 +1612,70 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
+
+    def test_replicated_same_body_filters_are_inherent(self):
+        """Keep replicated same-body collision filters out of explicit pair storage."""
+
+        source = ModelBuilder()
+        body = source.add_body()
+        for _ in range(8):
+            source.add_shape_box(body)
+
+        builder = ModelBuilder()
+        builder.replicate(source, 16)
+
+        self.assertEqual(len(builder._shape_collision_filter_pairs), 0)  # pyright: ignore[reportPrivateUsage]
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.shape_collision_filter_pairs, set())
+        self.assertEqual(model.shape_contact_pair_count, 0)
+
+    def test_heterogeneous_world_contact_template_tracks_body_topology(self):
+        """Keep cached world contact pairs isolated by body attachment topology."""
+
+        same_body = ModelBuilder()
+        body = same_body.add_body()
+        same_body.add_shape_box(body=body)
+        same_body.add_shape_box(body=body)
+
+        different_bodies = ModelBuilder()
+        body_a = different_bodies.add_body()
+        body_b = different_bodies.add_body()
+        different_bodies.add_shape_box(body=body_a)
+        different_bodies.add_shape_box(body=body_b)
+
+        for worlds, expected_pairs in (
+            ((same_body, different_bodies), {(2, 3)}),
+            ((different_bodies, same_body), {(0, 1)}),
+        ):
+            with self.subTest(worlds=worlds):
+                builder = ModelBuilder()
+                for world in worlds:
+                    builder.add_world(world)
+
+                model = builder.finalize(device="cpu")
+                contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+                self.assertEqual(contact_pairs, expected_pairs)
+
+    def test_world_contact_pairs_with_out_of_world_body_attachment(self):
+        """Preserve contacts when a world's shape references a global body."""
+
+        builder = ModelBuilder()
+        global_body = builder.add_body()
+
+        builder.begin_world()
+        builder.add_shape_box(body=-1)
+        builder.add_shape_box(body=-1)
+        builder.end_world()
+
+        builder.begin_world()
+        shape_a = builder.add_shape_box(body=global_body)
+        shape_b = builder.add_shape_box(body=-1)
+        builder.end_world()
+
+        model = builder.finalize(device="cpu")
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        self.assertEqual(contact_pairs, {(shape_a, shape_b)})
 
     def test_large_replicated_collision_filter_pairs_deprecate_mutation_and_preserve_contacts(self):
         """Large replicated filters should stay compact while finalized-model mutation warns."""
@@ -2574,9 +2626,8 @@ class TestModelJoints(unittest.TestCase):
         joint even though the anchor makes the chain a loop."""
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, _joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
         labels_before = sorted(builder.joint_label)
         builder.collapse_fixed_joints()
@@ -2592,9 +2643,8 @@ class TestModelJoints(unittest.TestCase):
         sites) both survive collapse."""
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, _joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
         with self.assertWarnsRegex(UserWarning, "undefined semantics"):
             builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
@@ -2649,9 +2699,8 @@ class TestModelJoints(unittest.TestCase):
         builder.add_joint_free(b0)
         builder.add_joint_fixed(b0, b1)
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         # Record the group the way the USD importer does, so the range remap is exercised.
         builder._record_cable_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")

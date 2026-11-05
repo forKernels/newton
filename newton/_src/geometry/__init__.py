@@ -24,7 +24,19 @@ from .particle_surface import ParticleSurface, extract_particle_surface
 from .raycast import intersect_ray as intersect_ray
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
-from .tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
+from .tri_mesh_collision import (
+    TriMeshCollisionDetector,
+    TriMeshCollisionInfo,
+    build_tri_mesh_collision_info,
+    get_edge_colliding_edges,
+    get_edge_colliding_edges_count,
+    get_edge_collision_buffer_edge_index,
+    get_triangle_colliding_vertices,
+    get_triangle_colliding_vertices_count,
+    get_vertex_colliding_triangles,
+    get_vertex_colliding_triangles_count,
+    get_vertex_collision_buffer_vertex_index,
+)
 from .types import (
     Gaussian,
     GeoType,
@@ -49,6 +61,7 @@ __all__ = [
     "TetMesh",
     "TriMeshCollisionDetector",
     "TriMeshCollisionInfo",
+    "build_tri_mesh_collision_info",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
@@ -67,6 +80,14 @@ __all__ = [
     "create_mesh_heightfield",
     "create_mesh_terrain",
     "extract_particle_surface",
+    "get_edge_colliding_edges",
+    "get_edge_colliding_edges_count",
+    "get_edge_collision_buffer_edge_index",
+    "get_triangle_colliding_vertices",
+    "get_triangle_colliding_vertices_count",
+    "get_vertex_colliding_triangles",
+    "get_vertex_colliding_triangles_count",
+    "get_vertex_collision_buffer_vertex_index",
     "test_group_pair",
     "test_world_and_group_pair",
     "transform_inertia",

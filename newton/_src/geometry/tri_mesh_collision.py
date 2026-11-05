@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -9,12 +9,6 @@ import numpy as np
 import warp as wp
 
 from ..utils.mesh import MeshAdjacency
-
-if TYPE_CHECKING:
-    # Deferred: this module lives under ``geometry``, which ``sim`` imports at load
-    # time. An eager ``sim`` import here would close that cycle. Only used as an
-    # annotation, which ``from __future__ import annotations`` keeps lazy.
-    from ..sim import Model
 from .bvh import compute_bvh_group_roots
 from .kernels import (
     compute_edge_aabbs,
@@ -27,77 +21,119 @@ from .kernels import (
     vertex_triangle_collision_detection_kernel,
 )
 
+if TYPE_CHECKING:
+    from ..sim import Model
+
 
 @wp.struct
 class TriMeshCollisionInfo:
-    # size: 2 x sum(vertex_colliding_triangles_buffer_sizes)
-    # every two elements records the vertex index and a triangle index it collides to
+    """Bounded buffers produced by triangle-mesh self-collision queries.
+
+    .. experimental::
+
+        This storage-level result type may change without the normal
+        deprecation period while the public self-contact API matures.
+
+    Vertex-triangle and edge-edge results use interleaved source/target pairs;
+    triangle-vertex results use plain target indices. Counts record all pairs
+    found and may exceed a row's capacity when a buffer overflows. Kernel code
+    should therefore read results through the internal ``get_*`` accessors,
+    which clamp counts and apply the correct packed indexing.
+    """
+
     vertex_colliding_triangles: wp.array[wp.int32]
+    """Interleaved vertex/triangle indices, shape ``[2 * sum(vertex row capacities)]``."""
     vertex_colliding_triangles_offsets: wp.array[wp.int32]
+    """Offsets into vertex-triangle rows before interleaved-pair indexing."""
     vertex_colliding_triangles_buffer_sizes: wp.array[wp.int32]
+    """Maximum stored collision count for each vertex row."""
     vertex_colliding_triangles_count: wp.array[wp.int32]
+    """Detected collision count for each vertex; values may exceed row capacity."""
     vertex_colliding_triangles_min_dist: wp.array[float]
+    """Minimum detected vertex-triangle distance for each vertex [m]."""
 
     triangle_colliding_vertices: wp.array[wp.int32]
+    """Vertex indices grouped into rows for each triangle."""
     triangle_colliding_vertices_offsets: wp.array[wp.int32]
+    """Offsets into the plain-index triangle-vertex rows."""
     triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32]
+    """Maximum stored collision count for each triangle row."""
     triangle_colliding_vertices_count: wp.array[wp.int32]
+    """Detected collision count for each triangle; values may exceed row capacity."""
     triangle_colliding_vertices_min_dist: wp.array[float]
+    """Minimum detected triangle-vertex distance for each triangle [m]."""
 
-    # size: 2 x sum(edge_colliding_edges_buffer_sizes)
-    # every two elements records the edge index and an edge index it collides to
     edge_colliding_edges: wp.array[wp.int32]
+    """Interleaved source/target edge indices, shape ``[2 * sum(edge row capacities)]``."""
     edge_colliding_edges_offsets: wp.array[wp.int32]
+    """Offsets into edge-edge rows before interleaved-pair indexing."""
     edge_colliding_edges_buffer_sizes: wp.array[wp.int32]
+    """Maximum stored collision count for each edge row."""
     edge_colliding_edges_count: wp.array[wp.int32]
+    """Detected collision count for each edge; values may exceed row capacity."""
     edge_colliding_edges_min_dist: wp.array[float]
+    """Minimum detected edge-edge distance for each edge [m]."""
 
 
 @wp.func
-def get_vertex_colliding_triangles_count(col_info: TriMeshCollisionInfo, v: int):
-    return wp.min(col_info.vertex_colliding_triangles_count[v], col_info.vertex_colliding_triangles_buffer_sizes[v])
-
-
-@wp.func
-def get_vertex_colliding_triangles(col_info: TriMeshCollisionInfo, v: int, i_collision: int):
-    offset = col_info.vertex_colliding_triangles_offsets[v]
-    return col_info.vertex_colliding_triangles[2 * (offset + i_collision) + 1]
-
-
-@wp.func
-def get_vertex_collision_buffer_vertex_index(col_info: TriMeshCollisionInfo, v: int, i_collision: int):
-    offset = col_info.vertex_colliding_triangles_offsets[v]
-    return col_info.vertex_colliding_triangles[2 * (offset + i_collision)]
-
-
-@wp.func
-def get_triangle_colliding_vertices_count(col_info: TriMeshCollisionInfo, tri: int):
+def get_vertex_colliding_triangles_count(collision_info: TriMeshCollisionInfo, vertex: int):
+    """Return the stored collision count for ``vertex``, clamped to capacity."""
     return wp.min(
-        col_info.triangle_colliding_vertices_count[tri], col_info.triangle_colliding_vertices_buffer_sizes[tri]
+        collision_info.vertex_colliding_triangles_count[vertex],
+        collision_info.vertex_colliding_triangles_buffer_sizes[vertex],
     )
 
 
 @wp.func
-def get_triangle_colliding_vertices(col_info: TriMeshCollisionInfo, tri: int, i_collision: int):
-    offset = col_info.triangle_colliding_vertices_offsets[tri]
-    return col_info.triangle_colliding_vertices[offset + i_collision]
+def get_vertex_colliding_triangles(collision_info: TriMeshCollisionInfo, vertex: int, collision_index: int):
+    """Return the triangle index for ``collision_index`` of ``vertex``."""
+    offset = collision_info.vertex_colliding_triangles_offsets[vertex]
+    return collision_info.vertex_colliding_triangles[2 * (offset + collision_index) + 1]
 
 
 @wp.func
-def get_edge_colliding_edges_count(col_info: TriMeshCollisionInfo, e: int):
-    return wp.min(col_info.edge_colliding_edges_count[e], col_info.edge_colliding_edges_buffer_sizes[e])
+def get_vertex_collision_buffer_vertex_index(collision_info: TriMeshCollisionInfo, vertex: int, collision_index: int):
+    """Return the stored source vertex for ``collision_index`` of ``vertex``."""
+    offset = collision_info.vertex_colliding_triangles_offsets[vertex]
+    return collision_info.vertex_colliding_triangles[2 * (offset + collision_index)]
 
 
 @wp.func
-def get_edge_colliding_edges(col_info: TriMeshCollisionInfo, e: int, i_collision: int):
-    offset = col_info.edge_colliding_edges_offsets[e]
-    return col_info.edge_colliding_edges[2 * (offset + i_collision) + 1]
+def get_triangle_colliding_vertices_count(collision_info: TriMeshCollisionInfo, triangle: int):
+    """Return the stored collision count for ``triangle``, clamped to capacity."""
+    return wp.min(
+        collision_info.triangle_colliding_vertices_count[triangle],
+        collision_info.triangle_colliding_vertices_buffer_sizes[triangle],
+    )
 
 
 @wp.func
-def get_edge_collision_buffer_edge_index(col_info: TriMeshCollisionInfo, e: int, i_collision: int):
-    offset = col_info.edge_colliding_edges_offsets[e]
-    return col_info.edge_colliding_edges[2 * (offset + i_collision)]
+def get_triangle_colliding_vertices(collision_info: TriMeshCollisionInfo, triangle: int, collision_index: int):
+    """Return the vertex index for ``collision_index`` of ``triangle``."""
+    offset = collision_info.triangle_colliding_vertices_offsets[triangle]
+    return collision_info.triangle_colliding_vertices[offset + collision_index]
+
+
+@wp.func
+def get_edge_colliding_edges_count(collision_info: TriMeshCollisionInfo, edge: int):
+    """Return the stored collision count for ``edge``, clamped to capacity."""
+    return wp.min(
+        collision_info.edge_colliding_edges_count[edge], collision_info.edge_colliding_edges_buffer_sizes[edge]
+    )
+
+
+@wp.func
+def get_edge_colliding_edges(collision_info: TriMeshCollisionInfo, edge: int, collision_index: int):
+    """Return the target edge for ``collision_index`` of ``edge``."""
+    offset = collision_info.edge_colliding_edges_offsets[edge]
+    return collision_info.edge_colliding_edges[2 * (offset + collision_index) + 1]
+
+
+@wp.func
+def get_edge_collision_buffer_edge_index(collision_info: TriMeshCollisionInfo, edge: int, collision_index: int):
+    """Return the stored source edge for ``collision_index`` of ``edge``."""
+    offset = collision_info.edge_colliding_edges_offsets[edge]
+    return collision_info.edge_colliding_edges[2 * (offset + collision_index)]
 
 
 def _as_numpy(arr) -> np.ndarray:
@@ -239,30 +275,111 @@ def build_edge_n_ring_edge_collision_filter(
     return edge_sets
 
 
-class TriMeshCollisionDetector:
-    """BVH-based triangle mesh self-collision detector.
+def _compute_collision_buffer_offsets(buffer_sizes: wp.array[wp.int32], offsets: wp.array[wp.int32]):
+    """Fill CSR ``offsets`` (size N+1) from per-element ``buffer_sizes`` (size N)."""
+    assert offsets.size == buffer_sizes.size + 1
+    offsets_np = np.empty(shape=(offsets.size,), dtype=np.int32)
+    offsets_np[1:] = np.cumsum(buffer_sizes.numpy())[:]
+    offsets_np[0] = 0
 
-    Detects vertex-triangle, edge-edge, and triangle-triangle collisions using
-    Warp BVH acceleration structures. Results are stored in CSR-format buffers
-    accessible via the :class:`TriMeshCollisionInfo` struct.
+    offsets.assign(offsets_np)
 
-    This class is solver-agnostic — it handles detection only, not constraint
-    resolution. Solvers (VBD, XPBD, etc.) consume the detection results through
-    their own force/constraint kernels.
+
+def build_tri_mesh_collision_info(
+    particle_count: int,
+    tri_count: int,
+    edge_count: int,
+    *,
+    vertex_collision_buffer_pre_alloc: int = 16,
+    triangle_collision_buffer_pre_alloc: int = 16,
+    edge_collision_buffer_pre_alloc: int = 32,
+    record_triangle_contacting_vertices: bool = False,
+    device=None,
+) -> TriMeshCollisionInfo:
+    """Allocate all self-contact result arrays into a :class:`TriMeshCollisionInfo`.
+
+    This is the single allocation path for tri-mesh self-contact results:
+    :class:`TriMeshCollisionDetector` calls it when no external struct is
+    injected, and result-owning containers call it to allocate buffers the
+    detector then writes into. Mirrors the adjacency pattern of one
+    ``@wp.struct`` plus one builder.
+
+    When ``record_triangle_contacting_vertices`` is ``False`` the
+    triangle-side list fields are left at their empty defaults;
+    ``triangle_colliding_vertices_min_dist`` is always allocated.
+
+    Args:
+        particle_count: Number of mesh vertices.
+        tri_count: Number of mesh triangles.
+        edge_count: Number of mesh edges.
+        vertex_collision_buffer_pre_alloc: Initial collision capacity per vertex.
+        triangle_collision_buffer_pre_alloc: Initial collision capacity per triangle.
+        edge_collision_buffer_pre_alloc: Initial collision capacity per edge.
+        record_triangle_contacting_vertices: Whether to allocate the reverse
+            triangle-to-vertex result lists.
+        device: Warp device on which to allocate the arrays.
+
+    Returns:
+        An allocated collision-result struct.
     """
+    info = TriMeshCollisionInfo()
 
+    info.vertex_colliding_triangles = wp.zeros(
+        shape=(2 * particle_count * vertex_collision_buffer_pre_alloc,), dtype=wp.int32, device=device
+    )
+    info.vertex_colliding_triangles_count = wp.zeros(shape=(particle_count,), dtype=wp.int32, device=device)
+    info.vertex_colliding_triangles_min_dist = wp.zeros(shape=(particle_count,), dtype=float, device=device)
+    info.vertex_colliding_triangles_buffer_sizes = wp.full(
+        shape=(particle_count,), value=vertex_collision_buffer_pre_alloc, dtype=wp.int32, device=device
+    )
+    info.vertex_colliding_triangles_offsets = wp.array(shape=(particle_count + 1,), dtype=wp.int32, device=device)
+    _compute_collision_buffer_offsets(
+        info.vertex_colliding_triangles_buffer_sizes, info.vertex_colliding_triangles_offsets
+    )
+
+    if record_triangle_contacting_vertices:
+        info.triangle_colliding_vertices = wp.zeros(
+            shape=(tri_count * triangle_collision_buffer_pre_alloc,), dtype=wp.int32, device=device
+        )
+        info.triangle_colliding_vertices_count = wp.zeros(shape=(tri_count,), dtype=wp.int32, device=device)
+        info.triangle_colliding_vertices_buffer_sizes = wp.full(
+            shape=(tri_count,), value=triangle_collision_buffer_pre_alloc, dtype=wp.int32, device=device
+        )
+        info.triangle_colliding_vertices_offsets = wp.array(shape=(tri_count + 1,), dtype=wp.int32, device=device)
+        _compute_collision_buffer_offsets(
+            info.triangle_colliding_vertices_buffer_sizes, info.triangle_colliding_vertices_offsets
+        )
+
+    # needed regardless of whether triangle contacting vertices are recorded
+    info.triangle_colliding_vertices_min_dist = wp.zeros(shape=(tri_count,), dtype=float, device=device)
+
+    info.edge_colliding_edges = wp.zeros(
+        shape=(2 * edge_count * edge_collision_buffer_pre_alloc,), dtype=wp.int32, device=device
+    )
+    info.edge_colliding_edges_count = wp.zeros(shape=(edge_count,), dtype=wp.int32, device=device)
+    info.edge_colliding_edges_buffer_sizes = wp.full(
+        shape=(edge_count,), value=edge_collision_buffer_pre_alloc, dtype=wp.int32, device=device
+    )
+    info.edge_colliding_edges_offsets = wp.array(shape=(edge_count + 1,), dtype=wp.int32, device=device)
+    _compute_collision_buffer_offsets(info.edge_colliding_edges_buffer_sizes, info.edge_colliding_edges_offsets)
+    info.edge_colliding_edges_min_dist = wp.zeros(shape=(edge_count,), dtype=float, device=device)
+
+    return info
+
+
+class TriMeshCollisionDetector:
     def __init__(
         self,
         model: Model,
         record_triangle_contacting_vertices=False,
         vertex_positions=None,
-        vertex_collision_buffer_pre_alloc=8,
+        vertex_collision_buffer_pre_alloc=16,
         vertex_collision_buffer_max_alloc=256,
         vertex_triangle_filtering_list=None,
         vertex_triangle_filtering_list_offsets=None,
         triangle_collision_buffer_pre_alloc=16,
         triangle_collision_buffer_max_alloc=256,
-        edge_collision_buffer_pre_alloc=8,
+        edge_collision_buffer_pre_alloc=32,
         edge_collision_buffer_max_alloc=256,
         edge_filtering_list=None,
         edge_filtering_list_offsets=None,
@@ -273,6 +390,8 @@ class TriMeshCollisionDetector:
         triangle_triangle_collision_buffer_max_alloc=256,
         edge_edge_parallel_epsilon=1e-5,
         collision_detection_block_size=16,
+        collision_info: TriMeshCollisionInfo | None = None,
+        init_collision_info: bool = False,
     ):
         self.model = model
         self.record_triangle_contacting_vertices = record_triangle_contacting_vertices
@@ -351,77 +470,26 @@ class TriMeshCollisionDetector:
             device=model.device,
         )
 
-        # collision detections results
-
-        # vertex collision buffers
-        self.vertex_colliding_triangles = wp.zeros(
-            shape=(2 * model.particle_count * self.vertex_collision_buffer_pre_alloc,),
-            dtype=wp.int32,
-            device=self.device,
-        )
-        self.vertex_colliding_triangles_count = wp.array(
-            shape=(model.particle_count,), dtype=wp.int32, device=self.device
-        )
-        self.vertex_colliding_triangles_min_dist = wp.array(
-            shape=(model.particle_count,), dtype=float, device=self.device
-        )
-        self.vertex_colliding_triangles_buffer_sizes = wp.full(
-            shape=(model.particle_count,),
-            value=self.vertex_collision_buffer_pre_alloc,
-            dtype=wp.int32,
-            device=self.device,
-        )
-        self.vertex_colliding_triangles_offsets = wp.array(
-            shape=(model.particle_count + 1,), dtype=wp.int32, device=self.device
-        )
-        self.compute_collision_buffer_offsets(
-            self.vertex_colliding_triangles_buffer_sizes, self.vertex_colliding_triangles_offsets
-        )
-
-        if record_triangle_contacting_vertices:
-            # triangle collision buffers
-            self.triangle_colliding_vertices = wp.zeros(
-                shape=(model.tri_count * self.triangle_collision_buffer_pre_alloc,), dtype=wp.int32, device=self.device
-            )
-            self.triangle_colliding_vertices_count = wp.zeros(
-                shape=(model.tri_count,), dtype=wp.int32, device=self.device
-            )
-            self.triangle_colliding_vertices_buffer_sizes = wp.full(
-                shape=(model.tri_count,),
-                value=self.triangle_collision_buffer_pre_alloc,
-                dtype=wp.int32,
+        # Collision detection results live in a TriMeshCollisionInfo owned outside
+        # the detector. Explicitly one of: injected (collision_info=...), self-built
+        # at construction (init_collision_info=True), or absent until a result
+        # struct is bound via _bind_external_buffers.
+        if collision_info is not None and init_collision_info:
+            raise ValueError("pass either collision_info or init_collision_info=True, not both")
+        if init_collision_info:
+            collision_info = build_tri_mesh_collision_info(
+                model.particle_count,
+                model.tri_count,
+                model.edge_count,
+                vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
+                triangle_collision_buffer_pre_alloc=triangle_collision_buffer_pre_alloc,
+                edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
+                record_triangle_contacting_vertices=record_triangle_contacting_vertices,
                 device=self.device,
             )
-
-            self.triangle_colliding_vertices_offsets = wp.array(
-                shape=(model.tri_count + 1,), dtype=wp.int32, device=self.device
-            )
-            self.compute_collision_buffer_offsets(
-                self.triangle_colliding_vertices_buffer_sizes, self.triangle_colliding_vertices_offsets
-            )
-        else:
-            self.triangle_colliding_vertices = None
-            self.triangle_colliding_vertices_count = None
-            self.triangle_colliding_vertices_buffer_sizes = None
-            self.triangle_colliding_vertices_offsets = None
-
-        # this is need regardless of whether we record triangle contacting vertices
-        self.triangle_colliding_vertices_min_dist = wp.array(shape=(model.tri_count,), dtype=float, device=self.device)
-
-        # edge collision buffers
-        self.edge_colliding_edges = wp.zeros(
-            shape=(2 * model.edge_count * self.edge_collision_buffer_pre_alloc,), dtype=wp.int32, device=self.device
-        )
-        self.edge_colliding_edges_count = wp.zeros(shape=(model.edge_count,), dtype=wp.int32, device=self.device)
-        self.edge_colliding_edges_buffer_sizes = wp.full(
-            shape=(model.edge_count,),
-            value=self.edge_collision_buffer_pre_alloc,
-            dtype=wp.int32,
-            device=self.device,
-        )
-        self.edge_colliding_edges_offsets = wp.array(shape=(model.edge_count + 1,), dtype=wp.int32, device=self.device)
-        self.compute_collision_buffer_offsets(self.edge_colliding_edges_buffer_sizes, self.edge_colliding_edges_offsets)
-        self.edge_colliding_edges_min_dist = wp.array(shape=(model.edge_count,), dtype=float, device=self.device)
+        if collision_info is not None:
+            self._validate_collision_info(collision_info)
+        self.collision_info = collision_info
 
         self.lower_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
         self.upper_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
@@ -450,12 +518,217 @@ class TriMeshCollisionDetector:
 
         self.resize_flags = wp.zeros(shape=(4,), dtype=wp.int32, device=self.device)
 
-        self.collision_info = self.get_collision_data()
-
         # data for triangle-triangle intersection; they will only be initialized on demand, as triangle-triangle intersection is not needed for simulation
         self.triangle_intersecting_triangles = None
         self.triangle_intersecting_triangles_count = None
         self.triangle_intersecting_triangles_offsets = None
+
+    def _validate_collision_info(self, collision_info: TriMeshCollisionInfo) -> None:
+        """Validate externally owned result buffers against this detector."""
+
+        def validate_array(name, array, size, dtype):
+            if array is None:
+                raise ValueError(f"collision_info.{name} is required")
+            if array.device != self.device:
+                raise ValueError(f"collision_info.{name} is on {array.device}, but the detector is on {self.device}")
+            if array.size != size:
+                raise ValueError(f"collision_info.{name} has size {array.size}, expected {size}")
+            if array.dtype != dtype:
+                raise ValueError(f"collision_info.{name} has dtype {array.dtype}, expected {dtype}")
+
+        particle_count = self.model.particle_count
+        tri_count = self.model.tri_count
+        edge_count = self.model.edge_count
+        arrays = (
+            (
+                "vertex_colliding_triangles",
+                collision_info.vertex_colliding_triangles,
+                2 * particle_count * self.vertex_collision_buffer_pre_alloc,
+                wp.int32,
+            ),
+            (
+                "vertex_colliding_triangles_offsets",
+                collision_info.vertex_colliding_triangles_offsets,
+                particle_count + 1,
+                wp.int32,
+            ),
+            (
+                "vertex_colliding_triangles_buffer_sizes",
+                collision_info.vertex_colliding_triangles_buffer_sizes,
+                particle_count,
+                wp.int32,
+            ),
+            (
+                "vertex_colliding_triangles_count",
+                collision_info.vertex_colliding_triangles_count,
+                particle_count,
+                wp.int32,
+            ),
+            (
+                "vertex_colliding_triangles_min_dist",
+                collision_info.vertex_colliding_triangles_min_dist,
+                particle_count,
+                wp.float32,
+            ),
+            (
+                "triangle_colliding_vertices_min_dist",
+                collision_info.triangle_colliding_vertices_min_dist,
+                tri_count,
+                wp.float32,
+            ),
+            (
+                "edge_colliding_edges",
+                collision_info.edge_colliding_edges,
+                2 * edge_count * self.edge_collision_buffer_pre_alloc,
+                wp.int32,
+            ),
+            (
+                "edge_colliding_edges_offsets",
+                collision_info.edge_colliding_edges_offsets,
+                edge_count + 1,
+                wp.int32,
+            ),
+            (
+                "edge_colliding_edges_buffer_sizes",
+                collision_info.edge_colliding_edges_buffer_sizes,
+                edge_count,
+                wp.int32,
+            ),
+            (
+                "edge_colliding_edges_count",
+                collision_info.edge_colliding_edges_count,
+                edge_count,
+                wp.int32,
+            ),
+            (
+                "edge_colliding_edges_min_dist",
+                collision_info.edge_colliding_edges_min_dist,
+                edge_count,
+                wp.float32,
+            ),
+        )
+        if self.record_triangle_contacting_vertices:
+            arrays += (
+                (
+                    "triangle_colliding_vertices",
+                    collision_info.triangle_colliding_vertices,
+                    tri_count * self.triangle_collision_buffer_pre_alloc,
+                    wp.int32,
+                ),
+                (
+                    "triangle_colliding_vertices_offsets",
+                    collision_info.triangle_colliding_vertices_offsets,
+                    tri_count + 1,
+                    wp.int32,
+                ),
+                (
+                    "triangle_colliding_vertices_buffer_sizes",
+                    collision_info.triangle_colliding_vertices_buffer_sizes,
+                    tri_count,
+                    wp.int32,
+                ),
+                (
+                    "triangle_colliding_vertices_count",
+                    collision_info.triangle_colliding_vertices_count,
+                    tri_count,
+                    wp.int32,
+                ),
+            )
+        for array in arrays:
+            validate_array(*array)
+
+    def _bind_external_buffers(self, collision_info: TriMeshCollisionInfo):
+        """Re-point result reads/writes at another externally-owned struct.
+
+        Plain reference assignment: the detection launches and the forwarding
+        properties below always go through ``self.collision_info``, so one
+        detector (one BVH set) can serve any number of result buffers.
+        """
+        self._validate_collision_info(collision_info)
+        self.collision_info = collision_info
+
+    def _require_collision_info(self) -> None:
+        if self.collision_info is None:
+            raise ValueError(
+                "TriMeshCollisionDetector has no result buffers; construct it with "
+                "init_collision_info=True, pass collision_info=..., or bind a result "
+                "struct before detecting."
+            )
+
+    # Result-array views into the owned/injected ``collision_info`` (D21: the
+    # detector owns no result buffers). Read-only properties preserve the
+    # historical attribute surface, including ``None`` for the optional
+    # triangle-side buffers when ``record_triangle_contacting_vertices`` is off.
+
+    @property
+    def vertex_colliding_triangles(self):
+        return self.collision_info.vertex_colliding_triangles
+
+    @property
+    def vertex_colliding_triangles_offsets(self):
+        return self.collision_info.vertex_colliding_triangles_offsets
+
+    @property
+    def vertex_colliding_triangles_buffer_sizes(self):
+        return self.collision_info.vertex_colliding_triangles_buffer_sizes
+
+    @property
+    def vertex_colliding_triangles_count(self):
+        return self.collision_info.vertex_colliding_triangles_count
+
+    @property
+    def vertex_colliding_triangles_min_dist(self):
+        return self.collision_info.vertex_colliding_triangles_min_dist
+
+    @property
+    def triangle_colliding_vertices(self):
+        return self.collision_info.triangle_colliding_vertices if self.record_triangle_contacting_vertices else None
+
+    @property
+    def triangle_colliding_vertices_offsets(self):
+        return (
+            self.collision_info.triangle_colliding_vertices_offsets
+            if self.record_triangle_contacting_vertices
+            else None
+        )
+
+    @property
+    def triangle_colliding_vertices_buffer_sizes(self):
+        return (
+            self.collision_info.triangle_colliding_vertices_buffer_sizes
+            if self.record_triangle_contacting_vertices
+            else None
+        )
+
+    @property
+    def triangle_colliding_vertices_count(self):
+        return (
+            self.collision_info.triangle_colliding_vertices_count if self.record_triangle_contacting_vertices else None
+        )
+
+    @property
+    def triangle_colliding_vertices_min_dist(self):
+        return self.collision_info.triangle_colliding_vertices_min_dist
+
+    @property
+    def edge_colliding_edges(self):
+        return self.collision_info.edge_colliding_edges
+
+    @property
+    def edge_colliding_edges_offsets(self):
+        return self.collision_info.edge_colliding_edges_offsets
+
+    @property
+    def edge_colliding_edges_buffer_sizes(self):
+        return self.collision_info.edge_colliding_edges_buffer_sizes
+
+    @property
+    def edge_colliding_edges_count(self):
+        return self.collision_info.edge_colliding_edges_count
+
+    @property
+    def edge_colliding_edges_min_dist(self):
+        return self.collision_info.edge_colliding_edges_min_dist
 
     def set_collision_filter_list(
         self,
@@ -567,134 +840,88 @@ class TriMeshCollisionDetector:
             self.edge_filtering_list_offsets = wp.array(filtering_list_offsets, dtype=wp.int32, device=self.device)
 
     def get_collision_data(self):
-        collision_info = TriMeshCollisionInfo()
-
-        collision_info.vertex_colliding_triangles = self.vertex_colliding_triangles
-        collision_info.vertex_colliding_triangles_offsets = self.vertex_colliding_triangles_offsets
-        collision_info.vertex_colliding_triangles_buffer_sizes = self.vertex_colliding_triangles_buffer_sizes
-        collision_info.vertex_colliding_triangles_count = self.vertex_colliding_triangles_count
-        collision_info.vertex_colliding_triangles_min_dist = self.vertex_colliding_triangles_min_dist
-
-        if self.record_triangle_contacting_vertices:
-            collision_info.triangle_colliding_vertices = self.triangle_colliding_vertices
-            collision_info.triangle_colliding_vertices_offsets = self.triangle_colliding_vertices_offsets
-            collision_info.triangle_colliding_vertices_buffer_sizes = self.triangle_colliding_vertices_buffer_sizes
-            collision_info.triangle_colliding_vertices_count = self.triangle_colliding_vertices_count
-
-        collision_info.triangle_colliding_vertices_min_dist = self.triangle_colliding_vertices_min_dist
-
-        collision_info.edge_colliding_edges = self.edge_colliding_edges
-        collision_info.edge_colliding_edges_offsets = self.edge_colliding_edges_offsets
-        collision_info.edge_colliding_edges_buffer_sizes = self.edge_colliding_edges_buffer_sizes
-        collision_info.edge_colliding_edges_count = self.edge_colliding_edges_count
-        collision_info.edge_colliding_edges_min_dist = self.edge_colliding_edges_min_dist
-
-        return collision_info
+        """Return the result struct; results live in :attr:`collision_info` (D27)."""
+        return self.collision_info
 
     def compute_collision_buffer_offsets(self, buffer_sizes: wp.array[wp.int32], offsets: wp.array[wp.int32]):
-        assert offsets.size == buffer_sizes.size + 1
-        offsets_np = np.empty(shape=(offsets.size,), dtype=np.int32)
-        offsets_np[1:] = np.cumsum(buffer_sizes.numpy())[:]
-        offsets_np[0] = 0
+        _compute_collision_buffer_offsets(buffer_sizes, offsets)
 
-        offsets.assign(offsets_np)
-
-    # Overflow flag indices in self.resize_flags (matches constants in geometry/kernels.py)
+    # forKernels: grow-on-overflow detection, used by XPBD self-collision (VBD runs fixed-size).
+    # Buffers live in ``self.collision_info``, so resizing replaces that struct's fields in place.
+    # shortcut: a struct bound from Contacts (_bind_external_buffers) is resized here too and any
+    # wp.array([collision_info]) copy goes stale; callers rebuild it after detection, as XPBD does.
     _VERTEX_OVERFLOW_IDX = 0
     _TRI_OVERFLOW_IDX = 1
     _EDGE_OVERFLOW_IDX = 2
 
-    def _check_and_resize_vertex_triangle_buffers(self) -> bool:
-        """Check for vertex-triangle buffer overflow and resize if needed.
+    def _grow_buffer(self, sizes_field: str, offsets_field: str, data_field: str, max_alloc: int, stride: int) -> bool:
+        info = self.collision_info
+        sizes_np = getattr(info, sizes_field).numpy()
+        new_sizes = np.minimum(sizes_np * 2, max_alloc)
+        if np.array_equal(sizes_np, new_sizes):
+            return False
+        sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
+        offsets = wp.array(shape=(new_sizes.shape[0] + 1,), dtype=wp.int32, device=self.device)
+        self.compute_collision_buffer_offsets(sizes, offsets)
+        setattr(info, sizes_field, sizes)
+        setattr(info, offsets_field, offsets)
+        setattr(
+            info, data_field, wp.zeros(shape=(stride * int(np.sum(new_sizes)),), dtype=wp.int32, device=self.device)
+        )
+        return True
 
-        Returns:
-            True if buffers were resized (caller should re-run detection).
-        """
+    def _check_and_resize_vertex_triangle_buffers(self) -> bool:
+        """Grow overflowed vertex-triangle buffers; True if the caller should re-run detection."""
+        self._require_collision_info()
         flags = self.resize_flags.numpy()
         resized = False
-
         if flags[self._VERTEX_OVERFLOW_IDX]:
-            sizes_np = self.vertex_colliding_triangles_buffer_sizes.numpy()
-            new_sizes = np.minimum(sizes_np * 2, self.vertex_collision_buffer_max_alloc)
-            if not np.array_equal(sizes_np, new_sizes):
-                resized = True
-                self.vertex_colliding_triangles_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
-                self.vertex_colliding_triangles_offsets = wp.array(
-                    shape=(new_sizes.shape[0] + 1,), dtype=wp.int32, device=self.device
-                )
-                self.compute_collision_buffer_offsets(
-                    self.vertex_colliding_triangles_buffer_sizes, self.vertex_colliding_triangles_offsets
-                )
-                total = int(np.sum(new_sizes))
-                self.vertex_colliding_triangles = wp.zeros(shape=(2 * total,), dtype=wp.int32, device=self.device)
-
+            resized |= self._grow_buffer(
+                "vertex_colliding_triangles_buffer_sizes",
+                "vertex_colliding_triangles_offsets",
+                "vertex_colliding_triangles",
+                self.vertex_collision_buffer_max_alloc,
+                2,
+            )
         if flags[self._TRI_OVERFLOW_IDX] and self.record_triangle_contacting_vertices:
-            sizes_np = self.triangle_colliding_vertices_buffer_sizes.numpy()
-            new_sizes = np.minimum(sizes_np * 2, self.triangle_collision_buffer_max_alloc)
-            if not np.array_equal(sizes_np, new_sizes):
-                resized = True
-                self.triangle_colliding_vertices_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
-                self.triangle_colliding_vertices_offsets = wp.array(
-                    shape=(new_sizes.shape[0] + 1,), dtype=wp.int32, device=self.device
-                )
-                self.compute_collision_buffer_offsets(
-                    self.triangle_colliding_vertices_buffer_sizes, self.triangle_colliding_vertices_offsets
-                )
-                total = int(np.sum(new_sizes))
-                self.triangle_colliding_vertices = wp.zeros(shape=(total,), dtype=wp.int32, device=self.device)
-
+            resized |= self._grow_buffer(
+                "triangle_colliding_vertices_buffer_sizes",
+                "triangle_colliding_vertices_offsets",
+                "triangle_colliding_vertices",
+                self.triangle_collision_buffer_max_alloc,
+                1,
+            )
         return resized
 
     def _check_and_resize_edge_buffers(self) -> bool:
-        """Check for edge-edge buffer overflow and resize if needed.
-
-        Returns:
-            True if buffers were resized (caller should re-run detection).
-        """
-        flags = self.resize_flags.numpy()
-        if not flags[self._EDGE_OVERFLOW_IDX]:
+        """Grow overflowed edge-edge buffers; True if the caller should re-run detection."""
+        self._require_collision_info()
+        if not self.resize_flags.numpy()[self._EDGE_OVERFLOW_IDX]:
             return False
-
-        sizes_np = self.edge_colliding_edges_buffer_sizes.numpy()
-        new_sizes = np.minimum(sizes_np * 2, self.edge_collision_buffer_max_alloc)
-        if np.array_equal(sizes_np, new_sizes):
-            return False
-
-        self.edge_colliding_edges_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
-        self.edge_colliding_edges_offsets = wp.array(
-            shape=(new_sizes.shape[0] + 1,), dtype=wp.int32, device=self.device
+        return self._grow_buffer(
+            "edge_colliding_edges_buffer_sizes",
+            "edge_colliding_edges_offsets",
+            "edge_colliding_edges",
+            self.edge_collision_buffer_max_alloc,
+            2,
         )
-        self.compute_collision_buffer_offsets(self.edge_colliding_edges_buffer_sizes, self.edge_colliding_edges_offsets)
-        total = int(np.sum(new_sizes))
-        self.edge_colliding_edges = wp.zeros(shape=(2 * total,), dtype=wp.int32, device=self.device)
-        return True
 
     def vertex_triangle_collision_detection_with_resize(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
     ):
-        """Run vertex-triangle detection, automatically resizing buffers on overflow.
-
-        Runs detection once, checks overflow flags, and if buffers overflowed,
-        doubles their sizes (up to max_alloc) and re-runs detection.
-        """
+        """Run vertex-triangle detection; on overflow, double the buffers (up to max_alloc) and run it again."""
         self.vertex_triangle_collision_detection(max_query_radius, min_query_radius, min_distance_filtering_ref_pos)
         if self._check_and_resize_vertex_triangle_buffers():
             self.resize_flags.zero_()
-            self.collision_info = self.get_collision_data()
             self.vertex_triangle_collision_detection(max_query_radius, min_query_radius, min_distance_filtering_ref_pos)
 
     def edge_edge_collision_detection_with_resize(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
     ):
-        """Run edge-edge detection, automatically resizing buffers on overflow.
-
-        Runs detection once, checks overflow flags, and if buffers overflowed,
-        doubles their sizes (up to max_alloc) and re-runs detection.
-        """
+        """Run edge-edge detection; on overflow, double the buffers (up to max_alloc) and run it again."""
         self.edge_edge_collision_detection(max_query_radius, min_query_radius, min_distance_filtering_ref_pos)
         if self._check_and_resize_edge_buffers():
             self.resize_flags.zero_()
-            self.collision_info = self.get_collision_data()
             self.edge_edge_collision_detection(max_query_radius, min_query_radius, min_distance_filtering_ref_pos)
 
     def rebuild(self, new_pos=None):
@@ -762,6 +989,7 @@ class TriMeshCollisionDetector:
     def vertex_triangle_collision_detection(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
     ):
+        self._require_collision_info()
         self.vertex_colliding_triangles.fill_(-1)
 
         if self.record_triangle_contacting_vertices:
@@ -817,6 +1045,7 @@ class TriMeshCollisionDetector:
     def edge_edge_collision_detection(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
     ):
+        self._require_collision_info()
         self.edge_colliding_edges.fill_(-1)
         wp.launch(
             kernel=edge_colliding_edges_detection_kernel,
@@ -883,195 +1112,3 @@ class TriMeshCollisionDetector:
             dim=self.model.tri_count,
             device=self.model.device,
         )
-
-
-# --- Topological filtering helpers (CPU/numpy) ---
-
-
-def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
-    """Extract CSR row `i` from the flattened adjacency arrays."""
-    return vals[offs[i] : offs[i + 1]]
-
-
-def set_to_csr(
-    list_of_sets: list[set[int]], dtype: np.dtype = np.int32, sort: bool = True
-) -> tuple[np.ndarray, np.ndarray]:
-    """Convert a list of integer sets into CSR (Compressed Sparse Row) structure.
-
-    Args:
-        list_of_sets: Iterable where each entry is a set of ints.
-        dtype: Output dtype for the flattened arrays.
-        sort: Whether to sort each row when writing into ``flat``.
-
-    Returns:
-        A tuple ``(flat, offsets)`` representing the CSR values and offsets.
-    """
-    offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
-    sizes = np.fromiter((len(s) for s in list_of_sets), count=len(list_of_sets), dtype=dtype)
-    np.cumsum(sizes, out=offsets[1:])
-    flat = np.empty(offsets[-1], dtype=dtype)
-    idx = 0
-    for s in list_of_sets:
-        if sort:
-            arr = np.fromiter(sorted(s), count=len(s), dtype=dtype)
-        else:
-            arr = np.fromiter(s, count=len(s), dtype=dtype)
-
-        flat[idx : idx + len(arr)] = arr
-        idx += len(arr)
-    return flat, offsets
-
-
-def one_ring_vertices(
-    v: int, edge_indices: np.ndarray, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
-) -> np.ndarray:
-    """Find immediate neighboring vertices that share an edge with vertex `v`.
-
-    Args:
-        v: Vertex index whose neighborhood is queried.
-        edge_indices: Array of shape [num_edges, 4] storing edge endpoint indices.
-        v_adj_edges: Flattened CSR adjacency array listing edge ids and local order.
-        v_adj_edges_offsets: CSR offsets indexing into `v_adj_edges`.
-
-    Returns:
-        Sorted array of neighboring vertex indices, excluding `v`.
-    """
-    e_u = edge_indices[:, 2]
-    e_v = edge_indices[:, 3]
-    # preserve only the adjacent edge information, remove the order information
-    inc_edges = _csr_row(v_adj_edges, v_adj_edges_offsets, v)[::2]
-    inc_edges_order = _csr_row(v_adj_edges, v_adj_edges_offsets, v)[1::2]
-    if inc_edges.size == 0:
-        return np.empty(0)
-    us = e_u[inc_edges[np.where(inc_edges_order >= 2)]]
-    vs = e_v[inc_edges[np.where(inc_edges_order >= 2)]]
-
-    assert (np.logical_or(us == v, vs == v)).all()
-    nbrs = np.unique(np.concatenate([us, vs]))
-    return nbrs[nbrs != v]
-
-
-def leq_n_ring_vertices(
-    v: int, edge_indices: np.ndarray, n: int, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
-) -> np.ndarray:
-    """Find all vertices within n-ring distance of vertex v using BFS.
-
-    Args:
-        v: Starting vertex index.
-        edge_indices: Edge connectivity array.
-        n: Maximum ring distance.
-        v_adj_edges: CSR values for vertex-edge adjacency.
-        v_adj_edges_offsets: CSR offsets for vertex-edge adjacency.
-
-    Returns:
-        Array of all vertices within n-ring distance, including v itself.
-    """
-    visited = {v}
-    frontier = {v}
-    for _ in range(n):
-        next_frontier = set()
-        for u in frontier:
-            for w in one_ring_vertices(u, edge_indices, v_adj_edges, v_adj_edges_offsets):  # iterable of neighbors of u
-                if w not in visited:
-                    visited.add(w)
-                    next_frontier.add(w)
-        if not next_frontier:
-            break
-        frontier = next_frontier
-    return np.fromiter(visited, dtype=int)
-
-
-def build_vertex_n_ring_tris_collision_filter(
-    n: int,
-    num_vertices: int,
-    edge_indices: np.ndarray,
-    v_adj_edges: np.ndarray,
-    v_adj_edges_offsets: np.ndarray,
-    v_adj_faces: np.ndarray,
-    v_adj_faces_offsets: np.ndarray,
-):
-    """For each vertex v, return ONLY triangles adjacent to v's one ring neighbor vertices.
-
-    Excludes triangles incident to v itself (dist 0).
-
-    Returns:
-        v_two_flat, v_two_offs: CSR of strict-2-ring triangle ids per vertex.
-    """
-
-    if n <= 1:
-        return None, None
-
-    v_nei_tri_sets = [set() for _ in range(num_vertices)]
-
-    for v in range(num_vertices):
-        # distance-1 vertices
-
-        if n == 2:
-            ring_n_minus_1 = one_ring_vertices(v, edge_indices, v_adj_edges, v_adj_edges_offsets)
-        else:
-            ring_n_minus_1 = leq_n_ring_vertices(v, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
-
-        ring_1_tri_set = set(_csr_row(v_adj_faces, v_adj_faces_offsets, v)[::2])
-
-        nei_tri_set = v_nei_tri_sets[v]
-        for w in ring_n_minus_1:
-            if w != v:
-                # preserve only the adjacent edge information, remove the order information
-                nei_tri_set.update(_csr_row(v_adj_faces, v_adj_faces_offsets, w)[::2])
-
-        nei_tri_set.difference_update(ring_1_tri_set)
-
-    return v_nei_tri_sets
-
-
-def build_edge_n_ring_edge_collision_filter(
-    n: int,
-    edge_indices: np.ndarray,
-    v_adj_edges: np.ndarray,
-    v_adj_edges_offsets: np.ndarray,
-):
-    """For each edge e, return edges within n-ring distance.
-
-    Excludes edges incident to the edge's own vertices.
-
-    Returns:
-        List of sets, one per edge.
-    """
-
-    if n <= 1:
-        return None, None
-
-    edge_nei_edge_sets = [set() for _ in range(edge_indices.shape[0])]
-
-    for e_idx in range(edge_indices.shape[0]):
-        # distance-1 vertices
-        v1 = edge_indices[e_idx, 2]
-        v2 = edge_indices[e_idx, 3]
-
-        if n == 2:
-            ring_n_minus_1_v1 = one_ring_vertices(v1, edge_indices, v_adj_edges, v_adj_edges_offsets)
-            ring_n_minus_1_v2 = one_ring_vertices(v2, edge_indices, v_adj_edges, v_adj_edges_offsets)
-        else:
-            ring_n_minus_1_v1 = leq_n_ring_vertices(v1, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
-            ring_n_minus_1_v2 = leq_n_ring_vertices(v2, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
-
-        all_neighbors = set(ring_n_minus_1_v1)
-        all_neighbors.update(ring_n_minus_1_v2)
-
-        ring_1_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v1)[::2])
-        ring_2_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v2)[::2])
-
-        nei_edge_set = edge_nei_edge_sets[e_idx]
-        for w in all_neighbors:
-            if w != v1 and w != v2:
-                # preserve only the adjacent edge information, remove the order information
-                # nei_tri_set.update(_csr_row(v_adj_faces, v_adj_faces_offsets, w)[::2])
-                adj_edges = _csr_row(v_adj_edges, v_adj_edges_offsets, w)[::2]
-                adj_edges_order = _csr_row(v_adj_edges, v_adj_edges_offsets, w)[1::2]
-                adj_collision_edges = adj_edges[np.where(adj_edges_order >= 2)]
-                nei_edge_set.update(adj_collision_edges)
-
-        nei_edge_set.difference_update(ring_1_edge_set)
-        nei_edge_set.difference_update(ring_2_edge_set)
-
-    return edge_nei_edge_sets
