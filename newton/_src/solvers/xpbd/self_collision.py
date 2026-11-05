@@ -252,6 +252,7 @@ class XPBDSelfCollision:
             edge_filtering_list=edge_filter_list,
             edge_filtering_list_offsets=edge_filter_offsets,
             edge_edge_parallel_epsilon=edge_parallel_epsilon,
+            init_collision_info=True,  # 1.6.1: the detector only builds its result struct on request
         )
 
         self.collision_info_array = wp.array(

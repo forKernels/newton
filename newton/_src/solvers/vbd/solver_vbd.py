@@ -4038,7 +4038,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         pos_t1 = state_out.particle_q
         model = self.model
         detector = self._self_contact_detector()
-        thickness = self.particle_self_contact_radius
+        thickness = self.particle_self_contact_margin  # 1.6.1's margin is the old contact radius
 
         # Refit BVH with swept AABBs
         wp.launch(
