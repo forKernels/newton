@@ -13,18 +13,18 @@ import numpy as np
 import warp as wp
 
 from newton import Model, State, eval_fk
-from newton.utils import transform_twist
+from newton.math import transform_twist
 
 
 @wp.kernel
 def compute_ee_delta(
-    body_q: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
     offset: wp.transform,
     body_id: int,
     bodies_per_world: int,
     target: wp.transform,
     # outputs
-    ee_delta: wp.array(dtype=wp.spatial_vector),
+    ee_delta: wp.array[wp.spatial_vector],
 ):
     """Compute spatial error between current end-effector pose and target."""
     world_id = wp.tid()
@@ -144,7 +144,7 @@ class RobotController:
         ee_id = self.endeffector_id
 
         @wp.kernel
-        def _compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
+        def _compute_body_out(body_qd: wp.array[wp.spatial_vector], body_out: wp.array[float]):
             mv = transform_twist(wp.static(ee_offset), body_qd[wp.static(ee_id)])
             for i in range(6):
                 body_out[i] = mv[i]

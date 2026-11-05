@@ -6,11 +6,9 @@ renders, and a recipe that promised a hero artifact and produced none is
 PARTIAL rather than ok.
 """
 
-import json
 from pathlib import Path
 
 import pytest
-
 from cli_anything.newton.core import preview
 
 
@@ -43,9 +41,9 @@ def test_a_procedural_scene_is_fingerprinted_by_its_PARAMETERS():
     b = preview._source_fingerprint(None, "ground", "quick", "xpbd")
     c = preview._source_fingerprint(None, "ground", "usd", "xpbd")
     d = preview._source_fingerprint(None, "pendulum", "quick", "xpbd")
-    assert a == b            # same inputs, same bundle
-    assert a != c            # a different recipe is a different capture
-    assert a != d            # so is a different scene
+    assert a == b  # same inputs, same bundle
+    assert a != c  # a different recipe is a different capture
+    assert a != d  # so is a different scene
 
 
 def test_a_scene_file_is_fingerprinted_by_its_BYTES(tmp_path):
@@ -64,13 +62,12 @@ def test_latest_is_read_only_and_returns_None_when_nothing_exists(tmp_path):
     """`preview latest` must never render. If it rendered on a miss it would be
     a slow `capture` wearing a cheap name, and the agent loop would stop being
     predictable."""
-    assert preview.latest(recipe="nosuchrecipe",
-                          root_dir=str(tmp_path)) is None
+    assert preview.latest(recipe="nosuchrecipe", root_dir=str(tmp_path)) is None
 
 
 def test_the_producer_never_reads_a_bundle_for_display():
     """Producer and consumer are separate roles - `cli-hub previews` inspects.
     A producer that also renders for display grows a second, divergent view."""
-    src = Path(preview.__file__).read_text()
+    src = Path(preview.__file__).read_text(encoding="utf-8")
     for consumer in ("def inspect", "def html", "def watch", "def open_bundle"):
         assert consumer not in src

@@ -15,10 +15,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from click.testing import CliRunner
-
 from cli_anything.newton.core.session import Session
 from cli_anything.newton.newton_cli import cli
+from click.testing import CliRunner
 
 
 def test_session_round_trips_through_a_file():
@@ -27,7 +26,7 @@ def test_session_round_trips_through_a_file():
         s = Session(path)
         s.solver_type, s.frame, s.modified = "vbd", 42, True
         assert s.save() == path
-        got = json.loads(Path(path).read_text())
+        got = json.loads(Path(path).read_text(encoding="utf-8"))
         assert got["solver_type"] == "vbd" and got["frame"] == 42
         # A save that does not clear `modified` makes the quit warning lie.
         assert s.modified is False
@@ -48,12 +47,12 @@ def test_cli_exposes_session_and_dry_run():
 def test_repl_advertises_save():
     """A save command nobody is told about is a save command nobody uses."""
     src = Path(__file__).resolve().parents[1] / "newton_cli.py"
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     assert '"save":' in text, "save missing from the REPL command table"
     assert 'elif cmd == "save"' in text, "save advertised but not handled"
 
 
 def test_quit_warns_when_modified_and_unsaved():
-    src = (Path(__file__).resolve().parents[1] / "newton_cli.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "newton_cli.py").read_text(encoding="utf-8")
     quit_block = src.split('if cmd in ("quit", "exit", "q"):')[1][:600]
     assert "session.modified" in quit_block, "quit discards changes silently"
