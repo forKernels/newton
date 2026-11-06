@@ -662,6 +662,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                         if self._self_collision is not None:
                             self._self_collision.solve(
                                 particle_q,
+                                self.particle_q_init,
                                 model.particle_inv_mass,
                                 model.particle_flags,
                                 self.soft_contact_relaxation,

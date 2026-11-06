@@ -139,18 +139,25 @@ def test_vbd_tri_tri_contact_steps(test, device):
     test.assertTrue(np.isfinite(s0.particle_q.numpy()).all())
 
 
-def test_xpbd_self_collision_steps(test, device):
-    model, n_a = _two_sheets(device, b_vel=(0.0, 0.0, -1.0))
-    solver = SolverXPBD(model, iterations=5, enable_self_collision=True, self_collision_radius=MARGIN)
-    test.assertIsNotNone(solver._self_collision)
-    s0, s1 = model.state(), model.state()
-    contacts = model.contacts()
-    for _ in range(10):
-        solver.step(s0, s1, None, contacts, 1.0e-2)
-        s0, s1 = s1, s0
-    q = s0.particle_q.numpy()
-    test.assertTrue(np.isfinite(q).all())
-    test.assertGreater(q[n_a:, 2].min(), 0.0, "sheet B passed through sheet A")
+def test_xpbd_self_collision_lands_without_launch(test, device):
+    """B is dropped, then thrown, onto static A under XPBD for 1 s at Newton's usual cloth substep: it
+    must come to rest on A, never going through it or rising above where it started. Contact used to
+    fling it tens of metres either way."""
+    for b_vz in (0.0, -3.0):
+        model, n_a = _two_sheets(device, b_vel=(0.0, 0.0, b_vz))
+        solver = SolverXPBD(model, iterations=5, enable_self_collision=True, self_collision_radius=MARGIN)
+        test.assertIsNotNone(solver._self_collision)
+        s0, s1, contacts = model.state(), model.state(), model.contacts()
+        z_lo, z_hi = GAP, GAP
+        for _ in range(600):
+            solver.step(s0, s1, None, contacts, 1.0 / 600.0)
+            s0, s1 = s1, s0
+            z = s0.particle_q.numpy()[n_a:, 2]
+            z_lo, z_hi = min(z_lo, z.min()), max(z_hi, z.max())
+        test.assertTrue(np.isfinite(s0.particle_q.numpy()).all())
+        test.assertGreater(z_lo, 0.0, f"v0={b_vz}: sheet B passed through sheet A")
+        test.assertLessEqual(z_hi, GAP + 1.0e-3, f"v0={b_vz}: sheet B was launched upward")
+        test.assertLess(z.max(), 2.0 * MARGIN, f"v0={b_vz}: sheet B did not come to rest on A")
 
 
 class TestClothCCD(unittest.TestCase):
@@ -165,7 +172,7 @@ for _name, _fn in [
     ("test_ccd_vbd_step_own_detector", lambda test, device: _drop_b(test, device, use_pipeline=False)),
     ("test_ccd_vbd_step_pipeline_detector", lambda test, device: _drop_b(test, device, use_pipeline=True)),
     ("test_vbd_tri_tri_contact_steps", test_vbd_tri_tri_contact_steps),
-    ("test_xpbd_self_collision_steps", test_xpbd_self_collision_steps),
+    ("test_xpbd_self_collision_lands_without_launch", test_xpbd_self_collision_lands_without_launch),
 ]:
     add_function_test(TestClothCCD, _name, _fn, devices=devices)
 
