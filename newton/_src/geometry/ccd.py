@@ -418,8 +418,13 @@ def vertex_triangle_ccd_kernel(
     # outputs
     toi_per_vertex: wp.array[float],
     contact_tri_per_vertex: wp.array[wp.int32],
+    toi_per_particle: wp.array[float],
 ):
-    """Per-vertex CCD: query swept BVH, run cubic CCD against candidates, store min TOI."""
+    """Per-vertex CCD: query swept BVH, run cubic CCD against candidates, store min TOI.
+
+    ``toi_per_particle`` (fill with ``CCD_NO_COLLISION`` first) gets every hit's TOI on all four
+    particles involved, the vertex and the triangle's three, for :func:`clamp_positions_to_toi`.
+    """
     v_index = wp.tid()
 
     v0 = pos_t0[v_index]
@@ -479,6 +484,12 @@ def vertex_triangle_ccd_kernel(
             pos_t1[tk],
             thickness,
         )
+        if toi < CCD_NO_COLLISION:
+            # Both sides stop: clamping only the vertex lets a moving triangle pass through it.
+            wp.atomic_min(toi_per_particle, v_index, toi)
+            wp.atomic_min(toi_per_particle, ti, toi)
+            wp.atomic_min(toi_per_particle, tj, toi)
+            wp.atomic_min(toi_per_particle, tk, toi)
         if toi < min_toi:
             min_toi = toi
             min_tri = tri_index
@@ -499,8 +510,13 @@ def edge_edge_ccd_kernel(
     # outputs
     toi_per_edge: wp.array[float],
     contact_edge_per_edge: wp.array[wp.int32],
+    toi_per_particle: wp.array[float],
 ):
-    """Per-edge CCD: query swept BVH, run cubic CCD against candidate edges, store min TOI."""
+    """Per-edge CCD: query swept BVH, run cubic CCD against candidate edges, store min TOI.
+
+    ``toi_per_particle`` gets every hit's TOI on all four endpoints, as in
+    :func:`vertex_triangle_ccd_kernel`. Each pair is tested once, from its lower edge index.
+    """
     e_index = wp.tid()
 
     e1_i = edge_indices[e_index, 2]
@@ -568,6 +584,11 @@ def edge_edge_ccd_kernel(
             pos_t1[e2_j],
             thickness,
         )
+        if toi < CCD_NO_COLLISION:
+            wp.atomic_min(toi_per_particle, e1_i, toi)
+            wp.atomic_min(toi_per_particle, e1_j, toi)
+            wp.atomic_min(toi_per_particle, e2_i, toi)
+            wp.atomic_min(toi_per_particle, e2_j, toi)
         if toi < min_toi:
             min_toi = toi
             min_edge = e2_index
@@ -580,21 +601,22 @@ def edge_edge_ccd_kernel(
 def clamp_positions_to_toi(
     pos_t0: wp.array[wp.vec3],
     pos_t1: wp.array[wp.vec3],
-    toi_vertices: wp.array[float],
-    toi_edges: wp.array[float],
-    edge_indices: wp.array2d[wp.int32],
+    toi_per_particle: wp.array[float],
     safety_factor: float,
     # outputs
     pos_out: wp.array[wp.vec3],
 ):
     """Clamp particle positions to prevent tunneling past the earliest TOI.
 
-    For each particle, find the minimum TOI across its vertex CCD result
-    and any edge CCD results involving it, then interpolate position.
+    ``toi_per_particle`` is the earliest TOI of any vertex-triangle or edge-edge hit the particle
+    takes part in, on either side, as filled by the two CCD kernels.
+
+    shortcut: one pass, so particles stopped at different TOIs can still meet later in the step;
+    rerun detection on the clamped positions if residual tunneling shows up.
     """
     vid = wp.tid()
 
-    min_toi = toi_vertices[vid]
+    min_toi = toi_per_particle[vid]
 
     # Clamp only if we found a collision
     if min_toi < CCD_NO_COLLISION:

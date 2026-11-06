@@ -16,19 +16,34 @@ GAP = 0.1  # sheet B starts this far above sheet A
 MARGIN = 0.01
 
 
-def _two_sheets(device, b_vel=(0.0, 0.0, 0.0)):
-    """Static 8x8 sheet A at z=0 and a free 4x4 sheet B at z=GAP inside A's footprint.
+def _sheets(device, a, b, b_vel=(0.0, 0.0, 0.0)):
+    """Static sheet A at z=0 and a free sheet B at z=GAP; ``a``/``b`` are (x, y, dim_x, dim_y, cell_x, cell_y).
 
-    A is massless (pinned like add_cloth_grid's fix_* edges), so B below z=0 can only mean it went
-    through A. B is offset so its vertices land inside A's triangles, never on an edge or diagonal.
+    A is massless (pinned like add_cloth_grid's fix_* edges), so B below A can only mean it went through.
     """
     builder = newton.ModelBuilder()
-    common = {"rot": wp.quat_identity(), "cell_x": 0.1, "cell_y": 0.1, "particle_radius": 0.005}
-    builder.add_cloth_grid(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0), dim_x=8, dim_y=8, mass=0.0, **common)
-    n_a = builder.particle_count
-    builder.add_cloth_grid(pos=wp.vec3(0.22, 0.26, GAP), vel=wp.vec3(*b_vel), dim_x=4, dim_y=4, mass=0.1, **common)
+    for (x, y, nx, ny, cx, cy), z, vel, mass in ((a, 0.0, (0.0, 0.0, 0.0), 0.0), (b, GAP, b_vel, 0.1)):
+        builder.add_cloth_grid(
+            pos=wp.vec3(x, y, z),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(*vel),
+            dim_x=nx,
+            dim_y=ny,
+            cell_x=cx,
+            cell_y=cy,
+            mass=mass,
+            particle_radius=0.005,
+        )
+        if mass == 0.0:
+            n_a = builder.particle_count
     builder.color()
     return builder.finalize(device=device), n_a
+
+
+def _two_sheets(device, b_vel=(0.0, 0.0, 0.0)):
+    """8x8 sheet A and a 4x4 sheet B inside its footprint, offset so B's vertices land inside A's
+    triangles, never on an edge or diagonal."""
+    return _sheets(device, (0.0, 0.0, 8, 8, 0.1, 0.1), (0.22, 0.26, 4, 4, 0.1, 0.1), b_vel)
 
 
 def _vbd(model, **kwargs):
@@ -43,25 +58,56 @@ def _vbd(model, **kwargs):
     )
 
 
-def test_ccd_safety_net_stops_tunneling(test, device):
-    """B is moved straight through A in one step; the safety net must stop it above A."""
-    model, n_a = _two_sheets(device)
+def _tunnel_b_through_a(model, n_a):
+    """Move B straight down 3*GAP in one step (a full tunnel), run only the safety net, return (q0, q)."""
     solver = _vbd(model)
-
     q0 = model.particle_q.numpy()
     q1 = q0.copy()
-    q1[n_a:, 2] -= 3.0 * GAP  # ends 0.2 below A: a full tunnel
+    q1[n_a:, 2] -= 3.0 * GAP
     solver.particle_q_prev.assign(q0)
     state = model.state()
     state.particle_q.assign(q1)
-
     solver._run_ccd_safety_net(state)
-
     q = state.particle_q.numpy()
-    test.assertTrue(np.isfinite(q).all())
-    np.testing.assert_allclose(q[:n_a], q0[:n_a])  # A did not move, so it is untouched
+    assert np.isfinite(q).all()
+    np.testing.assert_allclose(q[:n_a], q0[:n_a])  # A did not move, so clamping it is a no-op
+    return q0, q
+
+
+def test_ccd_safety_net_stops_tunneling(test, device):
+    """B's vertices pass through A's triangles: vertex-triangle CCD must stop them above A."""
+    model, n_a = _two_sheets(device)
+    _, q = _tunnel_b_through_a(model, n_a)
     test.assertGreater(q[n_a:, 2].min(), 0.0, "sheet B tunneled through sheet A")
     test.assertLess(q[n_a:, 2].max(), GAP, "sheet B was not moved at all")
+
+
+def test_ccd_edge_edge_stops_tunneling(test, device):
+    """Two strips cross like a plus sign: no vertex is over the other strip, so only edge-edge CCD sees it."""
+    model, n_a = _sheets(device, (0.0, 0.0, 1, 1, 1.0, 0.1), (0.45, -0.5, 1, 1, 0.1, 1.1))
+    _, q = _tunnel_b_through_a(model, n_a)
+    test.assertGreater(q[n_a:, 2].min(), 0.0, "strip B passed through strip A edge-first")
+
+
+def _height_of(q0, q, tris, xy):
+    """z of the deformed triangle (positions q) whose starting footprint (q0) covers point xy."""
+    for tri in tris:
+        a, b, c = q0[tri, :2]
+        u, v = np.linalg.solve(np.array([b - a, c - a]).T, xy - a)
+        if u >= 0.0 and v >= 0.0 and u + v <= 1.0:
+            return (1.0 - u - v) * q[tri[0], 2] + u * q[tri[1], 2] + v * q[tri[2], 2]
+    raise AssertionError(f"no triangle covers {xy}")
+
+
+def test_ccd_clamps_the_triangle_side(test, device):
+    """A tiny static patch sits inside one of B's triangles, clear of its edges: only A's vertices see a
+    hit, so B's triangle has to be clamped through them."""
+    model, n_a = _sheets(device, (0.24, 0.29, 1, 1, 0.02, 0.02), (0.0, 0.0, 4, 4, 0.2, 0.2))
+    q0, q = _tunnel_b_through_a(model, n_a)
+    tris = model.tri_indices.numpy()
+    b_tris = tris[tris.min(axis=1) >= n_a]
+    z = _height_of(q0, q, b_tris, q0[:n_a, :2].mean(axis=0))
+    test.assertGreater(z, 0.0, "B's triangle passed through A's vertices")
 
 
 def _drop_b(test, device, use_pipeline):
@@ -114,6 +160,8 @@ class TestClothCCD(unittest.TestCase):
 devices = get_test_devices()
 for _name, _fn in [
     ("test_ccd_safety_net_stops_tunneling", test_ccd_safety_net_stops_tunneling),
+    ("test_ccd_edge_edge_stops_tunneling", test_ccd_edge_edge_stops_tunneling),
+    ("test_ccd_clamps_the_triangle_side", test_ccd_clamps_the_triangle_side),
     ("test_ccd_vbd_step_own_detector", lambda test, device: _drop_b(test, device, use_pipeline=False)),
     ("test_ccd_vbd_step_pipeline_detector", lambda test, device: _drop_b(test, device, use_pipeline=True)),
     ("test_vbd_tri_tri_contact_steps", test_vbd_tri_tri_contact_steps),

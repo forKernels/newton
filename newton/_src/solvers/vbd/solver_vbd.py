@@ -13,6 +13,7 @@ import warp as wp
 from ...core.types import override
 from ...geometry import ParticleFlags
 from ...geometry.ccd import (
+    CCD_NO_COLLISION,
     clamp_positions_to_toi,
     compute_edge_aabbs_swept,
     compute_tri_aabbs_swept,
@@ -941,6 +942,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.ccd_contact_tri = wp.empty(self.model.particle_count, dtype=wp.int32, device=self.device)
             self.ccd_toi_edges = wp.empty(self.model.edge_count, dtype=float, device=self.device)
             self.ccd_contact_edge = wp.empty(self.model.edge_count, dtype=wp.int32, device=self.device)
+            self.ccd_toi_particles = wp.empty(self.model.particle_count, dtype=float, device=self.device)
 
         # Particle force and hessian storage
         self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
@@ -4059,6 +4061,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
         detector.bvh_edges.refit()
 
+        self.ccd_toi_particles.fill_(CCD_NO_COLLISION)
+
         # Run V-F CCD
         wp.launch(
             kernel=vertex_triangle_ccd_kernel,
@@ -4071,7 +4075,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 detector.vertex_triangle_filtering_list,
                 detector.vertex_triangle_filtering_list_offsets,
             ],
-            outputs=[self.ccd_toi_vertices, self.ccd_contact_tri],
+            outputs=[self.ccd_toi_vertices, self.ccd_contact_tri, self.ccd_toi_particles],
             dim=model.particle_count,
             device=self.device,
         )
@@ -4088,7 +4092,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 detector.edge_filtering_list,
                 detector.edge_filtering_list_offsets,
             ],
-            outputs=[self.ccd_toi_edges, self.ccd_contact_edge],
+            outputs=[self.ccd_toi_edges, self.ccd_contact_edge, self.ccd_toi_particles],
             dim=model.edge_count,
             device=self.device,
         )
@@ -4099,9 +4103,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             inputs=[
                 pos_t0,
                 pos_t1,
-                self.ccd_toi_vertices,
-                self.ccd_toi_edges,
-                model.edge_indices,
+                self.ccd_toi_particles,
                 self.particle_ccd_safety_factor,
             ],
             outputs=[state_out.particle_q],
